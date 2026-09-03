@@ -1,0 +1,155 @@
+{
+  "server": {
+    "description": "ComfyUI 服务配置",
+    "type": "object",
+    "items": {
+      "base_url": {
+        "description": "ComfyUI 服务地址",
+        "type": "string",
+        "hint": "AstrBot 能访问到的地址，例如 http://127.0.0.1:8188",
+        "obvious_hint": true,
+        "default": "http://127.0.0.1:8188"
+      },
+      "timeout": {
+        "description": "出图超时时间（秒）",
+        "type": "int",
+        "default": 120
+      }
+    }
+  },
+  "model_switch": {
+    "description": "模型参与调用开关（打开才参与 LLM 工作流选择）",
+    "type": "object",
+    "items": {
+      "checkpoint": {
+        "description": "Checkpoint 参与调用",
+        "type": "bool",
+        "default": true
+      },
+      "controlnet": {
+        "description": "ControlNet 参与调用",
+        "type": "bool",
+        "default": false
+      },
+      "vae": {
+        "description": "VAE 参与调用",
+        "type": "bool",
+        "default": false
+      },
+      "lora": {
+        "description": "LORA 参与调用",
+        "type": "bool",
+        "default": false
+      }
+    }
+  },
+  "llm_settings": {
+    "description": "LLM 提供商配置",
+    "type": "object",
+    "items": {
+      "provider": {
+        "description": "LLM 提供商（留空使用 AstrBot 默认）",
+        "type": "string",
+        "default": ""
+      },
+      "api_key": {
+        "description": "LLM API Key（留空使用 AstrBot 默认）",
+        "type": "string",
+        "default": ""
+      },
+      "base_url": {
+        "description": "LLM API 地址（留空使用 AstrBot 默认）",
+        "type": "string",
+        "default": ""
+      },
+      "model": {
+        "description": "LLM 模型名（留空使用 AstrBot 默认）",
+        "type": "string",
+        "default": ""
+      }
+    }
+  },
+  "draw_settings": {
+    "description": "出图默认参数",
+    "type": "object",
+    "items": {
+      "default_width": {
+        "description": "默认宽度",
+        "type": "int",
+        "default": 512
+      },
+      "default_height": {
+        "description": "默认高度",
+        "type": "int",
+        "default": 768
+      },
+      "default_steps": {
+        "description": "默认步数",
+        "type": "int",
+        "default": 20
+      },
+      "default_sampler": {
+        "description": "默认采样器",
+        "type": "string",
+        "default": "euler"
+      },
+      "default_cfg": {
+        "description": "默认 CFG",
+        "type": "float",
+        "default": 7.0
+      },
+      "default_negative": {
+        "description": "默认负面提示词",
+        "type": "text",
+        "default": "lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username"
+      }
+    }
+  },
+  "output": {
+    "description": "出图结果发送设置",
+    "type": "object",
+    "items": {
+      "mention_trigger_user": {
+        "description": "群聊出图时 @ 触发人",
+        "type": "bool",
+        "default": true
+      },
+      "save_image": {
+        "description": "保存生成图片到本地",
+        "type": "bool",
+        "default": true
+      }
+    }
+  },
+  "permission": {
+    "description": "权限控制",
+    "type": "object",
+    "items": {
+      "admin_ids": {
+        "description": "管理员 QQ 号（列表）",
+        "type": "list",
+        "default": []
+      },
+      "whitelist_user_ids": {
+        "description": "用户白名单（留空表示不限制，全部放行）",
+        "type": "list",
+        "default": []
+      },
+      "blacklist_user_ids": {
+        "description": "用户黑名单",
+        "type": "list",
+        "default": []
+      },
+      "daily_limit": {
+        "description": "每人每日出图上限（0 表示不限制）",
+        "type": "int",
+        "default": 0
+      },
+      "cooldown_seconds": {
+        "description": "单用户冷却时间（秒）",
+        "type": "int",
+        "default": 10
+      }
+    }
+  }
+}
