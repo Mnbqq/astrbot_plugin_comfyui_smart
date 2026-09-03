@@ -1,9 +1,9 @@
 name: astrbot_plugin_comfyui_smart
 display_name: ComfyUI 智能绘图
 desc: 将 AstrBot 连接到本地 ComfyUI，通过 LLM 智能分析模型列表、自动选择 Checkpoint/ControlNet/VAE/LORA 并生成工作流，实现指令级智能出图。
-version: "0.1.0"
-author: Operit
-repo: ""
+version: "0.2.0"
+author: Mnbqq
+repo: "https://github.com/Mnbqq/astrbot_plugin_comfyui_smart"
 help: 安装后在配置页填写 ComfyUI 地址。聊天中发送 /刷新模型 拉取并分析模型，/画图 <描述> 出图，/帮助 查看全部指令。
 tags:
   - 画图
