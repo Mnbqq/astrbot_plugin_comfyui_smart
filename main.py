@@ -27,9 +27,9 @@ except ImportError:
 
 @register(
     "astrbot_plugin_comfyui_smart",
-    "Operit",
+    "Mnbqq",
     "ComfyUI 智能绘图",
-    "0.1.0",
+    "0.2.0",
     ""
 )
 class ComfyUISmartPlugin(Star):
