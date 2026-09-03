@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>ComfyUI 智能绘图 · 配置</title>
+    <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+    <!-- 顶部导航栏 -->
+    <header class="topbar-nav">
+        <div class="topbar-inner">
+            <div class="brand-block">
+                <div class="brand-mark">🎨</div>
+                <div>
+                    <h1>智能绘图</h1>
+                    <p>ComfyUI Smart</p>
+                </div>
+            </div>
+            <nav class="nav-menu">
+                <button class="nav-item active" data-target="tab-server" type="button">服务器</button>
+                <button class="nav-item" data-target="tab-model" type="button">模型</button>
+                <button class="nav-item" data-target="tab-llm" type="button">LLM</button>
+                <button class="nav-item" data-target="tab-draw" type="button">出图参数</button>
+                <button class="nav-item" data-target="tab-perm" type="button">权限</button>
+                <button class="nav-item" data-target="tab-stats" type="button">统计</button>
+            </nav>
+            <div class="save-panel">
+                <span class="save-state" id="save-state">配置已同步</span>
+                <button data-action="save-config" class="btn-primary" type="button">保存更改</button>
+            </div>
+        </div>
+    </header>
+
+    <div class="app-shell">
+        <!-- 主内容 -->
+        <main class="content">
+            <header class="topbar">
+                <div>
+                    <span class="eyebrow">PLUGIN SETTINGS</span>
+                    <h2 id="active-title">服务器配置</h2>
+                </div>
+                <div class="status-pill"><span></span>READY</div>
+            </header>
+
+            <!-- 服务器 -->
+            <section id="tab-server" class="tab-pane active" data-title="服务器配置">
+                <article class="card">
+                    <div class="card-header">
+                        <div><h3>ComfyUI 连接</h3><p>AstrBot 能访问到的 ComfyUI 地址。</p></div>
+                    </div>
+                    <div class="form-grid">
+                        <div class="form-group full-width">
+                            <label for="server_base_url">服务地址</label>
+                            <input type="text" id="server_base_url" class="input-modern" placeholder="http://127.0.0.1:8188" />
+                        </div>
+                        <div class="form-group">
+                            <label for="server_timeout">出图超时（秒）</label>
+                            <input type="number" id="server_timeout" class="input-modern" min="30" />
+                        </div>
+                    </div>
+                </article>
+            </section>
+
+            <!-- 模型 -->
+            <section id="tab-model" class="tab-pane" data-title="模型配置">
+                <article class="card">
+                    <div class="card-header space-between">
+                        <div><h3>模型参与调用开关</h3><p>打开后，该类型模型才参与 LLM 工作流选择。</p></div>
+                        <button data-action="refresh-models" class="btn-secondary" type="button">刷新模型</button>
+                    </div>
+                    <div class="switch-grid">
+                        <div class="setting-row">
+                            <div><h3>Checkpoint</h3><p>底模，出图必选。</p></div>
+                            <label class="switch-wrapper"><input type="checkbox" id="ms_checkpoint" class="ios-switch" /></label>
+                        </div>
+                        <div class="setting-row">
+                            <div><h3>ControlNet</h3><p>姿态/结构控制，需参考图。</p></div>
+                            <label class="switch-wrapper"><input type="checkbox" id="ms_controlnet" class="ios-switch" /></label>
+                        </div>
+                        <div class="setting-row">
+                            <div><h3>VAE</h3><p>解码器，多数底模自带。</p></div>
+                            <label class="switch-wrapper"><input type="checkbox" id="ms_vae" class="ios-switch" /></label>
+                        </div>
+                        <div class="setting-row">
+                            <div><h3>LORA</h3><p>风格/角色微调。</p></div>
+                            <label class="switch-wrapper"><input type="checkbox" id="ms_lora" class="ios-switch" /></label>
+                        </div>
+                    </div>
+                </article>
+            </section>
+
+            <!-- LLM -->
+            <section id="tab-llm" class="tab-pane" data-title="LLM 配置">
+                <article class="card">
+                    <div class="card-header">
+                        <div><h3>LLM 提供商</h3><p>留空则使用 AstrBot 默认 LLM。</p></div>
+                    </div>
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <label for="llm_provider">提供商</label>
+                            <input type="text" id="llm_provider" class="input-modern" placeholder="留空用默认" />
+                        </div>
+                        <div class="form-group">
+                            <label for="llm_model">模型名</label>
+                            <input type="text" id="llm_model" class="input-modern" placeholder="gpt-4o-mini" />
+                        </div>
+                        <div class="form-group full-width">
+                            <label for="llm_base_url">API 地址</label>
+                            <input type="text" id="llm_base_url" class="input-modern" placeholder="https://api.openai.com/v1" />
+                        </div>
+                        <div class="form-group full-width">
+                            <label for="llm_api_key">API Key</label>
+                            <input type="password" id="llm_api_key" class="input-modern" placeholder="sk-..." />
+                        </div>
+                    </div>
+                </article>
+            </section>
+
+            <!-- 出图参数 -->
+            <section id="tab-draw" class="tab-pane" data-title="出图参数">
+                <article class="card">
+                    <div class="card-header"><div><h3>默认出图参数</h3><p>LLM 未指定时使用的默认值。</p></div></div>
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <label for="draw_width">宽度</label>
+                            <input type="number" id="draw_width" class="input-modern" min="64" max="2048" />
+                        </div>
+                        <div class="form-group">
+                            <label for="draw_height">高度</label>
+                            <input type="number" id="draw_height" class="input-modern" min="64" max="2048" />
+                        </div>
+                        <div class="form-group">
+                            <label for="draw_steps">步数</label>
+                            <input type="number" id="draw_steps" class="input-modern" min="1" max="100" />
+                        </div>
+                        <div class="form-group">
+                            <label for="draw_sampler">采样器</label>
+                            <input type="text" id="draw_sampler" class="input-modern" placeholder="euler" />
+                        </div>
+                        <div class="form-group">
+                            <label for="draw_cfg">CFG</label>
+                            <input type="number" id="draw_cfg" class="input-modern" step="0.5" min="1" max="30" />
+                        </div>
+                    </div>
+                    <div class="form-group full-width">
+                        <label for="draw_negative">默认负面提示词</label>
+                        <textarea id="draw_negative" rows="4" class="input-modern"></textarea>
+                    </div>
+                    <div class="setting-row">
+                        <div><h3>群聊出图 @ 触发人</h3><p>在群里出图时艾特发起人。</p></div>
+                        <label class="switch-wrapper"><input type="checkbox" id="out_mention" class="ios-switch" /></label>
+                    </div>
+                </article>
+            </section>
+
+            <!-- 权限 -->
+            <section id="tab-perm" class="tab-pane" data-title="权限控制">
+                <article class="card">
+                    <div class="card-header"><div><h3>权限控制</h3><p>白名单留空表示不限制。</p></div></div>
+                    <div class="form-grid">
+                        <div class="form-group full-width">
+                            <label for="perm_admins">管理员 QQ 号（一行一个）</label>
+                            <textarea id="perm_admins" rows="4" class="input-modern"></textarea>
+                        </div>
+                        <div class="form-group full-width">
+                            <label for="perm_whitelist">用户白名单（留空不限制）</label>
+                            <textarea id="perm_whitelist" rows="4" class="input-modern"></textarea>
+                        </div>
+                        <div class="form-group full-width">
+                            <label for="perm_blacklist">用户黑名单</label>
+                            <textarea id="perm_blacklist" rows="4" class="input-modern"></textarea>
+                        </div>
+                        <div class="form-group">
+                            <label for="perm_daily_limit">每日出图上限（0 不限）</label>
+                            <input type="number" id="perm_daily_limit" class="input-modern" min="0" />
+                        </div>
+                        <div class="form-group">
+                            <label for="perm_cooldown">冷却时间（秒）</label>
+                            <input type="number" id="perm_cooldown" class="input-modern" min="0" />
+                        </div>
+                    </div>
+                </article>
+            </section>
+
+            <!-- 统计 -->
+            <section id="tab-stats" class="tab-pane" data-title="使用统计">
+                <article class="card">
+                    <div class="card-header space-between">
+                        <div><h3>使用统计</h3><p>模型调用次数、用户出图次数与正反向词。</p></div>
+                        <button data-action="refresh-stats" class="btn-secondary" type="button">刷新</button>
+                    </div>
+                    <div id="stats-container"></div>
+                </article>
+            </section>
+        </main>
+    </div>
+
+    <div id="toast-container" aria-live="polite"></div>
+    <script type="module" src="./app.js"></script>
+</body>
+</html>
