@@ -1,3 +1,5 @@
+![:name](https://count.getloli.com/@astrbot_plugin_comfyui_smart?name=astrbot_plugin_comfyui_smart&theme=minecraft&padding=6&offset=0&align=top&scale=1&pixelated=1&darkmode=auto)
+
 # AstrBot ComfyUI 智能绘图插件
 
 让 AstrBot 连接 ComfyUI，用一句自然语言就能出图：**「/画图 一个白裙少女站在樱花树下」** → LLM 自动优化提示词、挑选模型、构建工作流并返回图片。
@@ -89,3 +91,11 @@
 
 **v0.1.0**
 - 第一版测试
+
+
+## 👥 贡献指南
+
+- 🌟 Star 这个项目！（点右上角的星星，感谢支持！）
+- 🐛 提交 Issue 报告问题
+- 💡 提出新功能建议
+- 🔧 提交 Pull Request 改进代码
