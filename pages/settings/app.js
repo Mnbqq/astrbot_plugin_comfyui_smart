@@ -37,6 +37,13 @@ const FIELDS = [
   { id: 'draw_force_vae', path: ['draw_settings', 'force_vae'], kind: 'string' },
   { id: 'draw_negative', path: ['draw_settings', 'default_negative'], kind: 'text' },
 
+  { id: 'hires_enable', path: ['hires', 'enable'], kind: 'bool' },
+  { id: 'hires_scale', path: ['hires', 'scale'], kind: 'float' },
+  { id: 'hires_denoise', path: ['hires', 'denoise'], kind: 'float' },
+  { id: 'hires_steps', path: ['hires', 'steps'], kind: 'int' },
+  { id: 'hires_method', path: ['hires', 'method'], kind: 'select',
+    options: ['bislerp', 'bilinear', 'bicubic', 'area', 'nearest-exact'] },
+
   { id: 'out_mention', path: ['output', 'mention_trigger_user'], kind: 'bool' },
   { id: 'out_show_params', path: ['output', 'show_params'], kind: 'bool' },
   { id: 'out_keep_images', path: ['output', 'keep_images'], kind: 'int' },

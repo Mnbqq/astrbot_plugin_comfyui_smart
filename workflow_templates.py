@@ -798,6 +798,113 @@ def _set_first(inputs: dict, keys: tuple[str, ...], value) -> None:
             return
 
 
+# 潜空间尺寸必须是 8 的倍数（SD 的下采样倍率）
+DIM_ALIGN = 8
+
+# Hires Fix 第二轮的采样参数（从首轮 KSampler 复制过来）
+SAMPLER_COPY_FIELDS = ("model", "positive", "negative", "cfg", "sampler_name", "scheduler")
+
+
+def _new_node_id(graph: dict) -> str:
+    """返回一个未被占用的数字节点 id。"""
+    return str(max((int(k) for k in graph if str(k).isdigit()), default=0) + 1)
+
+
+def add_hires_fix(
+    graph: dict,
+    bindings: dict,
+    *,
+    scale: float = 1.5,
+    denoise: float = 0.5,
+    steps: int = 0,
+    seed: int = 0,
+    upscale_method: str = "bislerp",
+) -> dict:
+    """插入 Hires Fix：首轮采样 → 潜空间放大 → 二次采样重绘。
+
+    这是改善手部、人脸与细节最有效的手段之一。只用核心节点 `LatentUpscale`，
+    不需要额外的放大模型（ESRGAN 之类）。
+
+    结构（原地修改）：
+        EmptyLatent → KSampler → LatentUpscale → KSampler2 → VAEDecode
+
+    Args:
+        graph: 已构建好的工作流（原地修改）。
+        bindings: 模板绑定。
+        scale: 放大倍数。
+        denoise: 第二轮重绘幅度，0.4~0.6 常见；过高会改变构图。
+        steps: 第二轮步数；0 表示沿用首轮步数。
+        seed: 第二轮种子。
+        upscale_method: LatentUpscale 的放大算法。
+
+    Returns:
+        含 hires_sampler / hires_upscale 节点 id 的字典；条件不满足时为空字典。
+    """
+    sampler_id = bindings.get("sampler")
+    if not sampler_id or sampler_id not in graph:
+        return {}
+    first = graph[sampler_id]
+    first_inputs = first.get("inputs") or {}
+
+    # 找出所有消费首轮采样结果的节点（正常是 VAEDecode）
+    consumers = [
+        node_id
+        for node_id, node in graph.items()
+        if isinstance(node.get("inputs"), dict)
+        and node["inputs"].get("samples") == [sampler_id, 0]
+    ]
+    if not consumers:
+        return {}
+
+    # 尺寸取自潜空间节点（缺省则回退 512x512）
+    width = height = 0
+    latent_id = bindings.get("latent")
+    if latent_id and latent_id in graph:
+        latent_inputs = graph[latent_id].get("inputs") or {}
+        width = int(latent_inputs.get("width") or 0)
+        height = int(latent_inputs.get("height") or 0)
+    if width <= 0 or height <= 0:
+        width, height = 512, 512
+    target_w = max(DIM_ALIGN, int(width * float(scale)))
+    target_h = max(DIM_ALIGN, int(height * float(scale)))
+    target_w -= target_w % DIM_ALIGN
+    target_h -= target_h % DIM_ALIGN
+
+    up_id = _new_node_id(graph)
+    second_id = str(int(up_id) + 1)
+    graph[up_id] = {
+        "class_type": "LatentUpscale",
+        "_meta": {"title": "Hires 放大"},
+        "inputs": {
+            "samples": [sampler_id, 0],
+            "upscale_method": upscale_method,
+            "width": target_w,
+            "height": target_h,
+            "crop": "disabled",
+        },
+    }
+
+    second_inputs: dict = {"latent_image": [up_id, 0], "denoise": float(denoise)}
+    for field in SAMPLER_COPY_FIELDS:
+        if field in first_inputs:
+            second_inputs[field] = first_inputs[field]
+    second_inputs["seed"] = int(seed) if seed else first_inputs.get("seed", 0)
+    second_inputs["steps"] = int(steps) if steps and steps > 0 else first_inputs.get("steps", 20)
+
+    graph[second_id] = {
+        "class_type": first.get("class_type", "KSampler"),
+        "_meta": {"title": "Hires 二次采样"},
+        "inputs": second_inputs,
+    }
+
+    # 把消费首轮结果的下游节点改接到第二轮
+    for node_id in consumers:
+        graph[node_id]["inputs"]["samples"] = [second_id, 0]
+
+    return {"hires_sampler": second_id, "hires_upscale": up_id,
+            "width": target_w, "height": target_h}
+
+
 def _apply_vae(graph: dict, vae_name: str) -> None:
     """把独立 VAE 接进图里。
 

@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import re
 import sys
@@ -170,10 +171,11 @@ class AstrBotConfig(dict):
 EVENT_STUB = '''
 class AstrMessageEvent:
     def __init__(self, sender_id="10001", name="tester", message_str="", admin=False,
-                 group_id="20002"):
+                 group_id="20002", message=None):
         self._sender_id = sender_id
         self._name = name
         self.message_str = message_str
+        self.message_obj = type("Obj", (), {"message": list(message or [])})()
         self._admin = admin
         self._group_id = group_id
         self.unified_msg_origin = "test:FriendMessage:10001"
@@ -229,6 +231,8 @@ class Context:
         self.registered_web_apis = []
         self.active_tools = set()
         self._providers = {}
+        self.llm_calls = []
+        self.llm_reply = "{}"
 
     def register_web_api(self, route, handler, methods, desc):
         self.registered_web_apis.append((route, handler, methods, desc))
@@ -245,7 +249,9 @@ class Context:
         return next(iter(self._providers))
 
     async def llm_generate(self, **kw):
-        raise RuntimeError("stub llm_generate must be patched")
+        self.llm_calls.append(kw)
+        text = self.llm_reply
+        return type("Resp", (), {"completion_text": text})()
 
     def activate_llm_tool(self, name):
         self.active_tools.add(name)
@@ -335,12 +341,29 @@ class At:
 
 
 class Image:
-    def __init__(self, path=""):
-        self.path = path
+    """桩：file 里放本地路径，convert_to_file_path 直接返回它。"""
+
+    def __init__(self, path="", file=None):
+        self.path = path or (file or "")
+        self.file = self.path
+        self.url = ""
 
     @classmethod
     def fromFileSystem(cls, path):
         return cls(path)
+
+    async def convert_to_file_path(self):
+        return self.path or None
+
+    async def convert_to_base64(self):
+        return "AAAA"
+
+
+class Reply:
+    """桩：chain 是被引用消息的组件列表。"""
+
+    def __init__(self, chain=None, **kw):
+        self.chain = chain or []
 '''
 
 
@@ -1233,6 +1256,109 @@ def main() -> int:
     check("raw 档下行内 --negative 直接覆盖", raw_inline["negative"] == "只有这句",
           raw_inline["negative"])
 
+    print("\n=== Hires Fix（放大重绘）===")
+    hires_tpl = wt.load_templates(ROOT / "workflows")["sd_checkpoint"]
+    base_graph = hires_tpl.build(
+        positive="1girl", negative="bad hands", model_name="m.safetensors",
+        width=512, height=768, steps=25, cfg=7.0, sampler="dpmpp_2m",
+        scheduler="karras", seed=111)
+    before_nodes = len(base_graph)
+
+    hgraph = copy.deepcopy(base_graph)
+    info = wt.add_hires_fix(hgraph, hires_tpl.bindings, scale=1.5, denoise=0.5, seed=222)
+    wt.validate_graph(hgraph)
+    check("插入了放大与二次采样节点", info.get("hires_upscale") and info.get("hires_sampler"), info)
+    check("节点数 +2", len(hgraph) == before_nodes + 2, f"{before_nodes} → {len(hgraph)}")
+    check("放大后尺寸正确且已对齐 8", (info["width"], info["height"]) == (768, 1152), info)
+    up = hgraph[info["hires_upscale"]]
+    check("LatentUpscale 接在首轮采样之后",
+          up["class_type"] == "LatentUpscale" and up["inputs"]["samples"] == ["5", 0],
+          up["inputs"])
+    second = hgraph[info["hires_sampler"]]
+    check("二次采样读取放大后的潜空间", second["inputs"]["latent_image"] == [info["hires_upscale"], 0])
+    check("二次采样继承了首轮的模型与条件",
+          second["inputs"]["model"] == base_graph["5"]["inputs"]["model"]
+          and second["inputs"]["positive"] == base_graph["5"]["inputs"]["positive"]
+          and second["inputs"]["cfg"] == base_graph["5"]["inputs"]["cfg"], second["inputs"])
+    check("二次采样 denoise < 1（是重绘不是重画）",
+          second["inputs"]["denoise"] == 0.5, second["inputs"]["denoise"])
+    check("二次采样换了新种子", second["inputs"]["seed"] == 222)
+    check("VAEDecode 改接到二次采样",
+          hgraph["6"]["inputs"]["samples"] == [info["hires_sampler"], 0],
+          hgraph["6"]["inputs"]["samples"])
+    self_loops = [(nid, k) for nid, n in hgraph.items()
+                  for k, v in (n.get("inputs") or {}).items()
+                  if isinstance(v, list) and v[0] == nid]
+    check("放大后依然没有自环", not self_loops, self_loops)
+
+    # 边界：结构不支持时不应崩，而是原样返回
+    orphan = {"1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "m"}}}
+    check("模板结构不支持时安全返回空", wt.add_hires_fix(orphan, {"sampler": "1"}, scale=2.0) == {})
+
+    # Flux 模板同样可用
+    flux_tpl = wt.load_templates(ROOT / "workflows")["flux_unet"]
+    fgraph = flux_tpl.build(positive="cat", negative="", model_name="f.safetensors",
+                            vae_name="ae.safetensors", width=1024, height=1024, steps=20,
+                            cfg=1.0, sampler="euler", scheduler="simple", seed=1, guidance=3.5)
+    finfo = wt.add_hires_fix(fgraph, flux_tpl.bindings, scale=1.5, denoise=0.5, seed=9)
+    wt.validate_graph(fgraph)
+    check("Flux 模板也能插入 Hires", finfo.get("hires_sampler") and finfo["width"] == 1536, finfo)
+
+    # 端到端：配置与行内参数
+    def capture_result(desc, opts, cfg_hires):
+        sess = api.aiohttp.ClientSession()
+        sess.route("GET", "/models", api.aiohttp.ClientResponse(200, payload=["checkpoints"]))
+        sess.route("GET", "/models/checkpoints", api.aiohttp.ClientResponse(
+            200, payload=["SDXL/m.safetensors"]))
+        sess.route("POST", "/prompt", api.aiohttp.ClientResponse(200, payload={"prompt_id": "h-1"}))
+        sess.route("GET", "/queue", api.aiohttp.ClientResponse(
+            200, payload={"queue_running": [], "queue_pending": []}))
+        sess.route("GET", "/history/h-1", api.aiohttp.ClientResponse(200, payload={"h-1": {
+            "status": {"status_str": "success", "completed": True},
+            "outputs": {"7": {"images": [{"filename": "h.png", "type": "output"}]}}}}))
+        sess.route("GET", "/view", api.aiohttp.ClientResponse(200, text="PNG"))
+        plugin.comfy._session = sess
+        plugin.comfy.invalidate_model_cache()
+        plugin.config["hires"] = cfg_hires
+        res = asyncio.run(plugin.generate(user_desc=desc, opts=opts))
+        for method, path, kw in sess.calls:
+            if method == "POST" and path == "/prompt":
+                return res, kw["json"]["prompt"]
+        return res, {}
+
+    plugin.config["draw_settings"] = {"default_negative": "lowres"}
+    plugin.llm.optimize_prompt = asyncio.run(make_opt(0, 0))
+
+    res_off, g_off = capture_result("少女", {}, {"enable": False, "scale": 1.5})
+    check("默认关闭时不插入 Hires", not res_off.get("hires") and len(g_off) == 7,
+          (res_off.get("hires"), len(g_off)))
+
+    res_on, g_on = capture_result("少女", {}, {"enable": True, "scale": 1.5, "denoise": 0.5})
+    check("配置开启后插入 Hires 且报最终尺寸",
+          res_on.get("hires") and res_on["width"] > 512, (res_on.get("hires"), res_on["width"]))
+
+    res_inline, _ = capture_result("少女", {"hires": "2.0"}, {"enable": False})
+    # mock 用的是 SDXL 模型（基准 1024x1024），2 倍即 2048
+    check("行内 --hires 2.0 对单次生效",
+          res_inline.get("hires") and res_inline["width"] == 2048, res_inline.get("width"))
+
+    res_zero, g_zero = capture_result("少女", {"hires": "0"}, {"enable": True, "scale": 1.5})
+    check("行内 --hires 0 对单次关闭",
+          not res_zero.get("hires") and len(g_zero) == 7, (res_zero.get("hires"), len(g_zero)))
+
+    res_dn, g_dn = capture_result("少女", {"hires": "1.5", "hires_denoise": "0.35"},
+                                  {"enable": False})
+    second_nodes = [n for n in g_dn.values() if n.get("class_type") == "KSampler"]
+    check("行内 --hires-denoise 生效",
+          len(second_nodes) == 2 and second_nodes[-1]["inputs"]["denoise"] == 0.35,
+          [n["inputs"].get("denoise") for n in second_nodes])
+
+    res_hs, g_hs = capture_result("少女", {"hires": "1.5", "hires_steps": "12"}, {"enable": False})
+    second_nodes2 = [n for n in g_hs.values() if n.get("class_type") == "KSampler"]
+    check("行内 --hires-steps 生效",
+          len(second_nodes2) == 2 and second_nodes2[-1]["inputs"]["steps"] == 12,
+          [n["inputs"].get("steps") for n in second_nodes2])
+
     print("\n=== 画廊详情：参数落盘 + 界面字段一致性 ===")
     # 界面字段一致性：弹窗里展示的参数名必须都是后端真的会写的
     import re as _re
@@ -1291,6 +1417,102 @@ def main() -> int:
             check("弹窗展示的参数后端都会写入（避免永远显示空白）", not missing, missing or "全部对齐")
             uncovered = sorted(written - ui_keys)
             check("后端记录的参数界面都能看到", not uncovered, uncovered or "全部展示")
+
+    print("\n=== 反推提示词（看图 → 提示词）===")
+    check("解析带代码块的 JSON", llm.parse_reverse_result(
+        '```json\n{"positive":"1girl, kimono","negative":"bad hands","summary":"和服少女"}\n```'
+    )["positive"] == "1girl, kimono")
+    check("解析夹杂说明文字的 JSON", llm.parse_reverse_result(
+        '好的：{"positive":"a","negative":"b","summary":"c"} 完成'
+    )["negative"] == "b")
+    bad = llm.parse_reverse_result("完全不是 JSON")
+    check("非 JSON 不崩且标记失败", bad["raw_ok"] is False and bad["positive"] == "")
+
+    from astrbot.api.event import AstrMessageEvent
+    from astrbot.api.message_components import Image as StubImage
+    from astrbot.api.message_components import Reply as StubReply
+
+    async def collect(message):
+        return await plugin._collect_images(AstrMessageEvent(message=message))
+
+    check("能从当前消息取到图片",
+          asyncio.run(collect([StubImage("/tmp/a.png")])) == ["/tmp/a.png"])
+    check("能从引用消息里取到图片",
+          asyncio.run(collect([StubReply(chain=[StubImage("/tmp/quoted.png")])]))
+          == ["/tmp/quoted.png"])
+    check("纯文字消息取不到图片", asyncio.run(collect([])) == [])
+    check("重复图片会去重",
+          len(asyncio.run(collect([StubImage("/tmp/a.png"), StubImage("/tmp/a.png")]))) == 1)
+
+    # 启用一个假的 LLM provider
+    async def enable_llm(reply):
+        ctx._providers = {"fake": object()}
+        ctx.llm_reply = reply
+        ctx.llm_calls = []
+
+    async def drive(agen):
+        return [item async for item in agen]
+
+    asyncio.run(enable_llm('{"positive":"1girl, kimono, cherry blossoms","negative":"bad hands",'
+                           '"summary":"一位穿和服的少女"}'))
+
+    # 没有图片时给出用法而不是报错
+    ev_none = AstrMessageEvent(message_str="/反推")
+    out_none = asyncio.run(drive(plugin.cmd_reverse_prompt(ev_none)))
+    check("/反推 没有图片时给出用法提示",
+          "用法" in out_none[0]["text"] and "反推" in out_none[0]["text"],
+          out_none[0]["text"][:40])
+
+    # 带图片：应把图片作为 image_urls 传给 LLM
+    ev_img = AstrMessageEvent(message_str="/反推", message=[StubImage("/tmp/pic.png")])
+    out_img = asyncio.run(drive(plugin.cmd_reverse_prompt(ev_img)))
+    text_all = "\n".join(x["text"] for x in out_img)
+    check("反推结果里带出正向提示词", "1girl, kimono" in text_all, text_all[:60])
+    check("反推结果里带出画面概括", "和服的少女" in text_all)
+    check("反推结果里带出建议负面词", "bad hands" in text_all)
+    check("图片确实作为 image_urls 传给了 LLM",
+          ctx.llm_calls and ctx.llm_calls[-1].get("image_urls") == ["/tmp/pic.png"],
+          ctx.llm_calls[-1].get("image_urls") if ctx.llm_calls else None)
+
+    # --画：反推后直接出图，且不再让 LLM 改写提示词
+    def fresh_ok_session(pid="rev-1"):
+        sess = api.aiohttp.ClientSession()
+        sess.route("GET", "/models", api.aiohttp.ClientResponse(200, payload=["checkpoints"]))
+        sess.route("GET", "/models/checkpoints", api.aiohttp.ClientResponse(
+            200, payload=["SDXL/m.safetensors"]))
+        sess.route("POST", "/prompt", api.aiohttp.ClientResponse(200, payload={"prompt_id": pid}))
+        sess.route("GET", "/queue", api.aiohttp.ClientResponse(
+            200, payload={"queue_running": [], "queue_pending": []}))
+        sess.route("GET", f"/history/{pid}", api.aiohttp.ClientResponse(200, payload={pid: {
+            "status": {"status_str": "success", "completed": True},
+            "outputs": {"7": {"images": [{"filename": "rev.png", "type": "output"}]}}}}))
+        sess.route("GET", "/view", api.aiohttp.ClientResponse(200, text="PNG"))
+        plugin.comfy._session = sess
+        plugin.comfy.invalidate_model_cache()
+        return sess
+
+    sess = fresh_ok_session()
+    asyncio.run(enable_llm('{"positive":"1girl, kimono, cherry blossoms","negative":"bad words",'
+                           '"summary":"和服少女"}'))
+    plugin.config["draw_settings"] = {"default_negative": "lowres"}
+    plugin.config["llm_settings"] = {"enable_prompt_optimize": True}
+    ev_draw = AstrMessageEvent(message_str="/反推 --画", message=[StubImage("/tmp/pic.png")])
+    out_draw = asyncio.run(drive(plugin.cmd_reverse_prompt(ev_draw)))
+    submitted = None
+    for method, path, kw in sess.calls:
+        if method == "POST" and path == "/prompt":
+            submitted = kw["json"]["prompt"]
+    check("--画 会真的提交出图任务", submitted is not None)
+    check("提交的正向提示词就是反推结果（没有被 LLM 二次改写）",
+          submitted is not None and submitted["2"]["inputs"]["text"].startswith("1girl, kimono"),
+          submitted["2"]["inputs"]["text"][:50] if submitted else None)
+    check("反推只调用了一次 LLM（没有再做提示词优化）", len(ctx.llm_calls) == 1,
+          len(ctx.llm_calls))
+    check("出图结果发给了用户",
+          any(x.get("type") == "chain" for x in out_draw), [x.get("type") for x in out_draw])
+
+    ctx._providers = {}
+    plugin.config["llm_settings"] = {"enable_prompt_optimize": False}
 
     print("\n=== 死代码守卫（写了却从没接上的函数）===")
     # 这次事故的根因就是 register_pages_routes 定义完整却从未被调用。
