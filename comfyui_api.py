@@ -13,6 +13,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import mimetypes
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -90,6 +92,15 @@ LEGACY_FOLDERS = {
     "clip_gguf": "text_encoders",
 }
 DEFAULT_FOLDERS = ("checkpoints", "diffusion_models", "loras", "vae", "text_encoders")
+
+# 这些输入的取值由节点自己的 VALIDATE_INPUTS 校验（ComfyUI 会跳过标准下拉校验），
+# 并且允许写子目录路径（如 "astrbot/xxx.png"）。本地预检不能拿 /object_info 的下拉列表去卡，
+# 否则会把完全合法的请求误判为错误 —— 实测 LoadImage 就是这种（子目录引用可以正常出图）。
+SELF_VALIDATED_PATH_INPUTS = frozenset({
+    ("LoadImage", "image"),
+    ("LoadImageMask", "image"),
+    ("LoadImageOutput", "image"),
+})
 
 
 class ComfyUIError(RuntimeError):
@@ -204,6 +215,9 @@ def validate_graph_locally(graph: dict, specs: dict) -> list[str]:
             spec_entry = required[key]
             options = _combo_options(spec_entry)
             if options is not None:
+                # 自校验的路径型输入：跳过下拉校验，交给服务端
+                if (class_type, key) in SELF_VALIDATED_PATH_INPUTS:
+                    continue
                 if value not in options:
                     sample = "、".join(str(o) for o in options[:6])
                     suffix = f" 等 {len(options)} 项" if len(options) > 6 else ""
@@ -409,6 +423,67 @@ class ComfyUI:
         if isinstance(system, dict):
             return str(system.get("comfyui_version") or "")
         return ""
+
+    async def upload_image(
+        self,
+        image_path,
+        *,
+        subfolder: str = "astrbot",
+        overwrite: bool = True,
+    ) -> str:
+        """把本地图片上传到 ComfyUI 的 input 目录，返回可填进 LoadImage 的引用。
+
+        用子目录存放，避免污染用户的 input 根目录；`LoadImage` 接受
+        `subfolder/name` 形式的引用（已实测）。
+
+        Args:
+            image_path: 本地图片路径。
+            subfolder: input 下的子目录；空串表示根目录。
+            overwrite: 同名文件是否覆盖。
+
+        Returns:
+            形如 `astrbot/xxx.png` 的引用（无子目录时为 `xxx.png`）。
+
+        Raises:
+            ComfyUIError: 读取或上传失败。
+        """
+        path = Path(image_path)
+        try:
+            raw = path.read_bytes()
+        except OSError as e:
+            raise ComfyUIError(f"读取待上传的图片失败：{e}") from e
+
+        session = await self._get_session()
+        form = aiohttp.FormData()
+        form.add_field(
+            "image",
+            raw,
+            filename=path.name,
+            content_type=mimetypes.guess_type(path.name)[0] or "image/png",
+        )
+        form.add_field("type", "input")
+        form.add_field("overwrite", "true" if overwrite else "false")
+        if subfolder:
+            form.add_field("subfolder", subfolder)
+
+        try:
+            async with session.post(f"{self.base_url}/upload/image", data=form) as resp:
+                text = await resp.text()
+                if resp.status >= 400:
+                    raise ComfyUIError(
+                        f"上传图片到 ComfyUI 失败（HTTP {resp.status}）：{_shorten(text)}"
+                    )
+                data = json.loads(text) if text.strip() else {}
+        except aiohttp.ClientError as e:
+            raise ComfyUIError(f"无法连接 ComfyUI 上传图片：{e}") from e
+        except json.JSONDecodeError as e:
+            raise ComfyUIError(f"ComfyUI 上传接口返回了非 JSON 内容：{_shorten(text)}") from e
+
+        name = str(data.get("name") or "")
+        if not name:
+            raise ComfyUIError(f"ComfyUI 未返回上传后的文件名：{_shorten(text)}")
+        sub = str(data.get("subfolder") or "")
+        return f"{sub}/{name}" if sub else name
 
     async def precheck(self, graph: dict) -> list[str]:
         """提交前用服务端自己的输入约束做本地校验。

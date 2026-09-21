@@ -175,6 +175,29 @@
           </div>
         </article>
         <article class="card">
+          <div class="card-header"><div><h3>图生图（以图为底重绘）</h3><p>把图发给机器人并带上描述，就会以这张图为底重绘；也可以直接发图给 /图生图（别名 /改图）。</p></div></div>
+          <div class="setting-row">
+            <div><h3>在 /画图 里带图时自动走图生图</h3><p>关闭后带图也按文生图处理，仍可用 /图生图 显式调用。</p></div>
+            <label class="switch-wrapper"><input type="checkbox" id="i2i_enable" class="ios-switch" /></label>
+          </div>
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="i2i_denoise">默认重绘幅度</label>
+              <input type="number" id="i2i_denoise" class="input-modern" step="0.05" min="0.05" max="1" />
+            </div>
+            <div class="form-group">
+              <label for="i2i_max_side">输入图最长边上限（像素，0 不限）</label>
+              <input type="number" id="i2i_max_side" class="input-modern" min="0" />
+            </div>
+            <div class="form-group">
+              <label for="i2i_subfolder">上传到 ComfyUI 的子目录</label>
+              <input type="text" id="i2i_subfolder" class="input-modern" placeholder="astrbot" />
+            </div>
+          </div>
+          <p class="field-hint">重绘幅度：<code>--denoise 0.3</code> 只修细节、<code>0.6</code>（默认）改画风、<code>0.8+</code> 接近重画。目标尺寸按原图比例计算，并对齐到 8 的倍数。</p>
+        </article>
+
+        <article class="card">
           <div class="card-header"><div><h3>Hires Fix（放大重绘）</h3><p>先出小图，再放大重绘一遍。改善手部、人脸与细节最有效的手段之一，代价是出图时间大致翻倍。</p></div></div>
           <div class="setting-row">
             <div><h3>启用 Hires Fix</h3><p>也可以对单次生效：<code>/画图 描述 --hires 1.5</code>；单次关闭用 <code>--hires 0</code>。</p></div>

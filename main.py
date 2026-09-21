@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import random
+import struct
 import re
 import time
 from pathlib import Path
@@ -32,7 +33,7 @@ from .workflow_templates import (
 
 PLUGIN_NAME = "astrbot_plugin_comfyui_smart"
 # 与 metadata.yaml 的 version 保持一致（tests/test_logic.py 会校验二者不漂移）
-PLUGIN_VERSION = "0.5.0"
+PLUGIN_VERSION = "0.6.0"
 PLUGIN_DIR = Path(__file__).resolve().parent
 BUILTIN_TEMPLATE_DIR = PLUGIN_DIR / "workflows"
 
@@ -48,6 +49,7 @@ PARAM_ALIASES = {
     "batch": "batch", "批次": "batch",
     "sampler": "sampler", "采样器": "sampler",
     "hires": "hires", "放大": "hires", "hires-denoise": "hires_denoise",
+    "denoise": "denoise", "重绘": "denoise",
     "draw": "draw", "画": "draw",
     "hires-steps": "hires_steps",
     "lora": "lora", "模型": "model", "model": "model",
@@ -427,7 +429,7 @@ class ComfyUISmartPlugin(Star):
     # 出图核心
     # ------------------------------------------------------------------ #
     async def _resolve_selection(
-        self, catalog: dict[str, list[str]], opt: dict, opts: dict
+        self, catalog: dict[str, list[str]], opt: dict, opts: dict, purpose: str = "t2i"
     ) -> dict:
         """校验 LLM（或用户）选定的模型是否真实存在，并挑出模板。
 
@@ -435,6 +437,7 @@ class ComfyUISmartPlugin(Star):
             catalog: 真实模型清单。
             opt: LLM 返回的选型结果。
             opts: 用户行内参数。
+            purpose: t2i（文生图）或 i2i（图生图）。
 
         Returns:
             {"model":..., "folder":..., "lora":..., "vae":..., "template":..., "arch":...}
@@ -494,8 +497,13 @@ class ComfyUISmartPlugin(Star):
             model_folder=folder,
             available_nodes=available,
             arch_override=arch_override,
+            purpose=purpose,
         )
         if template is None:
+            if purpose == "i2i":
+                raise ComfyUIError(
+                    "没有可用的图生图模板。请确认插件 workflows 目录里有 img2img_checkpoint.json"
+                )
             if folder == "diffusion_models" and arch != "flux":
                 raise ComfyUIError(
                     f"模型 {model} 位于 diffusion_models 目录，但它被识别为 {arch} 架构，"
@@ -638,6 +646,7 @@ class ComfyUISmartPlugin(Star):
         event: AstrMessageEvent | None = None,
         on_queued=None,
         preset: dict | None = None,
+        source_image: str = "",
     ) -> dict:
         """完整出图流程：选型 → 建图 → 提交 → 等待 → 下载。
 
@@ -647,6 +656,7 @@ class ComfyUISmartPlugin(Star):
             event: 消息事件，用于 LLM 会话级 provider 与统计。
             on_queued: 排队提示回调。
             preset: 现成的提示词（如反推结果），给了就跳过 LLM 改写。
+            source_image: 图生图的输入图本地路径；给了就走图生图模板。
 
         Returns:
             {"images": [Path...], "template": str, "model": str, "lora": str,
@@ -704,9 +714,43 @@ class ComfyUISmartPlugin(Star):
         else:
             llm_note = "（提示词优化已关闭，直接使用你的原话）"
 
-        selection = await self._resolve_selection(catalog, opt, opts)
+        # 图生图：先把输入图上传到 ComfyUI，拿到 LoadImage 能用的引用
+        purpose = "i2i" if source_image else "t2i"
+        image_ref = ""
+        if purpose == "i2i":
+            i2i_sub = str((self.config.get("i2i", {}) or {}).get("subfolder") or "astrbot").strip()
+            image_ref = await self.comfy.upload_image(source_image, subfolder=i2i_sub)
+
+        selection = await self._resolve_selection(catalog, opt, opts, purpose=purpose)
         template: WorkflowTemplate = selection["template"]
         sampling = self._resolve_sampling(selection["arch"], opt, opts, draw_conf)
+
+        # 图生图：尺寸按原图比例（受 max_side 限制），重绘幅度可调
+        denoise = None
+        if purpose == "i2i":
+            i2i_conf = self.config.get("i2i", {}) or {}
+            try:
+                denoise = float(i2i_conf.get("denoise", 0.6) or 0.6)
+            except (TypeError, ValueError):
+                denoise = 0.6
+            if opts.get("denoise") not in (None, ""):
+                try:
+                    denoise = min(1.0, max(0.05, float(opts["denoise"])))
+                except (TypeError, ValueError):
+                    pass
+            try:
+                max_side = int(i2i_conf.get("max_side", 1536) or 0)
+            except (TypeError, ValueError):
+                max_side = 1536
+            source_size = read_image_size(source_image)
+            if source_size:
+                sampling["width"], sampling["height"] = fit_to_limit(
+                    source_size[0], source_size[1], max_side
+                )
+            self.logger.info(
+                "图生图｜输入 %s｜目标 %sx%s｜denoise %s",
+                image_ref, sampling["width"], sampling["height"], denoise,
+            )
         profile = arch_profile(selection["arch"])
 
         # 正向：按架构补质量词（SD1.5 系模型不加质量词出图会明显发糊）
@@ -783,6 +827,8 @@ class ComfyUISmartPlugin(Star):
             lora_strength=lora_strength,
             seed=seed,
             filename_prefix="astrbot_smart",
+            denoise=denoise,
+            image_name=image_ref,
             **sampling,
         )
 
@@ -847,15 +893,15 @@ class ComfyUISmartPlugin(Star):
             else:
                 self.logger.warning("Hires Fix 未能插入（模板结构不支持），本次按普通出图处理")
 
-        # 提交前用服务端自己的输入约束做本地预检：
-        # 万一 ComfyUI 回一个不带任何节点级原因的「failed validation」，这里能先拦住
+        # 提交前用服务端自己的输入约束做一次本地预检。
+        # 注意：这里**只做诊断、不做拦截**。有些节点用 VALIDATE_INPUTS 自己校验输入
+        # （典型是 LoadImage，允许写 "子目录/文件名"），拿 /object_info 的下拉列表去卡
+        # 会把合法请求误杀。服务端始终是最终裁判；预检结论在服务端拒绝时一并给出，
+        # 正好补上「ComfyUI 只回一句 failed validation、不给节点级原因」的场景。
         problems = await self.comfy.precheck(graph)
         if problems:
-            path = self._dump_failed_graph(graph, "本地预检未通过")
-            raise ComfyUIError(
-                "提交前的本地校验未通过（按你 ComfyUI 的输入约束检查）：\n"
-                + "\n".join(f"　· {p}" for p in problems)
-                + f"\n　· 本次工作流已保存到 {path}"
+            self.logger.warning(
+                "提交前预检发现问题（仍会提交，由服务端裁决）：%s", "；".join(problems)
             )
 
         started = time.time()
@@ -871,7 +917,13 @@ class ComfyUISmartPlugin(Star):
                 len(positive), template.name, selection["model"],
                 selection["lora"] or "无", path,
             )
-            raise ComfyUIError(f"{e}\n　· 本次工作流已保存到 {path}，可据此排查") from e
+            detail = f"{e}\n　· 本次工作流已保存到 {path}，可据此排查"
+            if problems:
+                # 服务端没给节点级原因时，预检结论就是最有用的线索
+                detail += "\n　· 本地预检发现（供参考）：\n" + "\n".join(
+                    f"　　- {item}" for item in problems
+                )
+            raise ComfyUIError(detail) from e
         self._active_jobs.add(prompt_id)
         try:
             images = await self.comfy.wait_for_images(
@@ -898,6 +950,8 @@ class ComfyUISmartPlugin(Star):
             "prompt_note": prompt_note,
             "hires": hires_info,
             "hires_note": hires_note,
+            "i2i": bool(image_ref),
+            "denoise": denoise if denoise is not None else 1.0,
             "seconds": time.time() - started,
             # 有 Hires 时对外报最终尺寸，消息与画廊显示的才是真实产物尺寸
             "width": hires_info.get("width", sampling["width"]),
@@ -930,7 +984,19 @@ class ComfyUISmartPlugin(Star):
             )
             return
 
-        yield event.plain_result("🎨 收到灵感，正在分析并生成…")
+        # 带了图片就走图生图（可在配置里关掉）
+        source_image = ""
+        images = await self._collect_images(event)
+        if images:
+            if bool((self.config.get("i2i", {}) or {}).get("enable", True)):
+                source_image = images[0]
+            else:
+                yield event.plain_result("ℹ️ 检测到图片，但图生图已在配置里关闭，本次按文生图处理")
+
+        yield event.plain_result(
+            "🖼 收到图片，正在按你的描述重绘…" if source_image
+            else "🎨 收到灵感，正在分析并生成…"
+        )
 
         async def _notify_queue(status):
             await event.send(
@@ -942,7 +1008,11 @@ class ComfyUISmartPlugin(Star):
 
         try:
             result = await self.generate(
-                user_desc=desc, opts=opts, event=event, on_queued=_notify_queue
+                user_desc=desc,
+                opts=opts,
+                event=event,
+                on_queued=_notify_queue,
+                source_image=source_image,
             )
         except (ComfyUIError, TemplateError) as e:
             self.logger.warning("出图失败：%s", e)
@@ -1089,6 +1159,8 @@ class ComfyUISmartPlugin(Star):
                 detail += f"\n🎯 LoRA：{result['lora']}"
             if result.get("llm_note"):
                 detail += f"\nℹ️ {result['llm_note']}"
+            if result.get("i2i"):
+                detail += f"\n🖼 图生图：重绘幅度 {result.get('denoise', 0.6)}"
             if result.get("hires"):
                 detail += "\n🔍 Hires Fix：放大后二次重绘"
             if result.get("hires_note"):
@@ -1168,6 +1240,68 @@ class ComfyUISmartPlugin(Star):
         lines.append(f"　模板：{len(self.templates)} 个")
         lines.append(f"　配置页 API：{'已注册' if self.pages_ready else '❌ 注册失败，请查看日志'}")
         yield event.plain_result("\n".join(lines))
+
+    @filter.command("图生图", alias={"改图", "i2i", "重绘"})
+    async def cmd_img2img(self, event: AstrMessageEvent):
+        """以一张图为底，按描述重绘。"""
+        uid = str(event.get_sender_id())
+        is_admin = bool(event.is_admin())
+        allowed, reason = await self.permission.check(
+            uid, is_admin=is_admin, storage=self.storage
+        )
+        if not allowed:
+            yield event.plain_result(reason)
+            return
+
+        raw = _extract_command_payload(event, "图生图", "改图", "i2i", "重绘")
+        desc, opts = parse_inline_params(raw)
+
+        images = await self._collect_images(event)
+        if not images:
+            yield event.plain_result(
+                "🖼 用法：把图片和 /图生图 一起发，或者回复一张图片再发\n"
+                "　　/图生图 改成冬天，围上红色围巾\n"
+                "　　/图生图 换成赛博朋克风格 --denoise 0.7\n"
+                "　　/图生图 只修细节 --denoise 0.3\n"
+                "重绘幅度 --denoise：0.3 微调、0.5~0.6 改风格、0.8+ 接近重画（默认 0.6）"
+            )
+            return
+        if not desc:
+            yield event.plain_result(
+                "🖼 请说明想怎么改，例如：/图生图 改成冬天，围上红色围巾\n"
+                "（如果想保留原图不动只做细节修补，用 --denoise 0.3）"
+            )
+            return
+
+        yield event.plain_result("🖼 正在按你的描述重绘…")
+
+        async def _notify_queue(status):
+            await event.send(
+                event.plain_result(
+                    f"⏳ 已提交，队列第 {min(status.own_positions.values() or [1])} 位"
+                    f"（前方 {status.tasks_ahead} 个任务）"
+                )
+            )
+
+        try:
+            result = await self.generate(
+                user_desc=desc,
+                opts=opts,
+                event=event,
+                on_queued=_notify_queue,
+                source_image=images[0],
+            )
+        except (ComfyUIError, TemplateError) as e:
+            self.logger.warning("图生图失败：%s", e)
+            yield event.plain_result(f"💥 出图失败：{e}")
+            return
+        except RuntimeError as e:
+            yield event.plain_result(f"💥 {e}")
+            return
+
+        await self.permission.record(uid, is_admin=is_admin, storage=self.storage)
+        await self._record_generation(uid, event, result)
+        yield event.chain_result(self._compose_result_chain(event, uid, result))
 
     @filter.command("反推", alias={"反推提示词", "识图", "img2prompt"})
     async def cmd_reverse_prompt(self, event: AstrMessageEvent):
@@ -1287,6 +1421,7 @@ class ComfyUISmartPlugin(Star):
             "　行内参数：16:9 / --size 1024x1536 / --seed 42\n"
             "　　　　　　--steps 30 / --cfg 6 / --lora 名字:0.8\n"
             "　　　　　　--model 关键词 / --batch 2 / --negative \"...\"\n"
+            "/图生图　　以图为底按描述重绘（别名 /改图，--denoise 控制幅度）\n"
             "/反推　　　看图反推提示词（发图或回复图片，加 --画 直接出图）\n"
             "/模型列表　查看可用模型\n"
             "/模板列表　查看工作流模板（可放自定义模板）\n"
@@ -1400,6 +1535,84 @@ def tag_weight(tag: str) -> float:
     for char in text[:depth]:
         weight *= 1.1 if char == "(" else 0.9
     return weight
+
+
+def read_image_size(path: str) -> tuple[int, int] | None:
+    """读取图片尺寸，不依赖 Pillow。
+
+    只解析文件头，覆盖 PNG / GIF / BMP / WebP(VP8X) / JPEG。
+    图生图需要按原图比例决定目标尺寸，为此引入 Pillow 不划算。
+
+    Args:
+        path: 本地图片路径。
+
+    Returns:
+        (宽, 高)；无法识别时返回 None。
+    """
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(32)
+            if len(head) < 12:
+                return None
+            if head[:8] == b"\x89PNG\r\n\x1a\n":
+                width, height = struct.unpack(">II", head[16:24])
+                return int(width), int(height)
+            if head[:3] == b"GIF":
+                width, height = struct.unpack("<HH", head[6:10])
+                return int(width), int(height)
+            if head[:2] == b"BM":
+                width, height = struct.unpack("<ii", head[18:26])
+                return abs(int(width)), abs(int(height))
+            if head[:4] == b"RIFF" and head[8:12] == b"WEBP" and head[12:16] == b"VP8X":
+                width = int.from_bytes(head[24:27], "little") + 1
+                height = int.from_bytes(head[27:30], "little") + 1
+                return width, height
+            if head[:2] == b"\xff\xd8":
+                # JPEG：逐段查找 SOFn（帧起始）拿尺寸
+                handle.seek(2)
+                while True:
+                    byte = handle.read(1)
+                    while byte and byte != b"\xff":
+                        byte = handle.read(1)
+                    marker = handle.read(1)
+                    while marker == b"\xff":
+                        marker = handle.read(1)
+                    if not marker:
+                        return None
+                    if marker[0] in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6,
+                                     0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+                        handle.read(3)
+                        height, width = struct.unpack(">HH", handle.read(4))
+                        return int(width), int(height)
+                    length = handle.read(2)
+                    if len(length) < 2:
+                        return None
+                    handle.seek(struct.unpack(">H", length)[0] - 2, 1)
+    except (OSError, struct.error, ValueError):
+        return None
+    return None
+
+
+def fit_to_limit(width: int, height: int, max_side: int) -> tuple[int, int]:
+    """把尺寸等比缩到最长边不超过 max_side，并对齐到 8 的倍数。
+
+    Args:
+        width: 原宽。
+        height: 原高。
+        max_side: 最长边上限；<=0 表示不限制。
+
+    Returns:
+        (宽, 高)。
+    """
+    if width <= 0 or height <= 0:
+        return width, height
+    if max_side and max_side > 0 and max(width, height) > max_side:
+        ratio = float(max_side) / max(width, height)
+        width = max(DIM_ALIGN, int(width * ratio))
+        height = max(DIM_ALIGN, int(height * ratio))
+    width = max(DIM_ALIGN, width - width % DIM_ALIGN)
+    height = max(DIM_ALIGN, height - height % DIM_ALIGN)
+    return width, height
 
 
 def merge_tags(*chunks: str) -> str:

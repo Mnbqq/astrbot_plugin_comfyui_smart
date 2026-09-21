@@ -37,6 +37,11 @@ const FIELDS = [
   { id: 'draw_force_vae', path: ['draw_settings', 'force_vae'], kind: 'string' },
   { id: 'draw_negative', path: ['draw_settings', 'default_negative'], kind: 'text' },
 
+  { id: 'i2i_enable', path: ['i2i', 'enable'], kind: 'bool' },
+  { id: 'i2i_denoise', path: ['i2i', 'denoise'], kind: 'float' },
+  { id: 'i2i_max_side', path: ['i2i', 'max_side'], kind: 'int' },
+  { id: 'i2i_subfolder', path: ['i2i', 'subfolder'], kind: 'string' },
+
   { id: 'hires_enable', path: ['hires', 'enable'], kind: 'bool' },
   { id: 'hires_scale', path: ['hires', 'scale'], kind: 'float' },
   { id: 'hires_denoise', path: ['hires', 'denoise'], kind: 'float' },

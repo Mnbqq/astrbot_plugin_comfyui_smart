@@ -166,6 +166,36 @@
       }
     }
   },
+  "i2i": {
+    "description": "图生图（以你发的图为底，按描述重绘）",
+    "type": "object",
+    "items": {
+      "enable": {
+        "description": "在 /画图 里带图时自动走图生图",
+        "type": "bool",
+        "hint": "关闭后带图也按文生图处理；仍可用 /图生图 显式调用。",
+        "default": true
+      },
+      "denoise": {
+        "description": "默认重绘幅度",
+        "type": "float",
+        "hint": "0.3 微调细节、0.5~0.6 改画风、0.8 以上接近重画。行内 --denoise 可对单次覆盖。",
+        "default": 0.6
+      },
+      "max_side": {
+        "description": "输入图最长边上限（像素）",
+        "type": "int",
+        "hint": "超出会等比缩小，避免大图把显存打满；0 表示不限制。",
+        "default": 1536
+      },
+      "subfolder": {
+        "description": "上传到 ComfyUI input 的子目录",
+        "type": "string",
+        "hint": "默认放在 input/astrbot 下，不污染你的 input 根目录。",
+        "default": "astrbot"
+      }
+    }
+  },
   "output": {
     "description": "结果发送与图片保留",
     "type": "object",

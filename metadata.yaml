@@ -5,7 +5,7 @@ desc: >-
   将 AstrBot 连接到 ComfyUI：一句中文描述即可出图。插件会识别你 ComfyUI 里真实的模型与节点能力，
   自动选择 Checkpoint / LoRA / VAE，并为 SD1.5 / SDXL / Pony / Flux 等不同架构匹配正确的工作流模板、
   分辨率与采样参数。支持自定义 API 格式工作流模板、权限与配额控制、出图统计与画廊。
-version: "0.5.0"
+version: "0.6.0"
 author: Mnbqq
 repo: "https://github.com/Mnbqq/astrbot_plugin_comfyui_smart"
 # 下界由 tests/check_api_surface.py 实测确定：
