@@ -1,6 +1,6 @@
 {
   "server": {
-    "description": "ComfyUI 服务配置",
+    "description": "ComfyUI 服务",
     "type": "object",
     "items": {
       "base_url": {
@@ -11,102 +11,128 @@
         "default": "http://127.0.0.1:8188"
       },
       "timeout": {
-        "description": "出图超时时间（秒）",
+        "description": "出图等待上限（秒）",
         "type": "int",
-        "default": 120
-      }
-    }
-  },
-  "model_switch": {
-    "description": "模型参与调用开关（打开才参与 LLM 工作流选择）",
-    "type": "object",
-    "items": {
-      "checkpoint": {
-        "description": "Checkpoint 参与调用",
-        "type": "bool",
-        "default": true
+        "hint": "不含排队时间。队列前方还有任务时会自动延长等待。",
+        "default": 180
       },
-      "controlnet": {
-        "description": "ControlNet 参与调用",
-        "type": "bool",
-        "default": false
+      "poll_interval": {
+        "description": "进度轮询间隔（秒）",
+        "type": "float",
+        "default": 1.5
       },
-      "vae": {
-        "description": "VAE 参与调用",
-        "type": "bool",
-        "default": false
-      },
-      "lora": {
-        "description": "LORA 参与调用",
-        "type": "bool",
-        "default": false
+      "max_tasks_ahead": {
+        "description": "排队补偿上限（前方任务数）",
+        "type": "int",
+        "hint": "每个前方任务额外补偿 60 秒，此值限制最多按多少个任务计算，避免一个坏任务导致无限等待。",
+        "default": 10
       }
     }
   },
   "llm_settings": {
-    "description": "LLM 提供商配置",
+    "description": "LLM 设置（用于把中文描述转成提示词并选模型）",
     "type": "object",
     "items": {
-      "provider": {
-        "description": "LLM 提供商（留空使用 AstrBot 默认）",
-        "type": "string",
-        "default": ""
+      "enable_prompt_optimize": {
+        "description": "启用提示词优化与智能选型",
+        "type": "bool",
+        "hint": "关闭后直接用你的原话当正向提示词，并使用第一个可用底模，完全不需要 LLM。",
+        "default": true
       },
-      "api_key": {
-        "description": "LLM API Key（留空使用 AstrBot 默认）",
+      "provider": {
+        "description": "指定 LLM 提供商 ID",
         "type": "string",
+        "hint": "留空则使用当前会话的模型（即 AstrBot 默认对话模型）。可在 AstrBot 的「服务提供商」页面查看 ID。",
         "default": ""
       },
       "base_url": {
-        "description": "LLM API 地址（留空使用 AstrBot 默认）",
+        "description": "自定义 OpenAI 兼容接口地址",
+        "type": "string",
+        "hint": "填写后不再使用 AstrBot 的提供商，改为直连该接口（例如 https://api.openai.com/v1）。",
+        "default": ""
+      },
+      "api_key": {
+        "description": "自定义接口的 API Key",
         "type": "string",
         "default": ""
       },
       "model": {
-        "description": "LLM 模型名（留空使用 AstrBot 默认）",
+        "description": "自定义接口的模型名",
         "type": "string",
         "default": ""
       }
     }
   },
   "draw_settings": {
-    "description": "出图默认参数",
+    "description": "出图参数默认值",
     "type": "object",
     "items": {
+      "override_arch_defaults": {
+        "description": "强制使用下面的参数（忽略架构自动适配）",
+        "type": "bool",
+        "hint": "关闭时：插件会按底模架构（SD1.5/SDXL/Pony/Flux）自动选择正确分辨率、CFG、采样器；下面的值仅在架构未识别时兜底。",
+        "default": false
+      },
+      "arch_override": {
+        "description": "强制指定底模架构",
+        "type": "string",
+        "hint": "留空=按文件名自动识别（带 xl 判为 SDXL，pony/illustrious 判为 Pony，flux 判为 Flux，其余按 SD1.5）。识别不准时填 sd15 / sdxl / pony / flux / sd3 之一。",
+        "default": ""
+      },
       "default_width": {
-        "description": "默认宽度",
+        "description": "兜底宽度",
         "type": "int",
-        "default": 512
+        "default": 1024
       },
       "default_height": {
-        "description": "默认高度",
+        "description": "兜底高度",
         "type": "int",
-        "default": 768
+        "default": 1024
       },
       "default_steps": {
-        "description": "默认步数",
+        "description": "兜底步数",
         "type": "int",
-        "default": 20
-      },
-      "default_sampler": {
-        "description": "默认采样器",
-        "type": "string",
-        "default": "euler"
+        "default": 28
       },
       "default_cfg": {
-        "description": "默认 CFG",
+        "description": "兜底 CFG",
         "type": "float",
-        "default": 7.0
+        "default": 6.0
+      },
+      "default_sampler": {
+        "description": "兜底采样器",
+        "type": "string",
+        "default": "dpmpp_2m"
+      },
+      "add_quality_tags": {
+        "description": "按架构自动补质量词",
+        "type": "bool",
+        "hint": "开启后 SD1.5/Pony 系模型的正向提示词会自动带上质量词（SDXL/Flux 不加，加了反而可能变差）。",
+        "default": true
+      },
+      "negative_mode": {
+        "description": "负面提示词策略",
+        "type": "string",
+        "options": ["merge", "guard_only", "custom_only", "raw"],
+        "hint": "merge=合并全部（默认词+手部规避词+架构词+LLM词，最稳）；guard_only=你的词+手部规避词，不采纳 LLM 的负面词；custom_only=只用你自己的词并自动去重；raw=严格原样，连去重都不做。行内 --negative 在 merge/guard_only/custom_only 下会合并，在 raw 下直接覆盖。",
+        "default": "merge"
+      },
+      "force_vae": {
+        "description": "强制使用指定 VAE",
+        "type": "string",
+        "hint": "留空=用底模自带的 VAE。若出图偏色发灰，填一个 vae 文件名的完整名称可纠正（需先把 VAE 放进 ComfyUI 的 models/vae）。",
+        "default": ""
       },
       "default_negative": {
         "description": "默认负面提示词",
         "type": "text",
-        "default": "lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username"
+        "hint": "Flux 架构下不会使用负面提示词。建议保持精简并把最关键的词放前面；重复项会被自动去重（((x)) 与 x 视为同一个词）。",
+        "default": "lowres, worst quality, low quality, jpeg artifacts, bad anatomy, bad proportions, bad hands, extra fingers, fewer fingers, fused fingers, extra digits, missing fingers, mutated hands, poorly drawn hands, malformed limbs, extra limbs, extra arms, extra legs, missing arms, missing legs, long neck, deformed, disfigured, mutation, blurry, out of frame, cropped, signature, watermark, username, text, error"
       }
     }
   },
   "output": {
-    "description": "出图结果发送设置",
+    "description": "结果发送与图片保留",
     "type": "object",
     "items": {
       "mention_trigger_user": {
@@ -114,41 +140,69 @@
         "type": "bool",
         "default": true
       },
-      "save_image": {
-        "description": "保存生成图片到本地",
+      "show_params": {
+        "description": "随图片附带参数信息",
         "type": "bool",
+        "hint": "显示模板名、底模、分辨率、种子与耗时，方便复现。",
         "default": true
+      },
+      "keep_images": {
+        "description": "本地最多保留图片数",
+        "type": "int",
+        "hint": "超出后按时间删除最旧的图片，避免磁盘被撑满。0 表示不按数量清理。",
+        "default": 500
+      },
+      "image_max_age_days": {
+        "description": "本地图片保留天数",
+        "type": "int",
+        "hint": "超过天数的图片会被删除。0 表示不按时间清理。",
+        "default": 30
       }
     }
   },
   "permission": {
-    "description": "权限控制",
+    "description": "权限与配额（管理员身份沿用 AstrBot 自带的管理员设置）",
     "type": "object",
     "items": {
-      "admin_ids": {
-        "description": "管理员 QQ 号（列表）",
-        "type": "list",
-        "default": []
-      },
       "whitelist_user_ids": {
-        "description": "用户白名单（留空表示不限制，全部放行）",
+        "description": "用户白名单",
         "type": "list",
+        "hint": "留空表示不限制。只有列表里的用户（以及管理员）可以出图。",
         "default": []
       },
       "blacklist_user_ids": {
         "description": "用户黑名单",
         "type": "list",
+        "hint": "黑名单优先级最高，管理员也不例外。",
         "default": []
       },
       "daily_limit": {
-        "description": "每人每日出图上限（0 表示不限制）",
+        "description": "每人每日出图上限",
         "type": "int",
+        "hint": "0 表示不限制。计数会落盘，重启不清零。",
         "default": 0
       },
       "cooldown_seconds": {
         "description": "单用户冷却时间（秒）",
         "type": "int",
         "default": 10
+      },
+      "admin_bypass": {
+        "description": "管理员豁免白名单、冷却与限额",
+        "type": "bool",
+        "default": true
+      }
+    }
+  },
+  "agent": {
+    "description": "无指令出图（让对话模型直接调用绘图能力）",
+    "type": "object",
+    "items": {
+      "enable_llm_tool": {
+        "description": "启用无指令出图",
+        "type": "bool",
+        "hint": "开启后，用户直接说「帮我画一张…」即可出图，无需输入 /画图。需要所用模型支持工具调用（function calling）。",
+        "default": false
       }
     }
   }

@@ -1,105 +1,98 @@
-"""Pages 配置页后端路由。
+"""插件 Pages 的后端 Web API。
 
-通过 AstrBot 的 context.register_web_api() 注册插件 Web API，
-供前端 Page（pages/settings/index.html）通过 window.AstrBotPluginPage bridge 调用。
+路由约定（官方规范）：注册 `/<插件名>/xxx`，前端 `bridge.apiGet("xxx")`
+由 Dashboard 转发到 `/api/v1/plugins/extensions/<插件名>/xxx`。
 
-路由设计（以插件名 astrbot_plugin_comfyui_smart 为例）：
-  - 前端 bridge endpoint 为相对路径，如 "config"、"models/refresh"
-  - Dashboard 会转发到 /api/v1/plugins/extensions/{plugin_name}/<endpoint>
-  - 因此注册的 route 需要包含插件名前缀：/{PLUGIN_NAME}/config 等
+与旧版的区别：
+- 只使用官方 `astrbot.api.web` 的 json_response / error_response / file_response，
+  删掉了「猜 file_response 不存在」而写的三层降级（最后退化成 base64 内联 JSON）。
+- 配置保存改为深度合并，且失败时抛错而不是静默降级 —— 旧版把整个注册包在 try/except 里
+  只打 warning，用户在界面上只看到「配置加载失败」，服务端日志也被降级成 warning。
 """
+from __future__ import annotations
 
-from astrbot.api import logger
-from astrbot.api.web import json_response, error_response, request
 from pathlib import Path
 
-# file_response 可能不存在于部分 AstrBot 版本，做安全降级
-try:
-    from astrbot.api.web import file_response
-except ImportError:
-    file_response = None
+from astrbot.api import logger
+from astrbot.api.web import error_response, file_response, json_response, request
 
 PLUGIN_NAME = "astrbot_plugin_comfyui_smart"
 
 
-def register_pages_routes(plugin):
-    """在插件实例（Star 子类）上注册 Web 路由。
+def register_pages_routes(plugin) -> bool:
+    """在插件实例上注册 Web API。
 
-    使用官方 context.register_web_api(route, handler, methods, desc)。
-    handler 接收动态路由参数作为关键字参数。
+    Args:
+        plugin: ComfyUISmartPlugin 实例。
+
+    Returns:
+        是否全部注册成功。
     """
-    ctx = plugin.context
+    context = plugin.context
 
-    # 读取配置
     async def get_config():
-        return json_response({"status": "ok", "data": plugin.get_full_config()})
+        return json_response({"config": plugin.get_full_config()})
 
-    # 保存配置
     async def save_config():
         payload = await request.json(default={})
         if not isinstance(payload, dict):
-            return error_response("invalid payload", status_code=400)
-        plugin.save_config(payload)
-        return json_response({"status": "ok", "message": "配置已保存"})
-
-    # 读取模型列表
-    async def get_models():
-        return json_response({"status": "ok", "data": plugin.storage.load_models()})
-
-    # 刷新模型
-    async def refresh_models():
-        result = await plugin.refresh_models()
+            return error_response("请求体必须是 JSON 对象", status_code=400)
+        try:
+            result = await plugin.save_config(payload)
+        except Exception as e:
+            logger.error("[ComfyUI] 配置保存失败：%s", e)
+            return error_response(f"配置保存失败：{e}", status_code=500)
         return json_response(result)
 
-    # 读取统计
+    async def get_models():
+        catalog = await plugin.get_catalog()
+        return json_response({"catalog": catalog, "folders": len(catalog)})
+
+    async def refresh_models():
+        result = await plugin.refresh_models()
+        status = 200 if result.get("ok") else 502
+        return json_response(result, status_code=status)
+
+    async def get_templates():
+        return json_response(
+            {
+                "templates": [t.describe() for t in plugin.templates.values()],
+                "failed": plugin.template_errors,
+                "user_dir": str(plugin.user_template_dir),
+            }
+        )
+
+    async def get_status():
+        return json_response(await plugin.get_server_status())
+
     async def get_stats():
-        return json_response({"status": "ok", "data": plugin.storage.load_stats()})
+        return json_response(plugin.storage.load_stats())
 
-    # 读取生成图片（按文件名）
-    async def get_image(filename=""):
-        if not filename:
-            return error_response("missing filename", status_code=400)
-        # 防目录穿越
-        safe_name = Path(filename).name
-        img_path = plugin.output_dir / safe_name
-        if not img_path.exists():
-            return error_response("image not found", status_code=404)
-        # 优先用官方 file_response，失败则用标准库手动构造
-        try:
-            if file_response is not None:
-                return file_response(str(img_path))
-            raise ImportError("file_response unavailable")
-        except Exception as e:
-            logger.warning(f"[ComfyUI] file_response 不可用，降级手动响应: {e}")
-            data = img_path.read_bytes()
-            # 简易 MIME 判断
-            suffix = img_path.suffix.lower()
-            mime = {
-                ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-                ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp",
-            }.get(suffix, "application/octet-stream")
-            # 尝试用 astrbot 的 Response 类；拿不到则直接返回 json_response 兜底
-            try:
-                from astrbot.api.web import Response
-                return Response(content=data, media_type=mime)
-            except Exception:
-                # 最终兜底：base64 内联（不推荐但保证不崩）
-                import base64
-                b64 = base64.b64encode(data).decode("ascii")
-                return json_response({
-                    "status": "ok", "mime": mime, "base64": b64,
-                    "data_url": f"data:{mime};base64,{b64}",
-                })
+    async def clear_stats():
+        await plugin.storage.clear_stats()
+        return json_response({"cleared": True})
 
-    try:
-        ctx.register_web_api(f"/{PLUGIN_NAME}/config", get_config, ["GET"], "获取配置")
-        ctx.register_web_api(f"/{PLUGIN_NAME}/config", save_config, ["POST"], "保存配置")
-        ctx.register_web_api(f"/{PLUGIN_NAME}/models", get_models, ["GET"], "获取模型列表")
-        ctx.register_web_api(f"/{PLUGIN_NAME}/models/refresh", refresh_models, ["POST"], "刷新模型")
-        ctx.register_web_api(f"/{PLUGIN_NAME}/stats", get_stats, ["GET"], "获取统计")
-        ctx.register_web_api(f"/{PLUGIN_NAME}/images/<filename>", get_image, ["GET"], "获取生成图片")
-        logger.info("[ComfyUI] Pages Web 路由注册成功")
-        return True
-    except Exception as e:
-        logger.warning(f"[ComfyUI] Pages Web 路由注册失败: {e}")
-        return False
+    async def get_image(filename: str = ""):
+        safe_name = Path(filename or "").name
+        if not safe_name:
+            return error_response("缺少文件名", status_code=400)
+        target = plugin.storage.output_dir / safe_name
+        if not target.is_file():
+            return error_response("图片不存在", status_code=404)
+        return file_response(target)
+
+    routes = (
+        (f"/{PLUGIN_NAME}/config", get_config, ["GET"], "读取插件配置"),
+        (f"/{PLUGIN_NAME}/config", save_config, ["POST"], "保存插件配置"),
+        (f"/{PLUGIN_NAME}/models", get_models, ["GET"], "读取模型清单"),
+        (f"/{PLUGIN_NAME}/models/refresh", refresh_models, ["POST"], "重新发现模型"),
+        (f"/{PLUGIN_NAME}/templates", get_templates, ["GET"], "读取工作流模板"),
+        (f"/{PLUGIN_NAME}/status", get_status, ["GET"], "读取 ComfyUI 状态"),
+        (f"/{PLUGIN_NAME}/stats", get_stats, ["GET"], "读取统计"),
+        (f"/{PLUGIN_NAME}/stats/clear", clear_stats, ["POST"], "清空统计"),
+        (f"/{PLUGIN_NAME}/images/<filename>", get_image, ["GET"], "读取生成的图片"),
+    )
+    for route, handler, methods, desc in routes:
+        context.register_web_api(route, handler, methods, desc)
+    logger.info("[ComfyUI] Pages Web 路由注册完成，共 %d 条", len(routes))
+    return True

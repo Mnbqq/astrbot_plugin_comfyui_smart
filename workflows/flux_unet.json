@@ -1,0 +1,147 @@
+{
+  "name": "flux_unet",
+  "arch": "flux",
+  "loader": "unet",
+  "description": "FLUX.1 分离权重（diffusion_models 里的 UNET + text_encoders 里的 CLIP + 独立 VAE）。适用于 flux1-dev / flux1-schnell 的 fp8 或 GGUF 权重。",
+  "graph": {
+    "1": {
+      "class_type": "UNETLoader",
+      "_meta": {
+        "title": "底模 UNET"
+      },
+      "inputs": {
+        "unet_name": "put_your_flux_unet_here.safetensors",
+        "weight_dtype": "default"
+      }
+    },
+    "2": {
+      "class_type": "DualCLIPLoader",
+      "_meta": {
+        "title": "双文本编码器"
+      },
+      "inputs": {
+        "clip_name1": "t5xxl_fp16.safetensors",
+        "clip_name2": "clip_l.safetensors",
+        "type": "flux"
+      }
+    },
+    "3": {
+      "class_type": "VAELoader",
+      "_meta": {
+        "title": "独立 VAE"
+      },
+      "inputs": {
+        "vae_name": "ae.safetensors"
+      }
+    },
+    "4": {
+      "class_type": "CLIPTextEncode",
+      "_meta": {
+        "title": "正面提示词"
+      },
+      "inputs": {
+        "text": "",
+        "clip": [
+          "2",
+          0
+        ]
+      }
+    },
+    "5": {
+      "class_type": "CLIPTextEncode",
+      "_meta": {
+        "title": "负面提示词（Flux 不生效）"
+      },
+      "inputs": {
+        "text": "",
+        "clip": [
+          "2",
+          0
+        ]
+      }
+    },
+    "6": {
+      "class_type": "FluxGuidance",
+      "_meta": {
+        "title": "Flux 引导强度"
+      },
+      "inputs": {
+        "conditioning": [
+          "4",
+          0
+        ],
+        "guidance": 3.5
+      }
+    },
+    "7": {
+      "class_type": "EmptySD3LatentImage",
+      "_meta": {
+        "title": "尺寸"
+      },
+      "inputs": {
+        "width": 1024,
+        "height": 1024,
+        "batch_size": 1
+      }
+    },
+    "8": {
+      "class_type": "KSampler",
+      "_meta": {
+        "title": "采样器"
+      },
+      "inputs": {
+        "model": [
+          "1",
+          0
+        ],
+        "seed": 0,
+        "steps": 20,
+        "cfg": 1.0,
+        "sampler_name": "euler",
+        "scheduler": "simple",
+        "positive": [
+          "6",
+          0
+        ],
+        "negative": [
+          "5",
+          0
+        ],
+        "latent_image": [
+          "7",
+          0
+        ],
+        "denoise": 1.0
+      }
+    },
+    "9": {
+      "class_type": "VAEDecode",
+      "_meta": {
+        "title": "VAE 解码"
+      },
+      "inputs": {
+        "samples": [
+          "8",
+          0
+        ],
+        "vae": [
+          "3",
+          0
+        ]
+      }
+    },
+    "10": {
+      "class_type": "SaveImage",
+      "_meta": {
+        "title": "保存图片"
+      },
+      "inputs": {
+        "images": [
+          "9",
+          0
+        ],
+        "filename_prefix": "astrbot_smart_flux"
+      }
+    }
+  }
+}
