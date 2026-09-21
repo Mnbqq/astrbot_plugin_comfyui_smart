@@ -131,6 +131,41 @@
       }
     }
   },
+  "hires": {
+    "description": "Hires Fix（先出小图再放大重绘）",
+    "type": "object",
+    "items": {
+      "enable": {
+        "description": "启用 Hires Fix",
+        "type": "bool",
+        "hint": "改善手部、人脸与细节最有效的手段之一，但出图时间大致翻倍。用行内 --hires 1.5 可对单次生效，--hires 0 可对单次关闭。",
+        "default": false
+      },
+      "scale": {
+        "description": "放大倍数",
+        "type": "float",
+        "hint": "1.5 是常用的折中；2.0 更清晰但更慢，显存占用也更高。",
+        "default": 1.5
+      },
+      "denoise": {
+        "description": "第二轮重绘幅度",
+        "type": "float",
+        "hint": "0.4~0.6 常用：太低细节提升有限，太高会改变构图。",
+        "default": 0.5
+      },
+      "steps": {
+        "description": "第二轮步数（0 = 与首轮相同）",
+        "type": "int",
+        "default": 0
+      },
+      "method": {
+        "description": "放大算法",
+        "type": "string",
+        "options": ["bislerp", "bilinear", "bicubic", "area", "nearest-exact"],
+        "default": "bislerp"
+      }
+    }
+  },
   "output": {
     "description": "结果发送与图片保留",
     "type": "object",

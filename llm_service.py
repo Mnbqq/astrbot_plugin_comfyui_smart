@@ -39,6 +39,33 @@ MAX_LORAS = 80
 MAX_OTHERS = 40
 
 
+def _to_data_url(ref: str) -> str:
+    """把本地图片路径或 http 地址转成 OpenAI 多模态可用的 data URL。
+
+    Args:
+        ref: 本地路径或 http(s) 地址。
+
+    Returns:
+        data URL；无法处理时返回空字符串（由调用方跳过）。
+    """
+    import base64
+    import mimetypes
+    from pathlib import Path
+
+    text = str(ref or "").strip()
+    if not text:
+        return ""
+    if text.startswith(("http://", "https://", "data:")):
+        return text
+    path = Path(text)
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return ""
+    mime = mimetypes.guess_type(path.name)[0] or "image/png"
+    return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+
+
 class LLMService:
     """LLM 调用与提示词优化。"""
 
@@ -109,13 +136,21 @@ class LLMService:
     # ------------------------------------------------------------------ #
     # 文本生成
     # ------------------------------------------------------------------ #
-    async def generate(self, system: str, user: str, event=None) -> str:
-        """调用 LLM 生成文本。
+    async def generate(
+        self,
+        system: str,
+        user: str,
+        event=None,
+        image_urls: list[str] | None = None,
+    ) -> str:
+        """调用 LLM 生成文本（可选带图，用于看图反推）。
 
         Args:
             system: 系统提示词。
             user: 用户内容。
             event: 可选消息事件，用于会话级 provider 解析。
+            image_urls: 图片引用列表（本地路径 / http / base64:// / data:），
+                由 AstrBot 的 MediaResolver 统一处理。
 
         Returns:
             生成的纯文本。
@@ -124,7 +159,7 @@ class LLMService:
             RuntimeError: 没有可用 LLM 或调用失败，message 面向用户。
         """
         if self._has_custom_endpoint():
-            return await self._call_custom(system, user)
+            return await self._call_custom(system, user, image_urls=image_urls)
 
         provider_id = await self.resolve_provider_id(event)
         if not provider_id:
@@ -138,19 +173,28 @@ class LLMService:
                 chat_provider_id=provider_id,
                 prompt=user,
                 system_prompt=system,
+                image_urls=list(image_urls) if image_urls else None,
             )
         except Exception as e:
-            raise RuntimeError(f"调用 LLM 失败（{provider_id}）：{e}") from e
+            hint = ""
+            if image_urls:
+                # 看图失败最常见的原因是所用模型不支持图片输入
+                hint = "（如果这是看图反推，请确认所用对话模型支持图片输入）"
+            raise RuntimeError(f"调用 LLM 失败（{provider_id}）：{e}{hint}") from e
 
         text = getattr(resp, "completion_text", None)
         return (text or "").strip()
 
-    async def _call_custom(self, system: str, user: str) -> str:
+    async def _call_custom(
+        self, system: str, user: str, image_urls: list[str] | None = None
+    ) -> str:
         """调用配置里的 OpenAI 兼容端点。
 
         Args:
             system: 系统提示词。
             user: 用户内容。
+            image_urls: 可选的图片引用列表（本地路径或 http URL），会按
+                OpenAI 多模态格式编码进 user 消息。
 
         Returns:
             生成的纯文本。
@@ -166,11 +210,20 @@ class LLMService:
         headers = {"Content-Type": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
+        user_content: object = user
+        if image_urls:
+            user_content = [{"type": "text", "text": user}]
+            for ref in image_urls:
+                data_url = _to_data_url(ref)
+                if data_url:
+                    user_content.append(
+                        {"type": "image_url", "image_url": {"url": data_url}}
+                    )
         payload = {
             "model": model,
             "messages": [
                 {"role": "system", "content": system},
-                {"role": "user", "content": user},
+                {"role": "user", "content": user_content},
             ],
             "temperature": 0.3,
         }
@@ -239,6 +292,34 @@ class LLMService:
                 lines.append(f"- {name}")
         return "\n".join(lines) if lines else "（ComfyUI 里没有发现任何可用模型）"
 
+    async def reverse_prompt(
+        self,
+        image_refs: list[str],
+        *,
+        hint: str = "",
+        event=None,
+    ) -> dict:
+        """看图反推提示词。
+
+        Args:
+            image_refs: 图片引用列表（本地路径）。
+            hint: 用户附加的要求，例如「只要人物特征」。
+            event: 可选消息事件。
+
+        Returns:
+            {"positive": str, "negative": str, "summary": str, "raw_ok": bool}
+
+        Raises:
+            RuntimeError: LLM 不可用或调用失败。
+        """
+        user = "请看这张图，反推出可直接用于 Stable Diffusion 的提示词。"
+        if hint.strip():
+            user += f"\n额外要求：{hint.strip()}"
+        text = await self.generate(
+            REVERSE_SYSTEM, user, event=event, image_urls=image_refs
+        )
+        return parse_reverse_result(text)
+
     async def optimize_prompt(
         self,
         user_desc: str,
@@ -278,6 +359,68 @@ class LLMService:
         return parsed
 
 
+# 反推提示词的系统提示词
+REVERSE_SYSTEM = (
+    "你是动画/插画提示词反推助手。看图片，输出可直接用于 Stable Diffusion 的英文 tag 提示词。\n"
+    "规则：\n"
+    "1. 只描述**画面里真实存在**的内容，看不清的服装纹样、配饰不要编造。\n"
+    "2. positive 用英文逗号分隔的 Danbooru 风格 tag，按这个顺序组织：\n"
+    "   人物数量（solo / 1girl / 2girls）→ 外貌（发色发型、瞳色）→ 服装 → "
+    "动作与**手部状态**（如 hands on hips、holding a cup）→ 视角与构图（from above、"
+    "upper body、full body）→ 场景背景 → 光线氛围 → 画风（anime style、watercolor 等）。\n"
+    "3. negative 给出 8~15 个与画面缺陷相关的常用规避词"
+    "（含手部与肢体：bad hands、extra fingers、fused fingers、missing fingers、malformed limbs）。\n"
+    "4. summary 用一句中文概括画面。\n"
+    "5. 严格只输出一个 JSON 对象，不要 markdown 代码块，不要任何其他文字。\n"
+    '格式：{"positive": "...", "negative": "...", "summary": "..."}'
+)
+
+
+def _load_json_object(text: str) -> dict | None:
+    """从 LLM 输出里容错提取一个 JSON 对象。
+
+    Args:
+        text: LLM 原始输出，可能带 markdown 代码块或前后解释文字。
+
+    Returns:
+        解析出的字典；失败返回 None。
+    """
+    cleaned = _strip_code_fence(text)
+    try:
+        data = json.loads(cleaned)
+    except Exception:
+        match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+        if not match:
+            return None
+        try:
+            data = json.loads(match.group(0))
+        except Exception:
+            return None
+    return data if isinstance(data, dict) else None
+
+
+def parse_reverse_result(text: str) -> dict:
+    """解析反推结果。
+
+    Args:
+        text: LLM 原始输出。
+
+    Returns:
+        {"positive": str, "negative": str, "summary": str, "raw_ok": bool}；
+        解析失败时 positive 为空且 raw_ok 为 False。
+    """
+    result = {"positive": "", "negative": "", "summary": "", "raw_ok": False}
+    data = _load_json_object(text)
+    if not isinstance(data, dict):
+        return result
+    result["raw_ok"] = True
+    for key in ("positive", "negative", "summary"):
+        value = data.get(key)
+        if isinstance(value, str):
+            result[key] = value.strip()
+    return result
+
+
 def _strip_code_fence(text: str) -> str:
     """去掉 markdown 代码块包裹。"""
     text = (text or "").strip()
@@ -305,17 +448,7 @@ def parse_optimize_result(text: str) -> dict:
         "height": 0,
         "raw_ok": False,
     }
-    cleaned = _strip_code_fence(text)
-    data = None
-    try:
-        data = json.loads(cleaned)
-    except Exception:
-        match = re.search(r"\{.*\}", cleaned, re.DOTALL)
-        if match:
-            try:
-                data = json.loads(match.group(0))
-            except Exception:
-                data = None
+    data = _load_json_object(text)
     if not isinstance(data, dict):
         return result
 

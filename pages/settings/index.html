@@ -175,6 +175,39 @@
           </div>
         </article>
         <article class="card">
+          <div class="card-header"><div><h3>Hires Fix（放大重绘）</h3><p>先出小图，再放大重绘一遍。改善手部、人脸与细节最有效的手段之一，代价是出图时间大致翻倍。</p></div></div>
+          <div class="setting-row">
+            <div><h3>启用 Hires Fix</h3><p>也可以对单次生效：<code>/画图 描述 --hires 1.5</code>；单次关闭用 <code>--hires 0</code>。</p></div>
+            <label class="switch-wrapper"><input type="checkbox" id="hires_enable" class="ios-switch" /></label>
+          </div>
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="hires_scale">放大倍数</label>
+              <input type="number" id="hires_scale" class="input-modern" step="0.1" min="1" max="3" />
+            </div>
+            <div class="form-group">
+              <label for="hires_denoise">第二轮重绘幅度</label>
+              <input type="number" id="hires_denoise" class="input-modern" step="0.05" min="0" max="1" />
+            </div>
+            <div class="form-group">
+              <label for="hires_steps">第二轮步数（0 = 与首轮相同）</label>
+              <input type="number" id="hires_steps" class="input-modern" min="0" max="150" />
+            </div>
+            <div class="form-group">
+              <label for="hires_method">放大算法</label>
+              <select id="hires_method" class="input-modern">
+                <option value="bislerp">bislerp（推荐）</option>
+                <option value="bilinear">bilinear</option>
+                <option value="bicubic">bicubic</option>
+                <option value="area">area</option>
+                <option value="nearest-exact">nearest-exact</option>
+              </select>
+            </div>
+          </div>
+          <p class="field-hint">放大后尺寸 = 原尺寸 × 倍数，且会对齐到 8 的倍数。显存较小（如 8GB）时建议倍数不要超过 1.5。</p>
+        </article>
+
+        <article class="card">
           <div class="card-header"><div><h3>结果发送与图片保留</h3><p>图片按时间与数量双重上限清理，避免磁盘被撑满。</p></div></div>
           <div class="setting-row">
             <div><h3>群聊出图时 @ 触发人</h3><p>在群里出图时艾特发起人。</p></div>

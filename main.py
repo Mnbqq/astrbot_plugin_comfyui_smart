@@ -10,7 +10,7 @@ from pathlib import Path
 
 from astrbot.api import AstrBotConfig
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.message_components import At, Image, Plain
+from astrbot.api.message_components import At, Image, Plain, Reply
 from astrbot.api.star import Context, Star, StarTools
 
 from .comfyui_api import ComfyUI, ComfyUIError, normalize_base_url
@@ -20,6 +20,7 @@ from .permission import PermissionManager
 from .storage import Storage
 from .workflow_templates import (
     ARCH_PROFILES,
+    add_hires_fix,
     profile_pixels,
     TemplateError,
     WorkflowTemplate,
@@ -31,7 +32,7 @@ from .workflow_templates import (
 
 PLUGIN_NAME = "astrbot_plugin_comfyui_smart"
 # 与 metadata.yaml 的 version 保持一致（tests/test_logic.py 会校验二者不漂移）
-PLUGIN_VERSION = "0.3.7"
+PLUGIN_VERSION = "0.5.0"
 PLUGIN_DIR = Path(__file__).resolve().parent
 BUILTIN_TEMPLATE_DIR = PLUGIN_DIR / "workflows"
 
@@ -46,6 +47,9 @@ PARAM_ALIASES = {
     "cfg": "cfg",
     "batch": "batch", "批次": "batch",
     "sampler": "sampler", "采样器": "sampler",
+    "hires": "hires", "放大": "hires", "hires-denoise": "hires_denoise",
+    "draw": "draw", "画": "draw",
+    "hires-steps": "hires_steps",
     "lora": "lora", "模型": "model", "model": "model",
     "negative": "negative", "负面": "negative",
 }
@@ -101,11 +105,17 @@ def parse_inline_params(text: str) -> tuple[str, dict]:
     index = 0
     while index < len(tokens):
         token = tokens[index]
-        # --key value
+        # --key value，以及无值旗标 --flag（例如 --画）
         if token.startswith("--") and len(token) > 2:
             key = PARAM_ALIASES.get(token[2:].lower())
-            if key and index + 1 < len(tokens):
-                opts[key] = tokens[index + 1]
+            if key:
+                nxt = tokens[index + 1] if index + 1 < len(tokens) else None
+                if nxt is None or nxt.startswith("--"):
+                    # 后面没有值（或紧跟下一个参数）：当成开关，标记为 "1"
+                    opts[key] = "1"
+                    index += 1
+                    continue
+                opts[key] = nxt
                 index += 2
                 continue
         # key:value（注意比例 16:9 这类值本身含冒号）
@@ -627,6 +637,7 @@ class ComfyUISmartPlugin(Star):
         opts: dict | None = None,
         event: AstrMessageEvent | None = None,
         on_queued=None,
+        preset: dict | None = None,
     ) -> dict:
         """完整出图流程：选型 → 建图 → 提交 → 等待 → 下载。
 
@@ -635,6 +646,7 @@ class ComfyUISmartPlugin(Star):
             opts: 行内参数。
             event: 消息事件，用于 LLM 会话级 provider 与统计。
             on_queued: 排队提示回调。
+            preset: 现成的提示词（如反推结果），给了就跳过 LLM 改写。
 
         Returns:
             {"images": [Path...], "template": str, "model": str, "lora": str,
@@ -660,7 +672,15 @@ class ComfyUISmartPlugin(Star):
         positive = user_desc
         llm_negative = ""
         llm_note = ""
-        if bool(llm_conf.get("enable_prompt_optimize", True)):
+        preset = preset or {}
+        if preset.get("positive"):
+            # 已经有现成提示词（例如 /反推 的结果）：不再让 LLM 改写一遍
+            positive = str(preset["positive"])
+            llm_negative = str(preset.get("negative") or "")
+            llm_note = "（提示词来自反推结果，未再改写）"
+            if preset.get("checkpoint"):
+                opt["checkpoint"] = preset["checkpoint"]
+        elif bool(llm_conf.get("enable_prompt_optimize", True)):
             try:
                 opt = await self.llm.optimize_prompt(
                     user_desc,
@@ -766,6 +786,67 @@ class ComfyUISmartPlugin(Star):
             **sampling,
         )
 
+        # Hires Fix：先出小图，再放大重绘一遍。改善手部与人脸最有效的手段之一，
+        # 但会让出图时间显著变长（约两倍），因此默认关闭。
+        hires_conf = self.config.get("hires", {}) or {}
+        hires_scale = float(hires_conf.get("scale", 1.5) or 1.5)
+        hires_denoise = float(hires_conf.get("denoise", 0.5) or 0.5)
+        hires_steps = int(hires_conf.get("steps", 0) or 0)
+        hires_method = str(hires_conf.get("method") or "bislerp")
+        hires_on = bool(hires_conf.get("enable", False))
+        if opts.get("hires") not in (None, ""):
+            try:
+                hires_scale = float(opts["hires"])
+            except (TypeError, ValueError):
+                pass
+            # 行内给了倍数就以它为准：0 或 1 表示本次关闭
+            hires_on = hires_scale > 1.0
+        if opts.get("hires_denoise") not in (None, ""):
+            try:
+                hires_denoise = min(1.0, max(0.0, float(opts["hires_denoise"])))
+            except (TypeError, ValueError):
+                pass
+        if opts.get("hires_steps") not in (None, ""):
+            try:
+                hires_steps = max(0, int(opts["hires_steps"]))
+            except (TypeError, ValueError):
+                pass
+
+        hires_info: dict = {}
+        hires_note = ""
+        if hires_on and hires_scale > 1.0:
+            hires_info = add_hires_fix(
+                graph,
+                template.bindings,
+                scale=hires_scale,
+                denoise=hires_denoise,
+                steps=hires_steps,
+                seed=random.randint(0, 2**31 - 1),
+                upscale_method=hires_method,
+            )
+            if hires_info:
+                self.logger.info(
+                    "Hires Fix 已启用｜%sx → %sx%s｜denoise %s｜第二轮步数 %s",
+                    f"{sampling['width']}x{sampling['height']}",
+                    hires_info["width"], hires_info["height"],
+                    hires_denoise, hires_steps or "同首轮",
+                )
+                # 放大后的像素量才是显存真正吃紧的地方，提前提醒而不是等它 OOM
+                target_pixels = hires_info["width"] * hires_info["height"]
+                if target_pixels > 2048 * 2048:
+                    self.logger.warning(
+                        "Hires 目标尺寸 %sx%s（%.1f MP）偏大，小显存机器容易 OOM 或极慢；"
+                        "建议把放大倍数降到 1.5 以内",
+                        hires_info["width"], hires_info["height"],
+                        target_pixels / 1_000_000,
+                    )
+                    hires_note = (
+                        f"Hires 目标 {hires_info['width']}x{hires_info['height']}"
+                        f"（{target_pixels / 1_000_000:.1f} MP）偏大，小显存容易爆或很慢"
+                    )
+            else:
+                self.logger.warning("Hires Fix 未能插入（模板结构不支持），本次按普通出图处理")
+
         # 提交前用服务端自己的输入约束做本地预检：
         # 万一 ComfyUI 回一个不带任何节点级原因的「failed validation」，这里能先拦住
         problems = await self.comfy.precheck(graph)
@@ -815,8 +896,13 @@ class ComfyUISmartPlugin(Star):
             "seed": seed,
             "llm_note": llm_note,
             "prompt_note": prompt_note,
+            "hires": hires_info,
+            "hires_note": hires_note,
             "seconds": time.time() - started,
-            **{k: sampling[k] for k in ("width", "height", "steps", "cfg", "sampler")},
+            # 有 Hires 时对外报最终尺寸，消息与画廊显示的才是真实产物尺寸
+            "width": hires_info.get("width", sampling["width"]),
+            "height": hires_info.get("height", sampling["height"]),
+            **{k: sampling[k] for k in ("steps", "cfg", "sampler")},
         }
 
     # ------------------------------------------------------------------ #
@@ -915,6 +1001,41 @@ class ComfyUISmartPlugin(Star):
             },
         )
 
+    async def _collect_images(self, event: AstrMessageEvent) -> list[str]:
+        """从当前消息或引用消息里取出图片的本地路径。
+
+        约定与 AstrBot 自身一致：`Image` 组件用 `convert_to_file_path()` 得到本地路径，
+        再作为 `image_urls` 交给 LLM（provider 内部会转成 base64）。
+        引用消息的图片藏在 `Reply.chain` 里，需要递归取。
+
+        Args:
+            event: 消息事件。
+
+        Returns:
+            本地图片路径列表（已去重）。
+        """
+        message = getattr(getattr(event, "message_obj", None), "message", None) or []
+
+        def walk(components) -> list:
+            collected: list = []
+            for comp in components or []:
+                if isinstance(comp, Image):
+                    collected.append(comp)
+                elif isinstance(comp, Reply):
+                    collected.extend(walk(getattr(comp, "chain", None) or []))
+            return collected
+
+        paths: list[str] = []
+        for comp in walk(message):
+            try:
+                path = await comp.convert_to_file_path()
+            except Exception as e:
+                self.logger.warning("读取消息里的图片失败：%s", e)
+                continue
+            if path and str(path) not in paths:
+                paths.append(str(path))
+        return paths
+
     def _dump_failed_graph(self, graph: dict, error) -> Path:
         """把提交失败的工作流写到数据目录，供排查。
 
@@ -968,6 +1089,10 @@ class ComfyUISmartPlugin(Star):
                 detail += f"\n🎯 LoRA：{result['lora']}"
             if result.get("llm_note"):
                 detail += f"\nℹ️ {result['llm_note']}"
+            if result.get("hires"):
+                detail += "\n🔍 Hires Fix：放大后二次重绘"
+            if result.get("hires_note"):
+                detail += f"\n⚠️ {result['hires_note']}"
             if result.get("prompt_note"):
                 detail += f"\nℹ️ {result['prompt_note']}"
             chain.append(Plain(detail + "\n"))
@@ -1044,6 +1169,87 @@ class ComfyUISmartPlugin(Star):
         lines.append(f"　配置页 API：{'已注册' if self.pages_ready else '❌ 注册失败，请查看日志'}")
         yield event.plain_result("\n".join(lines))
 
+    @filter.command("反推", alias={"反推提示词", "识图", "img2prompt"})
+    async def cmd_reverse_prompt(self, event: AstrMessageEvent):
+        """看一张图，反推出可用的提示词。"""
+        uid = str(event.get_sender_id())
+        is_admin = bool(event.is_admin())
+        allowed, reason = await self.permission.check(
+            uid, is_admin=is_admin, storage=self.storage
+        )
+        if not allowed:
+            yield event.plain_result(reason)
+            return
+
+        raw = _extract_command_payload(event, "反推", "反推提示词", "识图", "img2prompt")
+        hint, opts = parse_inline_params(raw)
+
+        images = await self._collect_images(event)
+        if not images:
+            yield event.plain_result(
+                "🖼 用法：把图片和 /反推 一起发，或者回复一张图片再发 /反推\n"
+                "　　/反推 帮我看看这张图怎么写提示词\n"
+                "　　/反推 --画　反推后直接出图\n"
+                "　　/反推 --model juggernaut --画　指定底模出图"
+            )
+            return
+
+        yield event.plain_result(f"🔍 正在分析 {len(images)} 张图片…")
+        try:
+            result = await self.llm.reverse_prompt(images, hint=hint, event=event)
+        except RuntimeError as e:
+            self.logger.warning("反推失败：%s", e)
+            yield event.plain_result(f"💥 {e}")
+            return
+
+        if not result.get("positive"):
+            yield event.plain_result(
+                "💥 没能从图里反推出提示词。请确认所用对话模型支持看图，或换一张更清晰的图"
+            )
+            return
+
+        lines = ["🔍 反推结果"]
+        if result.get("summary"):
+            lines.append(f"画面：{result['summary']}")
+        lines.append(f"\n正向提示词：\n{result['positive']}")
+        if result.get("negative"):
+            lines.append(f"\n建议负面词：\n{result['negative']}")
+
+        if not opts.get("draw"):
+            lines.append("\n出图：/反推 --画　（或把上面的正向提示词交给 /画图）")
+            yield event.plain_result("\n".join(lines))
+            return
+
+        yield event.plain_result("\n".join(lines) + "\n\n🎨 正在按反推结果出图…")
+
+        async def _notify_queue(status):
+            await event.send(
+                event.plain_result(
+                    f"⏳ 已提交，队列第 {min(status.own_positions.values() or [1])} 位"
+                    f"（前方 {status.tasks_ahead} 个任务）"
+                )
+            )
+
+        try:
+            drawn = await self.generate(
+                user_desc=result["positive"],
+                opts=opts,
+                event=event,
+                on_queued=_notify_queue,
+                preset=result,
+            )
+        except (ComfyUIError, TemplateError) as e:
+            self.logger.warning("按反推结果出图失败：%s", e)
+            yield event.plain_result(f"💥 出图失败：{e}")
+            return
+        except RuntimeError as e:
+            yield event.plain_result(f"💥 {e}")
+            return
+
+        await self.permission.record(uid, is_admin=is_admin, storage=self.storage)
+        await self._record_generation(uid, event, drawn)
+        yield event.chain_result(self._compose_result_chain(event, uid, drawn))
+
     @filter.command("统计")
     async def cmd_stats(self, event: AstrMessageEvent):
         """查看出图统计。"""
@@ -1081,6 +1287,7 @@ class ComfyUISmartPlugin(Star):
             "　行内参数：16:9 / --size 1024x1536 / --seed 42\n"
             "　　　　　　--steps 30 / --cfg 6 / --lora 名字:0.8\n"
             "　　　　　　--model 关键词 / --batch 2 / --negative \"...\"\n"
+            "/反推　　　看图反推提示词（发图或回复图片，加 --画 直接出图）\n"
             "/模型列表　查看可用模型\n"
             "/模板列表　查看工作流模板（可放自定义模板）\n"
             "/状态　　　查看 ComfyUI 连接与队列\n"
