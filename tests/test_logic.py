@@ -108,6 +108,16 @@ class ClientResponse:
         return json.loads(self._text)
 
 
+class FormData:
+    """桩：记录 multipart 字段，供上传测试断言。"""
+
+    def __init__(self):
+        self.fields = {}
+
+    def add_field(self, name, value, **kw):
+        self.fields[name] = {"value": value, "kwargs": kw}
+
+
 class _Ctx:
     def __init__(self, resp):
         self._resp = resp
@@ -576,7 +586,9 @@ def main() -> int:
 
     print("\n=== 模板推导与注入 ===")
     templates = wt.load_templates(ROOT / "workflows")
-    check("加载三个内置模板", len(templates) == 3, sorted(templates))
+    check("内置模板齐全（含图生图模板）",
+          {"sd_checkpoint", "flux_unet", "flux_checkpoint", "img2img_checkpoint"}
+          <= set(templates), sorted(templates))
     tpl, arch = wt.pick_template(templates, model_name="flux1-dev-fp8.safetensors", model_folder="diffusion_models")
     check("Flux 分离权重走 flux_unet", tpl.name == "flux_unet" and arch == "flux", (tpl.name, arch))
     tpl2, arch2 = wt.pick_template(templates, model_name="SDXL/juggernautXL.safetensors", model_folder="checkpoints")
@@ -750,8 +762,11 @@ def main() -> int:
           {k: status_resp.get(k) for k in ("online", "device", "base_url")})
 
     tpl_resp = asyncio.run(handlers[(f"{base}/templates", ("GET",))]())
-    check("templates 处理器返回内置模板",
-          len(tpl_resp.get("templates", [])) == 3, [t.get("name") for t in tpl_resp.get("templates", [])])
+    check("templates 处理器返回内置模板（含 purpose 字段）",
+          {"sd_checkpoint", "img2img_checkpoint"}
+          <= {t.get("name") for t in tpl_resp.get("templates", [])}
+          and all("purpose" in t for t in tpl_resp.get("templates", [])),
+          [(t.get("name"), t.get("purpose")) for t in tpl_resp.get("templates", [])])
 
     stats_resp = asyncio.run(handlers[(f"{base}/stats", ("GET",))]())
     check("stats 处理器返回统计结构", "users" in stats_resp and "records" in stats_resp)
@@ -1113,15 +1128,33 @@ def main() -> int:
         {"5": {"class_type": "KSampler", "inputs": {"sampler_name": "dpmpp_2m"}}}))
     check("precheck 命中服务端约束", any("dpmpp_2m" in p for p in problems), problems)
 
+    # 预检只做诊断不做拦截：仍会提交，由服务端裁决；服务端拒绝时预检结论一并给出
     try:
         asyncio.run(plugin.generate(user_desc="一只猫", opts={}))
-        check("预检不通过时不提交并报明确原因", False)
+        check("预检不拦截提交（改由服务端裁决）", True)
     except api.ComfyUIError as exc:
         text = str(exc)
-        check("预检不通过时不提交并报明确原因",
-              "本地校验未通过" in text and "dpmpp_2m" in text, text.splitlines()[0][:70])
+        check("服务端拒绝时把预检结论一并给出（补上没原因的失败）",
+              "dpmpp_2m" in text, text.replace("\n", " ")[:90])
         check("失败的工作流被落盘以便排查",
               (plugin.data_dir / "last_failed_prompt.json").is_file())
+
+    # 防止误杀回归：LoadImage 的子目录引用由节点自校验，预检不应报错
+    path_specs = {"LoadImage": {"input": {"required": {
+        "image": [["root_only.png"], {"image_upload": True}]}}}}
+    path_graph = {"4": {"class_type": "LoadImage",
+                        "inputs": {"image": "astrbot/sub_folder_pic.png"}}}
+    check("LoadImage 的子目录引用不会被预检误判",
+          api.validate_graph_locally(path_graph, path_specs) == [],
+          api.validate_graph_locally(path_graph, path_specs))
+    # 但普通下拉仍然照常校验
+    combo_specs = {"CheckpointLoaderSimple": {"input": {"required": {
+        "ckpt_name": [["a.safetensors"], {}]}}}}
+    combo_graph = {"1": {"class_type": "CheckpointLoaderSimple",
+                         "inputs": {"ckpt_name": "nope.safetensors"}}}
+    check("普通下拉取值仍会被预检抓出",
+          len(api.validate_graph_locally(combo_graph, combo_specs)) == 1,
+          api.validate_graph_locally(combo_graph, combo_specs))
 
     print("\n=== 提交失败与超时（旧版会永久挂起）===")
     s5 = api.aiohttp.ClientSession()
@@ -1513,6 +1546,206 @@ def main() -> int:
 
     ctx._providers = {}
     plugin.config["llm_settings"] = {"enable_prompt_optimize": False}
+
+    print("\n=== 图生图 ===")
+    # 合成一个只含 PNG 头的文件，验证尺寸解析（不依赖 Pillow）
+    img_dir = Path(tempfile.mkdtemp(prefix="smart_img_"))
+    png_path = img_dir / "in.png"
+    png_path.write_bytes(
+        b"\x89PNG\r\n\x1a\n" + (13).to_bytes(4, "big") + b"IHDR"
+        + (640).to_bytes(4, "big") + (960).to_bytes(4, "big")
+        + b"\x08\x02\x00\x00\x00" + b"\x00\x00\x00\x00"
+    )
+    check("不依赖 Pillow 读出 PNG 尺寸", m.read_image_size(str(png_path)) == (640, 960),
+          m.read_image_size(str(png_path)))
+    check("读不出的文件返回 None", m.read_image_size("/tmp/不存在.png") is None)
+    # 1000x500 等比缩放后，高度 500 不是 8 的倍数，对齐为 496
+    check("等比缩放并限制最长边（并对齐 8）", m.fit_to_limit(2000, 1000, 1000) == (1000, 496),
+          m.fit_to_limit(2000, 1000, 1000))
+    check("不超上限时保持原尺寸并对齐 8", m.fit_to_limit(642, 962, 1536) == (640, 960),
+          m.fit_to_limit(642, 962, 1536))
+
+    tpls = wt.load_templates(ROOT / "workflows")
+    i2i_tpl = tpls["img2img_checkpoint"]
+    check("图生图模板的用途被识别为 i2i", i2i_tpl.purpose == "i2i", i2i_tpl.purpose)
+    check("文生图模板的用途是 t2i", tpls["sd_checkpoint"].purpose == "t2i")
+    check("图生图模板的潜空间来源是 VAEEncode",
+          i2i_tpl.bindings["latent"] == "6", i2i_tpl.bindings["latent"])
+    check("图生图模板找得到输入图与缩放节点",
+          i2i_tpl.bindings["image_loader"] == ("4", "image") and i2i_tpl.bindings["scaler"] == "5",
+          (i2i_tpl.bindings["image_loader"], i2i_tpl.bindings["scaler"]))
+    picked, _ = wt.pick_template(tpls, model_name="m.safetensors", model_folder="checkpoints",
+                                purpose="i2i")
+    check("按用途选到图生图模板", picked and picked.name == "img2img_checkpoint",
+          picked.name if picked else None)
+    picked_t2i, _ = wt.pick_template(tpls, model_name="m.safetensors", model_folder="checkpoints")
+    check("默认用途仍是文生图", picked_t2i.name == "sd_checkpoint", picked_t2i.name)
+
+    g_i2i = i2i_tpl.build(positive="1girl, winter", negative="bad hands",
+                          model_name="m.safetensors", image_name="astrbot/in.png",
+                          width=640, height=960, steps=25, cfg=7.0,
+                          sampler="dpmpp_2m", scheduler="karras", seed=5, denoise=0.45)
+    wt.validate_graph(g_i2i)
+    check("输入图被注入 LoadImage", g_i2i["4"]["inputs"]["image"] == "astrbot/in.png")
+    check("尺寸写进 ImageScale 而不是 VAEEncode",
+          g_i2i["5"]["inputs"]["width"] == 640 and g_i2i["5"]["inputs"]["height"] == 960
+          and "width" not in g_i2i["6"]["inputs"], g_i2i["6"]["inputs"])
+    check("denoise 被注入采样器", g_i2i["7"]["inputs"]["denoise"] == 0.45,
+          g_i2i["7"]["inputs"]["denoise"])
+
+    # 上传接口
+    up_sess = api.aiohttp.ClientSession()
+    up_sess.route("POST", "/upload/image", api.aiohttp.ClientResponse(
+        200, payload={"name": "in.png", "subfolder": "astrbot", "type": "input"}))
+    up_client = api.ComfyUI("127.0.0.1:8188")
+    up_client._session = up_sess
+    ref = asyncio.run(up_client.upload_image(str(png_path), subfolder="astrbot"))
+    check("上传后返回 子目录/文件名 引用", ref == "astrbot/in.png", ref)
+    posted = [kw for method, path, kw in up_sess.calls if method == "POST"]
+    form = posted[0]["data"] if posted else None
+    check("multipart 里带上了 image/type/overwrite/subfolder",
+          isinstance(form, api.aiohttp.FormData)
+          and {"image", "type", "overwrite", "subfolder"} <= set(form.fields),
+          sorted(form.fields) if isinstance(form, api.aiohttp.FormData) else None)
+
+    # 端到端：/图生图
+    def i2i_session(pid="i2i-1"):
+        sess = api.aiohttp.ClientSession()
+        sess.route("GET", "/models", api.aiohttp.ClientResponse(200, payload=["checkpoints"]))
+        sess.route("GET", "/models/checkpoints", api.aiohttp.ClientResponse(
+            200, payload=["SDXL/m.safetensors"]))
+        sess.route("POST", "/upload/image", api.aiohttp.ClientResponse(
+            200, payload={"name": "in.png", "subfolder": "astrbot", "type": "input"}))
+        sess.route("POST", "/prompt", api.aiohttp.ClientResponse(200, payload={"prompt_id": pid}))
+        sess.route("GET", "/queue", api.aiohttp.ClientResponse(
+            200, payload={"queue_running": [], "queue_pending": []}))
+        sess.route("GET", f"/history/{pid}", api.aiohttp.ClientResponse(200, payload={pid: {
+            "status": {"status_str": "success", "completed": True},
+            "outputs": {"9": {"images": [{"filename": "i2i.png", "type": "output"}]}}}}))
+        sess.route("GET", "/view", api.aiohttp.ClientResponse(200, text="PNG"))
+        plugin.comfy._session = sess
+        plugin.comfy.invalidate_model_cache()
+        return sess
+
+    plugin.config["llm_settings"] = {"enable_prompt_optimize": False}
+    plugin.config["draw_settings"] = {"default_negative": "lowres"}
+    plugin.config["i2i"] = {"enable": True, "denoise": 0.6, "max_side": 1536, "subfolder": "astrbot"}
+
+    ev_no_img = AstrMessageEvent(message_str="/图生图 改成冬天")
+    out_no_img = asyncio.run(drive(plugin.cmd_img2img(ev_no_img)))
+    check("/图生图 没有图片时给出用法", "用法" in out_no_img[0]["text"], out_no_img[0]["text"][:40])
+
+    ev_no_desc = AstrMessageEvent(message_str="/图生图",
+                                  message=[StubImage(str(png_path))])
+    out_no_desc = asyncio.run(drive(plugin.cmd_img2img(ev_no_desc)))
+    check("/图生图 没说怎么改时给出提示", "说明想怎么改" in out_no_desc[0]["text"],
+          out_no_desc[0]["text"][:40])
+
+    sess = i2i_session()
+    ev_i2i = AstrMessageEvent(message_str="/图生图 改成冬天，围上红色围巾",
+                              message=[StubImage(str(png_path))])
+    out_i2i = asyncio.run(drive(plugin.cmd_img2img(ev_i2i)))
+    submitted_i2i = None
+    for method, path, kw in sess.calls:
+        if method == "POST" and path == "/prompt":
+            submitted_i2i = kw["json"]["prompt"]
+    check("/图生图 提交了任务", submitted_i2i is not None)
+    check("提交的是图生图工作流（含 LoadImage 与 VAEEncode）",
+          submitted_i2i is not None
+          and any(n["class_type"] == "LoadImage" for n in submitted_i2i.values())
+          and any(n["class_type"] == "VAEEncode" for n in submitted_i2i.values()),
+          sorted({n["class_type"] for n in (submitted_i2i or {}).values()}))
+    check("尺寸按原图（640x960）走", submitted_i2i is not None
+          and submitted_i2i["5"]["inputs"]["width"] == 640
+          and submitted_i2i["5"]["inputs"]["height"] == 960,
+          (submitted_i2i or {}).get("5", {}).get("inputs"))
+    check("默认 denoise 生效", submitted_i2i is not None
+          and submitted_i2i["7"]["inputs"]["denoise"] == 0.6,
+          (submitted_i2i or {}).get("7", {}).get("inputs", {}).get("denoise"))
+    check("结果消息标注图生图",
+          any("图生图" in x.get("text", "") for x in out_i2i if x.get("type") == "plain")
+          or any(x.get("type") == "chain" for x in out_i2i),
+          [x.get("type") for x in out_i2i])
+
+    # --denoise 覆盖
+    sess2 = i2i_session(pid="i2i-2")
+    ev_dn = AstrMessageEvent(message_str="/图生图 只修细节 --denoise 0.25",
+                             message=[StubImage(str(png_path))])
+    asyncio.run(drive(plugin.cmd_img2img(ev_dn)))
+    sub_dn = None
+    for method, path, kw in sess2.calls:
+        if method == "POST" and path == "/prompt":
+            sub_dn = kw["json"]["prompt"]
+    check("行内 --denoise 覆盖默认值",
+          sub_dn is not None and sub_dn["7"]["inputs"]["denoise"] == 0.25,
+          (sub_dn or {}).get("7", {}).get("inputs", {}).get("denoise"))
+
+    # /画图 带图自动转图生图
+    sess3 = i2i_session(pid="i2i-3")
+    ev_draw_img = AstrMessageEvent(message_str="/画图 改成赛博朋克风格",
+                                   message=[StubImage(str(png_path))])
+    asyncio.run(drive(plugin.cmd_draw(ev_draw_img)))
+    sub_auto = None
+    for method, path, kw in sess3.calls:
+        if method == "POST" and path == "/prompt":
+            sub_auto = kw["json"]["prompt"]
+    check("/画图 带图时自动走图生图",
+          sub_auto is not None
+          and any(n["class_type"] == "LoadImage" for n in sub_auto.values()),
+          sorted({n["class_type"] for n in (sub_auto or {}).values()}))
+
+    # 关闭开关后 /画图 带图仍走文生图
+    plugin.config["i2i"] = {"enable": False}
+    sess4 = i2i_session(pid="i2i-4")
+    ev_draw_off = AstrMessageEvent(message_str="/画图 少女",
+                                   message=[StubImage(str(png_path))])
+    asyncio.run(drive(plugin.cmd_draw(ev_draw_off)))
+    sub_off = None
+    for method, path, kw in sess4.calls:
+        if method == "POST" and path == "/prompt":
+            sub_off = kw["json"]["prompt"]
+    check("关闭开关后 /画图 带图仍走文生图",
+          sub_off is not None
+          and not any(n["class_type"] == "LoadImage" for n in sub_off.values()),
+          sorted({n["class_type"] for n in (sub_off or {}).values()}))
+    plugin.config["i2i"] = {"enable": True, "denoise": 0.6, "max_side": 1536, "subfolder": "astrbot"}
+
+    print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
+    # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）
+    field_re = _re.compile(
+        r"\{ id: '([a-z0-9_]+)', path: \['([a-z0-9_]+)', '([a-z0-9_]+)'\], kind: '([a-z]+)'"
+    )
+    form_fields = field_re.findall(app_js)
+    check("能从 app.js 解析出表单字段", len(form_fields) >= 30, len(form_fields))
+
+    form_paths = {f"{group}.{key}" for _id, group, key, _kind in form_fields}
+    schema_obj = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+    schema_paths = {
+        f"{group}.{key}"
+        for group, spec in schema_obj.items()
+        for key in (spec.get("items") or {})
+    }
+    missing_in_form = sorted(schema_paths - form_paths)
+    check("schema 里的每个配置项都在配置页出现（否则用户改不了）",
+          not missing_in_form, missing_in_form or "全部覆盖")
+    stale_in_form = sorted(form_paths - schema_paths)
+    check("配置页没有指向不存在的配置项（否则保存后无效）",
+          not stale_in_form, stale_in_form or "全部有效")
+
+    # select 类型字段的 options 必须与 schema 一致
+    select_fields = _re.findall(
+        r"\{ id: '([a-z0-9_]+)', path: \['([a-z0-9_]+)', '([a-z0-9_]+)'\], kind: 'select',\s*"
+        r"options: \[([^\]]*)\]",
+        app_js,
+    )
+    check("存在 select 字段", len(select_fields) >= 2, len(select_fields))
+    mismatched = []
+    for _id, group, key, opts_raw in select_fields:
+        js_opts = [x.strip().strip("'") for x in opts_raw.split(",") if x.strip()]
+        schema_opts = (schema_obj.get(group, {}).get("items", {}).get(key) or {}).get("options")
+        if schema_opts != js_opts:
+            mismatched.append((f"{group}.{key}", js_opts, schema_opts))
+    check("下拉选项与 schema 完全一致", not mismatched, mismatched or "全部一致")
 
     print("\n=== 死代码守卫（写了却从没接上的函数）===")
     # 这次事故的根因就是 register_pages_routes 定义完整却从未被调用。

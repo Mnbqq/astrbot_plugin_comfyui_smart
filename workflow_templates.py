@@ -18,7 +18,17 @@ from pathlib import Path
 # 文本注入键的候选顺序：命中第一个存在的键。
 TEXT_INPUT_KEYS = ("text", "clip_l", "t5xxl", "prompt", "text_g", "string", "value")
 # 尺寸节点候选（SD 系用 EmptyLatentImage，Flux/SD3 用 EmptySD3LatentImage）。
-LATENT_CLASSES = ("EmptyLatentImage", "EmptySD3LatentImage", "EmptyLatentImagePresets")
+# 潜空间来源：文生图用空潜空间，图生图用 VAEEncode（从输入图编码而来）
+LATENT_CLASSES = (
+    "EmptyLatentImage",
+    "EmptySD3LatentImage",
+    "EmptyLatentImagePresets",
+    "VAEEncode",
+)
+# 输入图节点（图生图）
+IMAGE_LOADER_CLASSES = ("LoadImage", "LoadImageMask", "LoadImageOutput")
+# 缩放节点：图生图的目标尺寸写在这里，而不是潜空间节点
+SCALER_CLASSES = ("ImageScale",)
 SAMPLER_CLASSES = ("KSampler", "KSamplerAdvanced")
 SAVE_CLASSES = ("SaveImage", "SaveImageWebsocket")
 # 模型加载器 -> 输入键
@@ -375,6 +385,8 @@ def _derive_bindings(graph: dict) -> dict:
         "lora_loader": None,
         "save": None,
         "guidance": None,
+        "image_loader": None,
+        "scaler": None,
     }
 
     for node_id, node in graph.items():
@@ -402,6 +414,10 @@ def _derive_bindings(graph: dict) -> dict:
             bindings["save"] = node_id
         elif class_type == "FluxGuidance" and bindings["guidance"] is None:
             bindings["guidance"] = node_id
+        elif class_type in IMAGE_LOADER_CLASSES and bindings["image_loader"] is None:
+            bindings["image_loader"] = (node_id, "image")
+        elif class_type in SCALER_CLASSES and bindings["scaler"] is None:
+            bindings["scaler"] = node_id
 
     # 图结构推导失败时，用节点标题兜底（ComfyUI 导出的工作流通常带 _meta.title）
     if bindings["sampler"] is None:
@@ -600,6 +616,7 @@ class WorkflowTemplate:
         loader: str = "",
         source: str = "",
         bindings: dict | None = None,
+        purpose: str = "",
     ):
         """初始化模板。
 
@@ -610,6 +627,7 @@ class WorkflowTemplate:
             loader: 模型加载方式，checkpoint 或 unet。
             source: 来源描述（内置或文件路径）。
             bindings: 可选的注入点覆盖（按节点 id 或标题），用于自动推导选错节点的场景。
+            purpose: 用途，t2i（文生图，默认）或 i2i（图生图）。
 
         Raises:
             TemplateError: 图结构不合法、缺必需注入点，或 bindings 指向不存在的节点。
@@ -619,6 +637,9 @@ class WorkflowTemplate:
         self.name = name
         self.arch = arch
         self.loader = loader or _detect_loader(graph)
+        self.purpose = purpose or ("i2i" if "LoadImage" in {
+            n.get("class_type") for n in graph.values()
+        } else "t2i")
         self.source = source
         cleaned = prune_unreachable(copy.deepcopy(graph))
         validate_graph(cleaned)
@@ -633,6 +654,7 @@ class WorkflowTemplate:
             "name": self.name,
             "arch": self.arch or "generic",
             "loader": self.loader,
+            "purpose": self.purpose,
             "source": self.source,
             "nodes": len(self.graph),
             "class_types": sorted(self.required_nodes()),
@@ -683,8 +705,10 @@ class WorkflowTemplate:
         scheduler: str = "",
         seed: int | None = None,
         batch_size: int = 1,
+        denoise: float | None = None,
         guidance: float | None = None,
         filename_prefix: str = "astrbot_smart",
+        image_name: str = "",
     ) -> dict:
         """按模板生成可直接提交的图。
 
@@ -703,8 +727,10 @@ class WorkflowTemplate:
             scheduler: 调度器名。
             seed: 随机种子。
             batch_size: 批次大小。
+            denoise: 重绘幅度（图生图用；None 表示沿用模板默认值）。
             guidance: Flux guidance 值。
             filename_prefix: 输出文件名前缀。
+            image_name: 图生图的输入图引用（ComfyUI input 目录下的相对路径）。
 
         Returns:
             可提交给 /prompt 的图。
@@ -740,14 +766,18 @@ class WorkflowTemplate:
                 for key in _text_keys(graph, neg_id, neg_key):
                     graph[neg_id]["inputs"][key] = negative
         # 4) 尺寸与批次
-        if b["latent"]:
-            latent_inputs = graph[b["latent"]]["inputs"]
-            if width:
-                latent_inputs["width"] = int(width)
-            if height:
-                latent_inputs["height"] = int(height)
-            if "batch_size" in latent_inputs:
-                latent_inputs["batch_size"] = int(batch_size)
+        # 尺寸：图生图写在缩放节点上，文生图写在空潜空间节点上。
+        # 只写节点上**真实存在**的键 —— 例如 VAEEncode 没有 width/height，
+        # 凭空塞进去会被 ComfyUI 以 invalid_input_type 拒绝。
+        size_target = b["scaler"] or b["latent"]
+        if size_target and size_target in graph:
+            size_inputs = graph[size_target]["inputs"]
+            if width and "width" in size_inputs:
+                size_inputs["width"] = int(width)
+            if height and "height" in size_inputs:
+                size_inputs["height"] = int(height)
+            if "batch_size" in size_inputs:
+                size_inputs["batch_size"] = int(batch_size)
         # 5) 采样参数
         sampler_inputs = graph[b["sampler"]]["inputs"]
         _set_first(sampler_inputs, SAMPLER_FIELDS["seed"], seed)
@@ -755,6 +785,7 @@ class WorkflowTemplate:
         _set_first(sampler_inputs, SAMPLER_FIELDS["cfg"], cfg)
         _set_first(sampler_inputs, SAMPLER_FIELDS["sampler_name"], sampler or None)
         _set_first(sampler_inputs, SAMPLER_FIELDS["scheduler"], scheduler or None)
+        _set_first(sampler_inputs, SAMPLER_FIELDS["denoise"], denoise)
         # 6) Flux guidance
         if b["guidance"] and guidance is not None:
             if "guidance" in graph[b["guidance"]]["inputs"]:
@@ -762,6 +793,10 @@ class WorkflowTemplate:
         # 7) LoRA（模板自带则改写，否则插入并重接）
         if lora_name:
             _apply_lora(graph, b, lora_name, lora_strength)
+        # 7.5) 图生图的输入图
+        if image_name and b["image_loader"]:
+            loader_id, loader_key = b["image_loader"]
+            graph[loader_id]["inputs"][loader_key] = image_name
         # 8) 输出前缀
         if b["save"] and "filename_prefix" in graph[b["save"]]["inputs"]:
             graph[b["save"]]["inputs"]["filename_prefix"] = filename_prefix
@@ -1038,6 +1073,7 @@ def parse_template_payload(payload: dict, name: str, source: str = "") -> dict:
             "name": _field("name") or name,
             "arch": _field("arch"),
             "loader": _field("loader"),
+            "purpose": _field("purpose"),
             "bindings": spec,
             "graph": payload["graph"],
         }
@@ -1047,11 +1083,13 @@ def parse_template_payload(payload: dict, name: str, source: str = "") -> dict:
             "name": name,
             "arch": "",
             "loader": "",
+            "purpose": "",
             "bindings": {},
             "graph": payload["prompt"],
         }
     if all(isinstance(v, dict) and "class_type" in v for v in payload.values()):
-        return {"name": name, "arch": "", "loader": "", "bindings": {}, "graph": payload}
+        return {"name": name, "arch": "", "loader": "", "purpose": "",
+                "bindings": {}, "graph": payload}
     raise TemplateError(f"模板 {name} 结构无法识别（既不是 API 图也不是包装格式）")
 
 
@@ -1077,6 +1115,7 @@ def load_templates(*dirs: Path) -> dict[str, WorkflowTemplate]:
                     meta["graph"],
                     arch=meta["arch"],
                     loader=meta["loader"],
+                    purpose=meta.get("purpose") or "",
                     source=str(path),
                     bindings=meta.get("bindings") or {},
                 )
@@ -1114,6 +1153,7 @@ def pick_template(
     model_folder: str = "checkpoints",
     available_nodes: set[str] | None = None,
     arch_override: str = "",
+    purpose: str = "t2i",
 ) -> tuple[WorkflowTemplate | None, str]:
     """按模型所在文件夹、文件名与服务端能力选择模板。
 
@@ -1128,6 +1168,7 @@ def pick_template(
         model_folder: 模型所在文件夹，checkpoints 或 diffusion_models。
         available_nodes: 服务端已安装的节点类名；None 或空集表示探测失败，此时跳过能力过滤。
         arch_override: 用户在配置里强制指定的架构，优先于文件名推断。
+        purpose: 需要的用途，t2i（默认）或 i2i。
 
     Returns:
         (模板, 架构key)。模板为 None 表示没有任何可用模板。
@@ -1138,10 +1179,13 @@ def pick_template(
     arch = guess_arch(model_name, arch_override)
     want_loader = "unet" if model_folder == "diffusion_models" else "checkpoint"
 
-    # 优先在加载方式匹配的模板里选
-    pool = [t for t in templates.values() if t.loader == want_loader]
+    # 先按用途筛：图生图不能拿到文生图模板（二者节点结构不同）
+    by_purpose = [t for t in templates.values() if t.purpose == purpose]
+    if not by_purpose and purpose == "i2i":
+        return None, guess_arch(model_name, arch_override)
+    pool = [t for t in (by_purpose or templates.values()) if t.loader == want_loader]
     if not pool:
-        pool = list(templates.values())
+        pool = list(by_purpose or templates.values())
     # 架构兼容：不允许把 Flux 模板用在 SD 模型上（反之亦然）
     compatible = [t for t in pool if is_compatible(t, arch)]
     if not compatible:

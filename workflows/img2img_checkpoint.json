@@ -1,0 +1,71 @@
+{
+  "name": "img2img_checkpoint",
+  "purpose": "i2i",
+  "arch": "generic",
+  "loader": "checkpoint",
+  "description": "图生图：以你提供的图为底，按提示词重绘。denoise 控制改动幅度（0.4~0.6 是改画风/改细节，0.7+ 接近重画）。尺寸写进 ImageScale，解码走底模自带 VAE。",
+  "graph": {
+    "1": {
+      "class_type": "CheckpointLoaderSimple",
+      "_meta": { "title": "底模 Checkpoint" },
+      "inputs": { "ckpt_name": "put_your_checkpoint_here.safetensors" }
+    },
+    "2": {
+      "class_type": "CLIPTextEncode",
+      "_meta": { "title": "正面提示词" },
+      "inputs": { "text": "", "clip": ["1", 1] }
+    },
+    "3": {
+      "class_type": "CLIPTextEncode",
+      "_meta": { "title": "负面提示词" },
+      "inputs": { "text": "", "clip": ["1", 1] }
+    },
+    "4": {
+      "class_type": "LoadImage",
+      "_meta": { "title": "输入图片" },
+      "inputs": { "image": "astrbot/placeholder.png" }
+    },
+    "5": {
+      "class_type": "ImageScale",
+      "_meta": { "title": "尺寸" },
+      "inputs": {
+        "image": ["4", 0],
+        "upscale_method": "lanczos",
+        "width": 512,
+        "height": 768,
+        "crop": "disabled"
+      }
+    },
+    "6": {
+      "class_type": "VAEEncode",
+      "_meta": { "title": "编码为潜空间" },
+      "inputs": { "pixels": ["5", 0], "vae": ["1", 2] }
+    },
+    "7": {
+      "class_type": "KSampler",
+      "_meta": { "title": "采样器" },
+      "inputs": {
+        "model": ["1", 0],
+        "seed": 0,
+        "steps": 25,
+        "cfg": 7.0,
+        "sampler_name": "dpmpp_2m",
+        "scheduler": "karras",
+        "positive": ["2", 0],
+        "negative": ["3", 0],
+        "latent_image": ["6", 0],
+        "denoise": 0.6
+      }
+    },
+    "8": {
+      "class_type": "VAEDecode",
+      "_meta": { "title": "VAE 解码" },
+      "inputs": { "samples": ["7", 0], "vae": ["1", 2] }
+    },
+    "9": {
+      "class_type": "SaveImage",
+      "_meta": { "title": "保存图片" },
+      "inputs": { "images": ["8", 0], "filename_prefix": "astrbot_smart_i2i" }
+    }
+  }
+}
