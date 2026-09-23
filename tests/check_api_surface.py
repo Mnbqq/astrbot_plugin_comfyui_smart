@@ -42,15 +42,16 @@ MEMBER_TARGETS: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
 # 缺失时插件有「文档化回退」的成员：不要求存在，但会单独报告，
 # 以便一眼看出当前 AstrBot 版本走的是哪条路径。
 FALLBACK_MEMBERS: tuple[tuple[str, str, str, str], ...] = (
-    ("Star 基类", "astrbot/core/star/base.py", "Star", "logger"),
     ("AstrBotConfig", "astrbot/core/config/astrbot_config.py", "AstrBotConfig",
      "save_config_async"),
 )
 # 回退说明（用于输出）
 FALLBACK_NOTES = {
-    "logger": '缺失时 main.py 回退到 logging.getLogger("astrbot")',
     "save_config_async": "缺失时 main.py 回退到 AstrBotConfig.save_config()",
 }
+# 注意：Star.logger 不再被使用。上架规范要求 logger 必须且只能来自
+# `from astrbot.api import logger`，插件里任何 `logging.getLogger(...)` 回退都属违规，
+# 因此这里也不再把它当作「可选回退成员」来报告。
 
 # astrbot/api/web.py 需要导出的顶层名字
 WEB_EXPORTS = ("json_response", "error_response", "file_response", "request",
@@ -196,6 +197,16 @@ def check_members(root: Path) -> tuple[int, list[str], list[str]]:
         if found is not None and member not in found:
             note = FALLBACK_NOTES.get(member, "")
             unavailable.append(f"{label}.{member} 不存在 -> 走回退路径（{note}）")
+
+    # 上架规范：日志必须来自官方 `from astrbot.api import logger`。
+    # 这里核验 astrbot/api/__init__.py 真的导出了 logger（含 v4.26.0 的转发写法）。
+    api_init = root / "astrbot/api/__init__.py"
+    if api_init.is_file():
+        checked += 1
+        if "logger" not in (_Exports(root).of("astrbot.api") or set()):
+            problems.append(
+                "astrbot/api/__init__.py 未导出 logger（插件按上架规范依赖它，不能回退到 logging）"
+            )
 
     web = root / "astrbot/api/web.py"
     if web.is_file():

@@ -314,7 +314,7 @@
 启动时插件会打印一条横幅，用于确认「跑的到底是哪一版」：
 
 ```
-ComfyUI 智能绘图 v0.6.2 已激活｜模板 3 个｜数据目录 …｜插件专属日志 可用｜Pages 已注册｜排队补偿上限 10 个任务
+ComfyUI 智能绘图 v0.6.3 已激活｜模板 4 个｜数据目录 …｜日志走 astrbot.api.logger｜Pages 已注册｜排队补偿上限 10 个任务
 ```
 
 ## 常见问题
@@ -380,6 +380,22 @@ ComfyUI 智能绘图 v0.6.2 已激活｜模板 3 个｜数据目录 …｜插件
 有想优先要的功能，或者上面没列到的，欢迎开 Issue 提。
 
 ## 更新日志
+
+**v0.6.3** — 上架规范整改：日志统一走官方 logger
+
+- **背景**：上架审查退回，原因是 `main.py` 里对 `self.logger` 做了回退
+  —— 当 AstrBot 基类没有该属性时执行 `import logging` +
+  `logging.getLogger("astrbot")`。规范要求 **logger 必须且只能来自
+  `from astrbot.api import logger`，严禁使用 Python 内置 logging**。
+- **整改**：模块级统一改为 `from astrbot.api import AstrBotConfig, logger`，
+  删除整个回退分支与 `_has_plugin_logger` 标记，插件内所有日志调用改用该 logger。
+  已核对 `astrbot.api.logger` 在声明的下界 **4.26.0** 与 4.27.3、4.28.1 上均存在
+  （4.26.0 由 `from astrbot import logger` 转发，4.27.3+ 是带插件上下文的 logger 单例），
+  所以回退分支本来就没有必要。
+- 启动横幅里的「插件专属日志 可用」改为「日志走 astrbot.api.logger」，不再声称
+  一个 v4.26 上并不存在的特性；模板数示例同步更正为 4 个。
+- **新增守卫**：测试会扫描插件源码，一旦再次出现 `import logging` / `logging.xxx`
+  立即失败；API 面核验也把 `astrbot.api.logger` 列为必须导出项。
 
 **v0.6.2** — Hires Fix 细分开关 + 反推可指定专用模型
 

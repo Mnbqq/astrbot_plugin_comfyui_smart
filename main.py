@@ -9,7 +9,7 @@ import re
 import time
 from pathlib import Path
 
-from astrbot.api import AstrBotConfig
+from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.message_components import At, Image, Plain, Reply
 from astrbot.api.star import Context, Star, StarTools
@@ -33,7 +33,7 @@ from .workflow_templates import (
 
 PLUGIN_NAME = "astrbot_plugin_comfyui_smart"
 # 与 metadata.yaml 的 version 保持一致（tests/test_logic.py 会校验二者不漂移）
-PLUGIN_VERSION = "0.6.2"
+PLUGIN_VERSION = "0.6.3"
 PLUGIN_DIR = Path(__file__).resolve().parent
 BUILTIN_TEMPLATE_DIR = PLUGIN_DIR / "workflows"
 
@@ -175,14 +175,9 @@ class ComfyUISmartPlugin(Star):
             config: 由 _conf_schema.json 生成的 AstrBotConfig（支持 save_config）。
         """
         super().__init__(context)
-        # 插件专属 logger（self.logger）是 AstrBot v4.27.3 才提供的；
-        # 更早的版本上回退到全局 logger，避免整个插件在实例化阶段就崩。
-        self._has_plugin_logger = bool(getattr(self, "logger", None))
-        if not self._has_plugin_logger:
-            import logging
-
-            self.logger = logging.getLogger("astrbot")
-
+        # 日志统一走 AstrBot 官方 logger（模块顶层从 astrbot.api 导入，所有受支持版本均可用）。
+        # 不引入标准库日志模块做回退：Star.logger 是 v4.27.3 才有的属性，不能作为唯一来源，
+        # 但回退到标准库日志属上架违规 —— 官方 logger 在 4.26.0 起就已存在，无需回退。
         # 保留 AstrBotConfig 实例本身，绝不替换成普通 dict —— 否则无法落盘
         self.config: AstrBotConfig | dict = config if config is not None else {}
 
@@ -214,11 +209,11 @@ class ComfyUISmartPlugin(Star):
             self.pages_ready = bool(register_pages_routes(self))
         except Exception as e:
             # Pages 不可用不应让聊天指令一起失效，但必须在日志里显式报错（不是 warning）
-            self.logger.error(
+            logger.error(
                 "插件 Pages 路由注册失败，配置页/状态页将无法使用：%s", e, exc_info=True
             )
 
-        self.logger.info("ComfyUI 智能绘图已加载，数据目录：%s", self.data_dir)
+        logger.info("ComfyUI 智能绘图已加载，数据目录：%s", self.data_dir)
 
     # ------------------------------------------------------------------ #
     # 配置与生命周期
@@ -231,7 +226,7 @@ class ComfyUISmartPlugin(Star):
             int(server.get("timeout", 180) or 180),
             poll_interval=float(server.get("poll_interval", 1.5) or 1.5),
             max_tasks_ahead=int(server.get("max_tasks_ahead", 10) or 10),
-            logger=self.logger,
+            logger=logger,
         )
 
     @property
@@ -272,13 +267,12 @@ class ComfyUISmartPlugin(Star):
         self._load_templates()
         # 启动横幅：一眼确认「跑的是哪一版、加载了几个模板、日志走哪条路径」。
         # 排查「装的是新版还是旧版」这类问题时非常省事。
-        self.logger.info(
+        logger.info(
             "ComfyUI 智能绘图 v%s 已激活｜模板 %d 个｜数据目录 %s｜"
-            "插件专属日志 %s｜Pages %s｜排队补偿上限 %s 个任务",
+            "日志走 astrbot.api.logger｜Pages %s｜排队补偿上限 %s 个任务",
             PLUGIN_VERSION,
             len(self.templates),
             self.data_dir,
-            "可用" if self._has_plugin_logger else "不可用（已回退全局 logger）",
             "已注册" if self.pages_ready else "注册失败（配置页与状态页将不可用）",
             self.comfy.max_tasks_ahead,
         )
@@ -286,7 +280,7 @@ class ComfyUISmartPlugin(Star):
         age = int((self.config.get("output") or {}).get("image_max_age_days", 30) or 30)
         removed = self.storage.prune_images(keep=keep, max_age_days=age)
         if removed:
-            self.logger.info("已清理 %d 张过期图片", removed)
+            logger.info("已清理 %d 张过期图片", removed)
         self._sync_llm_tool()
 
     async def terminate(self) -> None:
@@ -299,7 +293,7 @@ class ComfyUISmartPlugin(Star):
                 pass
         self._active_jobs.clear()
         await self.comfy.close()
-        self.logger.info("ComfyUI 智能绘图已卸载")
+        logger.info("ComfyUI 智能绘图已卸载")
 
     # ------------------------------------------------------------------ #
     # Pages 后端接口
@@ -350,7 +344,7 @@ class ComfyUISmartPlugin(Star):
 
         self.reload_components()
         self._sync_llm_tool()
-        self.logger.info("配置已通过 Pages 更新并落盘")
+        logger.info("配置已通过 Pages 更新并落盘")
         return {"saved": True, "keys": sorted(payload.keys())}
 
     def _sync_llm_tool(self) -> None:
@@ -362,7 +356,7 @@ class ComfyUISmartPlugin(Star):
             else:
                 self.context.deactivate_llm_tool("generate_image")
         except Exception as e:
-            self.logger.debug("切换 LLM 工具状态失败：%s", e)
+            logger.debug("切换 LLM 工具状态失败：%s", e)
 
     async def refresh_models(self) -> dict:
         """重新发现 ComfyUI 模型并写入缓存。
@@ -707,7 +701,7 @@ class ComfyUISmartPlugin(Star):
                 )
             except RuntimeError as e:
                 # 没有可用 LLM 时不应直接失败：退化为原描述 + 首个可用底模照常出图
-                self.logger.warning("LLM 不可用，退化为直接使用原描述出图：%s", e)
+                logger.warning("LLM 不可用，退化为直接使用原描述出图：%s", e)
                 opt = {}
                 llm_note = "（未启用/无可用 LLM，已直接用你的原话出图）"
             if opt.get("positive"):
@@ -750,7 +744,7 @@ class ComfyUISmartPlugin(Star):
                 sampling["width"], sampling["height"] = fit_to_limit(
                     source_size[0], source_size[1], max_side
                 )
-            self.logger.info(
+            logger.info(
                 "图生图｜输入 %s｜目标 %sx%s｜denoise %s",
                 image_ref, sampling["width"], sampling["height"], denoise,
             )
@@ -796,7 +790,7 @@ class ComfyUISmartPlugin(Star):
         # 提示词长度诊断。注意：ComfyUI 对超长提示词**不是截断**，而是切成多段
         # 分别编码后拼接，所以长提示词依然生效；但每段都要插入 start/end 与 padding，
         # 词越多，单个词的相对影响力越低 —— 这是「负面词写了一百个反而没效果」的成因。
-        self.logger.info(
+        logger.info(
             "本次提示词长度｜正向 %s｜负面 %s",
             describe_prompt(positive),
             describe_prompt(negative),
@@ -862,7 +856,7 @@ class ComfyUISmartPlugin(Star):
                 # 行内给了倍数就以它为准：0 或 1 表示本次关闭
                 hires_on = hires_scale > 1.0
             else:
-                self.logger.info("单次 --hires 已被配置禁用，本次按配置设置处理")
+                logger.info("单次 --hires 已被配置禁用，本次按配置设置处理")
         if opts.get("hires_denoise") not in (None, ""):
             try:
                 hires_denoise = min(1.0, max(0.0, float(opts["hires_denoise"])))
@@ -889,7 +883,7 @@ class ComfyUISmartPlugin(Star):
             if hires_info:
                 # 图生图的尺寸看输入图，不一定等于配置里的宽高：以实际结果为准
                 if hires_info["width"] and hires_info["height"]:
-                    self.logger.info(
+                    logger.info(
                         "Hires Fix 已启用｜%s → %sx%s｜denoise %s｜第二轮步数 %s",
                         f"{sampling['width']}x{sampling['height']}",
                         hires_info["width"], hires_info["height"],
@@ -897,7 +891,7 @@ class ComfyUISmartPlugin(Star):
                     )
                 else:
                     # 尺寸完全由工作流决定，插件拿不到具体数值
-                    self.logger.info(
+                    logger.info(
                         "Hires Fix 已启用｜按 ×%s 放大（首次尺寸由工作流决定）"
                         "｜denoise %s｜第二轮步数 %s",
                         hires_scale, hires_denoise, hires_steps or "同首轮",
@@ -905,7 +899,7 @@ class ComfyUISmartPlugin(Star):
                 # 放大后的像素量才是显存真正吃紧的地方，提前提醒而不是等它 OOM
                 target_pixels = hires_info["width"] * hires_info["height"]
                 if target_pixels > 2048 * 2048:
-                    self.logger.warning(
+                    logger.warning(
                         "Hires 目标尺寸 %sx%s（%.1f MP）偏大，小显存机器容易 OOM 或极慢；"
                         "建议把放大倍数降到 1.5 以内",
                         hires_info["width"], hires_info["height"],
@@ -916,7 +910,7 @@ class ComfyUISmartPlugin(Star):
                         f"（{target_pixels / 1_000_000:.1f} MP）偏大，小显存容易爆或很慢"
                     )
             else:
-                self.logger.warning("Hires Fix 未能插入（模板结构不支持），本次按普通出图处理")
+                logger.warning("Hires Fix 未能插入（模板结构不支持），本次按普通出图处理")
 
         # 提交前用服务端自己的输入约束做一次本地预检。
         # 注意：这里**只做诊断、不做拦截**。有些节点用 VALIDATE_INPUTS 自己校验输入
@@ -925,7 +919,7 @@ class ComfyUISmartPlugin(Star):
         # 正好补上「ComfyUI 只回一句 failed validation、不给节点级原因」的场景。
         problems = await self.comfy.precheck(graph)
         if problems:
-            self.logger.warning(
+            logger.warning(
                 "提交前预检发现问题（仍会提交，由服务端裁决）：%s", "；".join(problems)
             )
 
@@ -937,7 +931,7 @@ class ComfyUISmartPlugin(Star):
         except ComfyUIError as e:
             # 把「实际提交的图」落盘：服务端偶尔不返回节点级原因，没有这个就只能靠猜
             path = self._dump_failed_graph(graph, e)
-            self.logger.warning(
+            logger.warning(
                 "提交失败｜正向提示词 %d 字符｜模板 %s｜底模 %s｜LoRA %s｜图已存 %s",
                 len(positive), template.name, selection["model"],
                 selection["lora"] or "无", path,
@@ -1041,15 +1035,15 @@ class ComfyUISmartPlugin(Star):
                 source_image=source_image,
             )
         except (ComfyUIError, TemplateError) as e:
-            self.logger.warning("出图失败：%s", e)
+            logger.warning("出图失败：%s", e)
             yield event.plain_result(f"💥 出图失败：{e}")
             return
         except RuntimeError as e:
-            self.logger.warning("LLM 调用失败：%s", e)
+            logger.warning("LLM 调用失败：%s", e)
             yield event.plain_result(f"💥 {e}")
             return
         except Exception as e:  # pragma: no cover - 兜底，避免 handler 抛出
-            self.logger.exception("出图时发生未预期错误")
+            logger.exception("出图时发生未预期错误")
             yield event.plain_result(f"💥 出图时发生未预期错误：{e}")
             return
 
@@ -1126,7 +1120,7 @@ class ComfyUISmartPlugin(Star):
             try:
                 path = await comp.convert_to_file_path()
             except Exception as e:
-                self.logger.warning("读取消息里的图片失败：%s", e)
+                logger.warning("读取消息里的图片失败：%s", e)
                 continue
             if path and str(path) not in paths:
                 paths.append(str(path))
@@ -1155,7 +1149,7 @@ class ComfyUISmartPlugin(Star):
                 json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
             )
         except OSError as e:
-            self.logger.warning("写入失败工作流时出错：%s", e)
+            logger.warning("写入失败工作流时出错：%s", e)
         return path
 
     def _compose_result_chain(self, event: AstrMessageEvent, uid: str, result: dict):
@@ -1305,7 +1299,7 @@ class ComfyUISmartPlugin(Star):
                     lines.append("　对话模型：❌ 未配置")
             lines.append("　提示：/反推 必须用支持看图的模型；不支持时请用配置里的「看图反推专用提供商」或 --provider 指定")
         except Exception as e:
-            self.logger.debug("读取对话模型信息失败：%s", e)
+            logger.debug("读取对话模型信息失败：%s", e)
         yield event.plain_result("\n".join(lines))
 
     @filter.command("图生图", alias={"改图", "i2i", "重绘"})
@@ -1359,7 +1353,7 @@ class ComfyUISmartPlugin(Star):
                 source_image=images[0],
             )
         except (ComfyUIError, TemplateError) as e:
-            self.logger.warning("图生图失败：%s", e)
+            logger.warning("图生图失败：%s", e)
             yield event.plain_result(f"💥 出图失败：{e}")
             return
         except RuntimeError as e:
@@ -1406,7 +1400,7 @@ class ComfyUISmartPlugin(Star):
                 images, hint=hint, event=event, provider_id=pid
             )
         except RuntimeError as e:
-            self.logger.warning("反推失败：%s", e)
+            logger.warning("反推失败：%s", e)
             yield event.plain_result(f"💥 {e}")
             return
 
@@ -1449,7 +1443,7 @@ class ComfyUISmartPlugin(Star):
                 preset=result,
             )
         except (ComfyUIError, TemplateError) as e:
-            self.logger.warning("按反推结果出图失败：%s", e)
+            logger.warning("按反推结果出图失败：%s", e)
             yield event.plain_result(f"💥 出图失败：{e}")
             return
         except RuntimeError as e:
@@ -1541,7 +1535,7 @@ class ComfyUISmartPlugin(Star):
         try:
             result = await self.generate(user_desc=prompt, opts=opts, event=event)
         except (ComfyUIError, TemplateError, RuntimeError) as e:
-            self.logger.warning("无指令出图失败：%s", e)
+            logger.warning("无指令出图失败：%s", e)
             yield event.plain_result(f"💥 出图失败：{e}")
             return
 
