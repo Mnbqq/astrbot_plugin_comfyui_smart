@@ -33,7 +33,7 @@ from .workflow_templates import (
 
 PLUGIN_NAME = "astrbot_plugin_comfyui_smart"
 # 与 metadata.yaml 的 version 保持一致（tests/test_logic.py 会校验二者不漂移）
-PLUGIN_VERSION = "0.6.0"
+PLUGIN_VERSION = "0.6.2"
 PLUGIN_DIR = Path(__file__).resolve().parent
 BUILTIN_TEMPLATE_DIR = PLUGIN_DIR / "workflows"
 
@@ -50,6 +50,7 @@ PARAM_ALIASES = {
     "sampler": "sampler", "采样器": "sampler",
     "hires": "hires", "放大": "hires", "hires-denoise": "hires_denoise",
     "denoise": "denoise", "重绘": "denoise",
+    "provider": "provider", "模型商": "provider",
     "draw": "draw", "画": "draw",
     "hires-steps": "hires_steps",
     "lora": "lora", "模型": "model", "model": "model",
@@ -201,6 +202,8 @@ class ComfyUISmartPlugin(Star):
         # 在 __init__ 里就加载，避免任何早于 initialize() 的调用（Pages /模板列表）看到空模板
         self._load_templates()
         self._cancel = asyncio.Event()
+        # 提示词过长提示每次加载只发一次，避免每条出图都刷屏（日志里仍每次都记）
+        self._prompt_note_shown = False
         self._active_jobs: set[str] = set()
 
         # 注册插件 Pages 的后端 API。
@@ -799,7 +802,8 @@ class ComfyUISmartPlugin(Star):
             describe_prompt(negative),
         )
         prompt_note = ""
-        if estimate_clip_chunks(negative)[1] >= 3:
+        if estimate_clip_chunks(negative)[1] >= 3 and not self._prompt_note_shown:
+            self._prompt_note_shown = True
             prompt_note = (
                 f"负面词较长（{describe_prompt(negative)}）。过长的负面词不会失效，"
                 f"但会稀释每个词的影响力，可考虑精简重复项"
@@ -839,14 +843,26 @@ class ComfyUISmartPlugin(Star):
         hires_denoise = float(hires_conf.get("denoise", 0.5) or 0.5)
         hires_steps = int(hires_conf.get("steps", 0) or 0)
         hires_method = str(hires_conf.get("method") or "bislerp")
-        hires_on = bool(hires_conf.get("enable", False))
-        if opts.get("hires") not in (None, ""):
-            try:
-                hires_scale = float(opts["hires"])
-            except (TypeError, ValueError):
-                pass
-            # 行内给了倍数就以它为准：0 或 1 表示本次关闭
-            hires_on = hires_scale > 1.0
+
+        # 自动开关分文生图/图生图两个，互不影响
+        if purpose == "i2i":
+            hires_on = bool(hires_conf.get("enable", False)) and bool(
+                hires_conf.get("enable_for_i2i", True)
+            )
+        else:
+            hires_on = bool(hires_conf.get("enable", False))
+
+        # 单次指令的 --hires：可被管理员关掉（避免有人把倍数开到爆显存）
+        if str(opts.get("hires") or "").strip():
+            if bool(hires_conf.get("allow_inline", True)):
+                try:
+                    hires_scale = float(opts["hires"])
+                except (TypeError, ValueError):
+                    pass
+                # 行内给了倍数就以它为准：0 或 1 表示本次关闭
+                hires_on = hires_scale > 1.0
+            else:
+                self.logger.info("单次 --hires 已被配置禁用，本次按配置设置处理")
         if opts.get("hires_denoise") not in (None, ""):
             try:
                 hires_denoise = min(1.0, max(0.0, float(opts["hires_denoise"])))
@@ -871,12 +887,21 @@ class ComfyUISmartPlugin(Star):
                 upscale_method=hires_method,
             )
             if hires_info:
-                self.logger.info(
-                    "Hires Fix 已启用｜%sx → %sx%s｜denoise %s｜第二轮步数 %s",
-                    f"{sampling['width']}x{sampling['height']}",
-                    hires_info["width"], hires_info["height"],
-                    hires_denoise, hires_steps or "同首轮",
-                )
+                # 图生图的尺寸看输入图，不一定等于配置里的宽高：以实际结果为准
+                if hires_info["width"] and hires_info["height"]:
+                    self.logger.info(
+                        "Hires Fix 已启用｜%s → %sx%s｜denoise %s｜第二轮步数 %s",
+                        f"{sampling['width']}x{sampling['height']}",
+                        hires_info["width"], hires_info["height"],
+                        hires_denoise, hires_steps or "同首轮",
+                    )
+                else:
+                    # 尺寸完全由工作流决定，插件拿不到具体数值
+                    self.logger.info(
+                        "Hires Fix 已启用｜按 ×%s 放大（首次尺寸由工作流决定）"
+                        "｜denoise %s｜第二轮步数 %s",
+                        hires_scale, hires_denoise, hires_steps or "同首轮",
+                    )
                 # 放大后的像素量才是显存真正吃紧的地方，提前提醒而不是等它 OOM
                 target_pixels = hires_info["width"] * hires_info["height"]
                 if target_pixels > 2048 * 2048:
@@ -954,8 +979,9 @@ class ComfyUISmartPlugin(Star):
             "denoise": denoise if denoise is not None else 1.0,
             "seconds": time.time() - started,
             # 有 Hires 时对外报最终尺寸，消息与画廊显示的才是真实产物尺寸
-            "width": hires_info.get("width", sampling["width"]),
-            "height": hires_info.get("height", sampling["height"]),
+            # Hires 生效时以放大后的最终尺寸为准；拿不到具体数值（0）则退回配置尺寸
+            "width": hires_info.get("width") or sampling["width"],
+            "height": hires_info.get("height") or sampling["height"],
             **{k: sampling[k] for k in ("steps", "cfg", "sampler")},
         }
 
@@ -1162,7 +1188,13 @@ class ComfyUISmartPlugin(Star):
             if result.get("i2i"):
                 detail += f"\n🖼 图生图：重绘幅度 {result.get('denoise', 0.6)}"
             if result.get("hires"):
-                detail += "\n🔍 Hires Fix：放大后二次重绘"
+                _hw = result["hires"].get("width")
+                _hh = result["hires"].get("height")
+                if _hw and _hh:
+                    detail += f"\n🔍 Hires Fix：{_hw}x{_hh}"
+                else:
+                    # 尺寸由工作流自己决定，只说倍数，避免编一个尺寸出来
+                    detail += f"\n🔍 Hires Fix：×{result['hires'].get('scale', '')}"
             if result.get("hires_note"):
                 detail += f"\n⚠️ {result['hires_note']}"
             if result.get("prompt_note"):
@@ -1238,7 +1270,42 @@ class ComfyUISmartPlugin(Star):
         if version:
             lines.append(f"　ComfyUI 版本：{version}")
         lines.append(f"　模板：{len(self.templates)} 个")
+        hires_conf = self.config.get("hires", {}) or {}
+        lines.append(
+            "　Hires Fix：文生图 {}｜图生图 {}｜单次 --hires {}".format(
+                "开" if hires_conf.get("enable") else "关",
+                "开" if (hires_conf.get("enable") and hires_conf.get("enable_for_i2i", True)) else "关",
+                "允许" if hires_conf.get("allow_inline", True) else "已禁用",
+            )
+        )
         lines.append(f"　配置页 API：{'已注册' if self.pages_ready else '❌ 注册失败，请查看日志'}")
+
+        # 对话模型与看图能力：/反推 依赖这个，直接在这里暴露，省得靠猜
+        try:
+            vision_settings = self.config.get("vision_settings", {}) or {}
+            if str(vision_settings.get("base_url") or "").strip():
+                lines.append(
+                    f"　看图模型（自定义接口）：{vision_settings.get('base_url')}"
+                    f"｜模型 {vision_settings.get('model') or '未填'}"
+                )
+                vision_conf = ""
+            else:
+                vision_conf = str(vision_settings.get("provider") or "").strip()
+            if vision_conf:
+                support = self.llm.provider_vision_support(vision_conf)
+                mark = "✅ 支持" if support else ("❌ 不支持" if support is False else "❔ 未知")
+                lines.append(f"　看图模型（已指定）：{self.llm.provider_label(vision_conf)}｜看图 {mark}")
+            else:
+                pid = await self.llm.resolve_provider_id(event)
+                if pid:
+                    support = self.llm.provider_vision_support(pid)
+                    mark = "✅ 支持" if support else ("❌ 不支持" if support is False else "❔ 未知（没配 modalities）")
+                    lines.append(f"　对话模型：{self.llm.provider_label(pid)}｜看图 {mark}")
+                else:
+                    lines.append("　对话模型：❌ 未配置")
+            lines.append("　提示：/反推 必须用支持看图的模型；不支持时请用配置里的「看图反推专用提供商」或 --provider 指定")
+        except Exception as e:
+            self.logger.debug("读取对话模型信息失败：%s", e)
         yield event.plain_result("\n".join(lines))
 
     @filter.command("图生图", alias={"改图", "i2i", "重绘"})
@@ -1324,13 +1391,20 @@ class ComfyUISmartPlugin(Star):
                 "🖼 用法：把图片和 /反推 一起发，或者回复一张图片再发 /反推\n"
                 "　　/反推 帮我看看这张图怎么写提示词\n"
                 "　　/反推 --画　反推后直接出图\n"
+                "　　/反推 --provider <provider_id>　指定看图模型（当前会话模型不支持看图时用）\n"
                 "　　/反推 --model juggernaut --画　指定底模出图"
             )
             return
 
-        yield event.plain_result(f"🔍 正在分析 {len(images)} 张图片…")
+        pid = str(opts.get("provider") or "").strip()
+        yield event.plain_result(
+            f"🔍 正在用 {self.llm.provider_label(pid) if pid else '当前会话模型'} 分析 "
+            f"{len(images)} 张图片…"
+        )
         try:
-            result = await self.llm.reverse_prompt(images, hint=hint, event=event)
+            result = await self.llm.reverse_prompt(
+                images, hint=hint, event=event, provider_id=pid
+            )
         except RuntimeError as e:
             self.logger.warning("反推失败：%s", e)
             yield event.plain_result(f"💥 {e}")
@@ -1343,6 +1417,8 @@ class ComfyUISmartPlugin(Star):
             return
 
         lines = ["🔍 反推结果"]
+        if result.get("model"):
+            lines.append(f"（看图模型：{result['model']}）")
         if result.get("summary"):
             lines.append(f"画面：{result['summary']}")
         lines.append(f"\n正向提示词：\n{result['positive']}")

@@ -20,6 +20,10 @@ const FIELDS = [
 
   { id: 'llm_enable_optimize', path: ['llm_settings', 'enable_prompt_optimize'], kind: 'bool' },
   { id: 'llm_provider', path: ['llm_settings', 'provider'], kind: 'string' },
+  { id: 'vision_provider', path: ['vision_settings', 'provider'], kind: 'string' },
+  { id: 'vision_base_url', path: ['vision_settings', 'base_url'], kind: 'string' },
+  { id: 'vision_api_key', path: ['vision_settings', 'api_key'], kind: 'string' },
+  { id: 'vision_model', path: ['vision_settings', 'model'], kind: 'string' },
   { id: 'llm_base_url', path: ['llm_settings', 'base_url'], kind: 'string' },
   { id: 'llm_api_key', path: ['llm_settings', 'api_key'], kind: 'string' },
   { id: 'llm_model', path: ['llm_settings', 'model'], kind: 'string' },
@@ -43,6 +47,8 @@ const FIELDS = [
   { id: 'i2i_subfolder', path: ['i2i', 'subfolder'], kind: 'string' },
 
   { id: 'hires_enable', path: ['hires', 'enable'], kind: 'bool' },
+  { id: 'hires_enable_i2i', path: ['hires', 'enable_for_i2i'], kind: 'bool' },
+  { id: 'hires_allow_inline', path: ['hires', 'allow_inline'], kind: 'bool' },
   { id: 'hires_scale', path: ['hires', 'scale'], kind: 'float' },
   { id: 'hires_denoise', path: ['hires', 'denoise'], kind: 'float' },
   { id: 'hires_steps', path: ['hires', 'steps'], kind: 'int' },

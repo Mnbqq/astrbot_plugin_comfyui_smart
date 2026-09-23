@@ -845,6 +845,47 @@ def _new_node_id(graph: dict) -> str:
     return str(max((int(k) for k in graph if str(k).isdigit()), default=0) + 1)
 
 
+def _latent_dimensions(graph: dict, bindings: dict) -> tuple[int, int]:
+    """推导首轮潜空间的宽高。
+
+    文生图直接读潜空间节点（EmptyLatentImage 等）的 width/height；
+    **图生图没有这两个输入**（潜空间来自 VAEEncode），此时沿连线向上游找到做缩放的节点
+    （ImageScale 等）读它写入的目标宽高 —— 那才是首轮真正的尺寸。
+
+    两条路都拿不到时返回 (0, 0)：调用方据此改用按比例放大，而不是瞎猜一个 512x512
+    （曾因此把 512x768 的图压成 768x768，宽高比被改掉）。
+    """
+    latent_id = bindings.get("latent")
+    if not latent_id or latent_id not in graph:
+        return 0, 0
+    latent_inputs = graph[latent_id].get("inputs") or {}
+    width = int(latent_inputs.get("width") or 0)
+    height = int(latent_inputs.get("height") or 0)
+    if width > 0 and height > 0:
+        return width, height
+
+    seen: set[str] = set()
+    frontier = [latent_id]
+    while frontier:
+        node_id = frontier.pop()
+        if node_id in seen or node_id not in graph:
+            continue
+        seen.add(node_id)
+        for value in (graph[node_id].get("inputs") or {}).values():
+            if not (isinstance(value, list) and len(value) == 2):
+                continue
+            upstream = str(value[0])
+            if upstream in seen or upstream not in graph:
+                continue
+            up_inputs = graph[upstream].get("inputs") or {}
+            up_w = int(up_inputs.get("width") or 0)
+            up_h = int(up_inputs.get("height") or 0)
+            if up_w > 0 and up_h > 0:
+                return up_w, up_h
+            frontier.append(upstream)
+    return 0, 0
+
+
 def add_hires_fix(
     graph: dict,
     bindings: dict,
@@ -861,7 +902,11 @@ def add_hires_fix(
     不需要额外的放大模型（ESRGAN 之类）。
 
     结构（原地修改）：
-        EmptyLatent → KSampler → LatentUpscale → KSampler2 → VAEDecode
+        Latent → KSampler → LatentUpscale → KSampler2 → VAEDecode
+
+    放大节点取决于能否确定首轮尺寸：能确定就用 LatentUpscale 显式指定目标宽高；
+    确定不了（自定义图生图工作流不给 width/height）就用 LatentUpscaleBy 按比例放大，
+    两种情况都不会改变宽高比。
 
     Args:
         graph: 已构建好的工作流（原地修改）。
@@ -873,7 +918,9 @@ def add_hires_fix(
         upscale_method: LatentUpscale 的放大算法。
 
     Returns:
-        含 hires_sampler / hires_upscale 节点 id 的字典；条件不满足时为空字典。
+        含 hires_sampler / hires_upscale 节点 id 与目标尺寸的字典；
+        ``width`` / ``height`` 为 0 表示尺寸由工作流决定（按比例放大），此时不要展示成 0x0。
+        条件不满足时返回空字典。
     """
     sampler_id = bindings.get("sampler")
     if not sampler_id or sampler_id not in graph:
@@ -891,33 +938,41 @@ def add_hires_fix(
     if not consumers:
         return {}
 
-    # 尺寸取自潜空间节点（缺省则回退 512x512）
-    width = height = 0
-    latent_id = bindings.get("latent")
-    if latent_id and latent_id in graph:
-        latent_inputs = graph[latent_id].get("inputs") or {}
-        width = int(latent_inputs.get("width") or 0)
-        height = int(latent_inputs.get("height") or 0)
-    if width <= 0 or height <= 0:
-        width, height = 512, 512
-    target_w = max(DIM_ALIGN, int(width * float(scale)))
-    target_h = max(DIM_ALIGN, int(height * float(scale)))
-    target_w -= target_w % DIM_ALIGN
-    target_h -= target_h % DIM_ALIGN
+    # 首轮尺寸：文生图读潜空间节点，图生图沿连线向上游读缩放节点
+    width, height = _latent_dimensions(graph, bindings)
 
     up_id = _new_node_id(graph)
     second_id = str(int(up_id) + 1)
-    graph[up_id] = {
-        "class_type": "LatentUpscale",
-        "_meta": {"title": "Hires 放大"},
-        "inputs": {
-            "samples": [sampler_id, 0],
-            "upscale_method": upscale_method,
-            "width": target_w,
-            "height": target_h,
-            "crop": "disabled",
-        },
-    }
+    if width > 0 and height > 0:
+        target_w = max(DIM_ALIGN, int(width * float(scale)))
+        target_h = max(DIM_ALIGN, int(height * float(scale)))
+        target_w -= target_w % DIM_ALIGN
+        target_h -= target_h % DIM_ALIGN
+        graph[up_id] = {
+            "class_type": "LatentUpscale",
+            "_meta": {"title": "Hires 放大"},
+            "inputs": {
+                "samples": [sampler_id, 0],
+                "upscale_method": upscale_method,
+                "width": target_w,
+                "height": target_h,
+                "crop": "disabled",
+            },
+        }
+        upscale_node = "LatentUpscale"
+    else:
+        # 首轮尺寸由工作流自己决定（拿不到具体数值）→ 按比例放大，保住宽高比
+        target_w = target_h = 0
+        graph[up_id] = {
+            "class_type": "LatentUpscaleBy",
+            "_meta": {"title": "Hires 放大"},
+            "inputs": {
+                "samples": [sampler_id, 0],
+                "upscale_method": upscale_method,
+                "scale_by": float(scale),
+            },
+        }
+        upscale_node = "LatentUpscaleBy"
 
     second_inputs: dict = {"latent_image": [up_id, 0], "denoise": float(denoise)}
     for field in SAMPLER_COPY_FIELDS:
@@ -937,7 +992,9 @@ def add_hires_fix(
         graph[node_id]["inputs"]["samples"] = [second_id, 0]
 
     return {"hires_sampler": second_id, "hires_upscale": up_id,
-            "width": target_w, "height": target_h}
+            "upscale_node": upscale_node,
+            "width": target_w, "height": target_h,
+            "scale": float(scale)}
 
 
 def _apply_vae(graph: dict, vae_name: str) -> None:
