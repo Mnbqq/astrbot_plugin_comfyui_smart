@@ -16,8 +16,6 @@ astrbot_version: ">=4.26.0"
 support_platforms:
   - aiocqhttp
   - qq_official
-  - telegram
-  - discord
 help: 安装后只需在配置页填写 ComfyUI 地址。聊天中发送 /画图 <描述> 出图，/模型列表 查看可用模型，/帮助 查看全部指令。
 tags:
   - 画图
