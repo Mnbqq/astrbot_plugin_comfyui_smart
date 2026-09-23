@@ -160,9 +160,46 @@ class ClientSession:
 '''
 
 ASTRBOT_API_STUB = '''
-import logging
+class _StubLogger:
+    """桩：astrbot.api.logger。
 
-logger = logging.getLogger("astrbot-test")
+    刻意**不使用 Python 内置 logging** —— 上架规范要求插件只能从 astrbot.api 导入 logger，
+    桩跟着一起遵守，这样仓库里任何地方都不会出现 `import logging`。
+    """
+
+    def __init__(self):
+        self.records = []
+
+    def _record(self, level, msg, *args, **kw):
+        try:
+            text = msg % args if args else str(msg)
+        except Exception:
+            text = str(msg)
+        self.records.append((level, text))
+
+    def debug(self, msg, *args, **kw):
+        self._record("debug", msg, *args, **kw)
+
+    def info(self, msg, *args, **kw):
+        self._record("info", msg, *args, **kw)
+
+    def warning(self, msg, *args, **kw):
+        self._record("warning", msg, *args, **kw)
+
+    def error(self, msg, *args, **kw):
+        self._record("error", msg, *args, **kw)
+
+    def exception(self, msg, *args, **kw):
+        self._record("error", msg, *args, **kw)
+
+    def critical(self, msg, *args, **kw):
+        self._record("critical", msg, *args, **kw)
+
+    def text(self, level=""):
+        return chr(10).join(t for lv, t in self.records if not level or lv == level)
+
+
+logger = _StubLogger()
 
 
 class AstrBotConfig(dict):
@@ -375,6 +412,44 @@ class Reply:
     def __init__(self, chain=None, **kw):
         self.chain = chain or []
 '''
+
+
+PLUGIN_SRC_ROOT = Path(__file__).resolve().parent.parent
+# 参与上架规范检查的源码（tests/ 自身不算插件运行时）
+_AUDIT_FILES = ("main.py", "comfyui_api.py", "llm_service.py", "storage.py",
+                "permission.py", "workflow_templates.py", "pages/__init__.py")
+_AUDIT_DIRS = ("pages/settings",)
+
+
+def _src(rel: str) -> str:
+    """读取插件源码文件。"""
+    return (PLUGIN_SRC_ROOT / rel).read_text(encoding="utf-8")
+
+
+def _audited_py_files() -> list[Path]:
+    """插件运行时涉及的全部 .py 文件。"""
+    files = [PLUGIN_SRC_ROOT / name for name in _AUDIT_FILES]
+    for sub in _AUDIT_DIRS:
+        files.extend(sorted((PLUGIN_SRC_ROOT / sub).glob("*.py")))
+    return [f for f in files if f.is_file()]
+
+
+def _logging_violations() -> list[str]:
+    """找出违规使用 Python 内置 logging 的文件与行。
+
+    上架规范：logger 必须且只能从 astrbot.api 导入（`from astrbot.api import logger`），
+    不允许 `import logging` / `logging.getLogger(...)`。曾因此在 `main.py` 里留了个
+    「self.logger 缺失时回退 logging.getLogger("astrbot")」的分支，被上架审查退回。
+    """
+    bad: list[str] = []
+    for path in _audited_py_files():
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            if re.search(r"(^|\s)import logging\b", line) or re.search(r"\blogging\.", line):
+                bad.append(f"{path.name}:{lineno}: {stripped}")
+    return bad
 
 
 def main() -> int:
@@ -725,11 +800,18 @@ def main() -> int:
         "/config", "/models", "/models/refresh", "/templates", "/status", "/stats", "/images/")), routes)
     check("地址自动补协议", plugin.comfy.base_url == "http://127.0.0.1:8188", plugin.comfy.base_url)
     check("无指令出图默认关闭", "generate_image" not in ctx.active_tools)
-    import logging as _logging
+    # 上架规范：logger 必须且只能来自 astrbot.api，严禁 Python 内置 logging。
+    from astrbot.api import logger as _api_logger
 
-    check("基类无 logger 时回退到全局 logger",
-          isinstance(getattr(plugin, "logger", None), _logging.Logger),
-          type(getattr(plugin, "logger", None)).__name__)
+    check("main.py 用的就是 astrbot.api 的 logger", m.logger is _api_logger,
+          type(m.logger).__name__)
+    check("不再依赖 Star.logger（基类没有该属性也照跑）",
+          not hasattr(plugin, "logger"))
+    check("插件源码里没有 Python 内置 logging", _logging_violations() == [],
+          _logging_violations())
+    check("插件源码确实从 astrbot.api 导入 logger",
+          any("from astrbot.api import" in t and "logger" in t
+              for t in (_src("main.py"), _src("pages/__init__.py"))))
 
     print("\n=== Pages 处理器端到端（路由 → 处理器 → 响应结构）===")
     handlers = {}
