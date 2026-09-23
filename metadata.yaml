@@ -8,10 +8,6 @@ desc: >-
 version: "0.6.2"
 author: Mnbqq
 repo: "https://github.com/Mnbqq/astrbot_plugin_comfyui_smart"
-# 下界由 tests/check_api_surface.py 实测确定：
-#   astrbot.api.web（json_response/file_response/request）自 v4.26.0 起提供
-#   AstrBotConfig.save_config_async 自 v4.27.0 起提供（更早版本自动回退到 save_config）
-#   Star.logger 自 v4.27.3 起提供（更早版本自动回退到全局 logger）
 astrbot_version: ">=4.26.0"
 support_platforms:
   - aiocqhttp
