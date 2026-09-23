@@ -79,6 +79,8 @@ class LLMService:
         self.context = context
         self.config = config or {}
         self.llm_conf = self.config.get("llm_settings", {}) or {}
+        # 反推专用的看图模型配置（结构同 llm_settings）
+        self.vision_conf = self.config.get("vision_settings", {}) or {}
 
     # ------------------------------------------------------------------ #
     # provider 解析
@@ -101,6 +103,45 @@ class LLMService:
             ]
         except Exception:
             return []
+
+    def provider_vision_support(self, provider_id: str) -> bool | None:
+        """判断某个 provider 是否支持看图。
+
+        AstrBot 依据 `provider.provider_config["modalities"]` 决定是否保留图片；
+        若该列表存在但不含 "image"，图片会被替换成字面量 "[Image]" 再发给模型 ——
+        模型于是看不到图却照常"编"出一段描述。这正是「反推结果全错」的典型成因，
+        所以这里必须提前判断，而不是把编出来的结果当反推结果返回。
+
+        Args:
+            provider_id: provider id。
+
+        Returns:
+            True 支持 / False 不支持 / None 无法判断（未配置 modalities，AstrBot 按支持处理）。
+        """
+        try:
+            provider = self.context.get_provider_by_id(provider_id)
+        except Exception:
+            return None
+        config = getattr(provider, "provider_config", None)
+        if not isinstance(config, dict):
+            return None
+        modalities = config.get("modalities")
+        if not modalities or not isinstance(modalities, list):
+            return None
+        return "image" in modalities
+
+    def provider_label(self, provider_id: str) -> str:
+        """返回便于排查的 provider 描述（id + 模型名）。"""
+        try:
+            provider = self.context.get_provider_by_id(provider_id)
+        except Exception:
+            return provider_id
+        model = ""
+        try:
+            model = str(provider.meta().model or "")
+        except Exception:
+            model = ""
+        return f"{provider_id}（{model}）" if model else str(provider_id)
 
     async def resolve_provider_id(self, event=None) -> str:
         """解析要使用的 provider id。
@@ -142,6 +183,8 @@ class LLMService:
         user: str,
         event=None,
         image_urls: list[str] | None = None,
+        provider_id: str = "",
+        custom_conf: dict | None = None,
     ) -> str:
         """调用 LLM 生成文本（可选带图，用于看图反推）。
 
@@ -151,6 +194,8 @@ class LLMService:
             event: 可选消息事件，用于会话级 provider 解析。
             image_urls: 图片引用列表（本地路径 / http / base64:// / data:），
                 由 AstrBot 的 MediaResolver 统一处理。
+            provider_id: 强制指定 provider（用于反推时指定看图模型）。
+            custom_conf: 用这组配置走自定义 OpenAI 兼容端点（反推使用 vision_settings 时传入）。
 
         Returns:
             生成的纯文本。
@@ -158,16 +203,29 @@ class LLMService:
         Raises:
             RuntimeError: 没有可用 LLM 或调用失败，message 面向用户。
         """
+        if isinstance(custom_conf, dict) and str(custom_conf.get("base_url") or "").strip():
+            return await self._call_custom(
+                system, user, image_urls=image_urls, conf=custom_conf
+            )
         if self._has_custom_endpoint():
             return await self._call_custom(system, user, image_urls=image_urls)
 
-        provider_id = await self.resolve_provider_id(event)
+        provider_id = provider_id or await self.resolve_provider_id(event)
         if not provider_id:
             names = "、".join(self.available_providers()) or "（当前没有任何 LLM 提供商）"
             raise RuntimeError(
                 f"没有可用的 LLM：请在 AstrBot 中配置对话模型，"
                 f"或在插件配置的 llm_settings.provider 里指定。当前可用：{names}"
             )
+        if image_urls and not custom_conf:
+            vision = self.provider_vision_support(provider_id)
+            if vision is False:
+                raise RuntimeError(
+                    f"当前使用的模型不支持看图（{self.provider_label(provider_id)}），"
+                    f"无法反推。请在配置页「反推专用模型」里指定一个支持看图的提供商或自定义接口，"
+                    f"在 AstrBot 的「服务提供商」里为该提供商勾选 image 模态，"
+                    f"也可临时用 --provider <id> 指定"
+                )
         try:
             resp = await self.context.llm_generate(
                 chat_provider_id=provider_id,
@@ -186,7 +244,11 @@ class LLMService:
         return (text or "").strip()
 
     async def _call_custom(
-        self, system: str, user: str, image_urls: list[str] | None = None
+        self,
+        system: str,
+        user: str,
+        image_urls: list[str] | None = None,
+        conf: dict | None = None,
     ) -> str:
         """调用配置里的 OpenAI 兼容端点。
 
@@ -195,6 +257,7 @@ class LLMService:
             user: 用户内容。
             image_urls: 可选的图片引用列表（本地路径或 http URL），会按
                 OpenAI 多模态格式编码进 user 消息。
+            conf: 覆盖用的配置（反推使用 vision_settings 时可传入）。
 
         Returns:
             生成的纯文本。
@@ -204,9 +267,10 @@ class LLMService:
         """
         import aiohttp
 
-        base = str(self.llm_conf.get("base_url") or "").rstrip("/")
-        model = str(self.llm_conf.get("model") or "").strip() or "gpt-4o-mini"
-        api_key = str(self.llm_conf.get("api_key") or "").strip()
+        source = conf if isinstance(conf, dict) else self.llm_conf
+        base = str(source.get("base_url") or "").rstrip("/")
+        model = str(source.get("model") or "").strip() or "gpt-4o-mini"
+        api_key = str(source.get("api_key") or "").strip()
         headers = {"Content-Type": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
@@ -298,6 +362,7 @@ class LLMService:
         *,
         hint: str = "",
         event=None,
+        provider_id: str = "",
     ) -> dict:
         """看图反推提示词。
 
@@ -305,9 +370,11 @@ class LLMService:
             image_refs: 图片引用列表（本地路径）。
             hint: 用户附加的要求，例如「只要人物特征」。
             event: 可选消息事件。
+            provider_id: 指定用哪个 provider 看图（留空则用配置或会话默认）。
 
         Returns:
-            {"positive": str, "negative": str, "summary": str, "raw_ok": bool}
+            {"positive": str, "negative": str, "summary": str, "raw_ok": bool,
+             "model": str}
 
         Raises:
             RuntimeError: LLM 不可用或调用失败。
@@ -315,10 +382,42 @@ class LLMService:
         user = "请看这张图，反推出可直接用于 Stable Diffusion 的提示词。"
         if hint.strip():
             user += f"\n额外要求：{hint.strip()}"
+
+        # 看图模型的解析顺序：
+        #   行内 --provider > 独立的 vision_settings（自定义接口 / AstrBot 提供商）
+        #   > 旧的 llm_settings.vision_provider（兼容） > 当前会话模型
+        vision = self.vision_conf
+        custom_conf = None
+        chosen = provider_id or str(vision.get("provider") or "").strip() \
+            or str(self.llm_conf.get("vision_provider") or "").strip()
+
+        if not provider_id and str(vision.get("base_url") or "").strip():
+            # 配了独立接口就用它（可自带 api_key / model）
+            custom_conf = vision
+            chosen = ""
+        if chosen and self.context.get_provider_by_id(chosen) is None:
+            raise RuntimeError(
+                f"配置里指定的看图模型（{chosen}）不存在，请在 AstrBot 的「服务提供商」里核对 ID"
+            )
+
         text = await self.generate(
-            REVERSE_SYSTEM, user, event=event, image_urls=image_refs
+            REVERSE_SYSTEM,
+            user,
+            event=event,
+            image_urls=image_refs,
+            provider_id=chosen,
+            custom_conf=custom_conf,
         )
-        return parse_reverse_result(text)
+        result = parse_reverse_result(text)
+        if custom_conf is not None:
+            result["model"] = (
+                f"自定义接口（{custom_conf.get('model') or '未填模型名'}）"
+            )
+        else:
+            result["model"] = self.provider_label(
+                chosen or await self.resolve_provider_id(event)
+            )
+        return result
 
     async def optimize_prompt(
         self,

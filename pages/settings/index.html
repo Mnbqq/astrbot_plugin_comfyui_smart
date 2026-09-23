@@ -21,6 +21,7 @@
         <button class="nav-item" data-target="tab-model" type="button">模型</button>
         <button class="nav-item" data-target="tab-llm" type="button">LLM</button>
         <button class="nav-item" data-target="tab-draw" type="button">出图</button>
+        <button class="nav-item" data-target="tab-vision" type="button">反推</button>
         <button class="nav-item" data-target="tab-perm" type="button">权限</button>
         <button class="nav-item" data-target="tab-agent" type="button">高级</button>
         <button class="nav-item" data-target="tab-status" type="button">状态</button>
@@ -115,6 +116,38 @@
         </article>
       </section>
 
+      <!-- 反推专用模型 -->
+      <section id="tab-vision" class="tab-pane" data-title="反推专用模型">
+        <article class="card">
+          <div class="card-header">
+            <div><h3>反推专用模型</h3><p><code>/反推</code> 必须用<b>支持看图</b>的模型。若当前对话模型不支持看图，AstrBot 会把图片替换成「[Image]」，模型就会一本正经地编内容 —— 这就是「反推结果全错」的成因。</p></div>
+          </div>
+          <div class="form-grid">
+            <div class="form-group full-width">
+              <label for="vision_provider">AstrBot 提供商 ID（推荐）</label>
+              <input type="text" id="vision_provider" class="input-modern" placeholder="留空=用当前会话的对话模型" />
+              <p class="field-hint">在 AstrBot「服务提供商」里添加一个支持看图的模型（如 <code>qwen-vl-max</code>、<code>glm-4v</code>、<code>gpt-4o</code>），把它的 ID 填在这里。</p>
+            </div>
+          </div>
+          <div class="card-header"><div><h3>或：直连自定义接口</h3><p>填了接口地址就不再走上面的提供商。</p></div></div>
+          <div class="form-grid">
+            <div class="form-group full-width">
+              <label for="vision_base_url">接口地址</label>
+              <input type="text" id="vision_base_url" class="input-modern" placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1" />
+            </div>
+            <div class="form-group">
+              <label for="vision_model">模型名</label>
+              <input type="text" id="vision_model" class="input-modern" placeholder="qwen-vl-max" />
+            </div>
+            <div class="form-group">
+              <label for="vision_api_key">API Key</label>
+              <input type="password" id="vision_api_key" class="input-modern" placeholder="sk-..." />
+            </div>
+          </div>
+          <p class="field-hint">临时试别的模型可以不改配置：<code>/反推 --provider &lt;id&gt;</code>。用 <code>/状态</code> 可以看到当前用的是哪个看图模型、以及它是否支持看图。</p>
+        </article>
+      </section>
+
       <!-- 出图 -->
       <section id="tab-draw" class="tab-pane" data-title="出图参数">
         <article class="card">
@@ -200,8 +233,16 @@
         <article class="card">
           <div class="card-header"><div><h3>Hires Fix（放大重绘）</h3><p>先出小图，再放大重绘一遍。改善手部、人脸与细节最有效的手段之一，代价是出图时间大致翻倍。</p></div></div>
           <div class="setting-row">
-            <div><h3>启用 Hires Fix</h3><p>也可以对单次生效：<code>/画图 描述 --hires 1.5</code>；单次关闭用 <code>--hires 0</code>。</p></div>
+            <div><h3>文生图自动启用</h3><p>每次 <code>/画图</code>（文生图）都自动放大重绘一遍。</p></div>
             <label class="switch-wrapper"><input type="checkbox" id="hires_enable" class="ios-switch" /></label>
+          </div>
+          <div class="setting-row">
+            <div><h3>图生图也自动启用</h3><p>需与上面的「文生图自动启用」同时打开才生效。</p></div>
+            <label class="switch-wrapper"><input type="checkbox" id="hires_enable_i2i" class="ios-switch" /></label>
+          </div>
+          <div class="setting-row">
+            <div><h3>允许单次指令覆盖</h3><p>打开后用户可以自行发 <code>--hires 1.5</code> 或 <code>--hires 0</code>；关掉则一律按这里的配置执行。</p></div>
+            <label class="switch-wrapper"><input type="checkbox" id="hires_allow_inline" class="ios-switch" /></label>
           </div>
           <div class="form-grid">
             <div class="form-group">

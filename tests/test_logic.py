@@ -1392,6 +1392,79 @@ def main() -> int:
           len(second_nodes2) == 2 and second_nodes2[-1]["inputs"]["steps"] == 12,
           [n["inputs"].get("steps") for n in second_nodes2])
 
+    print("\n=== Hires 尺寸推导（图生图不能改宽高比）===")
+
+    i2i_tpl = wt.load_templates(ROOT / "workflows")["img2img_checkpoint"]
+    i2i_g = i2i_tpl.build(positive="a", negative="b",
+                          model_name="anything-v5-PrtRE.safetensors", seed=1,
+                          width=512, height=768, denoise=0.6, image_name="x.png")
+    # 图生图的潜在空间来自 VAEEncode（没有 width/height），必须从上游 ImageScale 推导
+    i2i_info = wt.add_hires_fix(i2i_g, i2i_tpl.bindings, scale=1.5, denoise=0.45)
+    wt.validate_graph(i2i_g)
+    check("图生图 Hires 尺寸取自输入图缩放节点（512x768 → 768x1152）",
+          (i2i_info["width"], i2i_info["height"]) == (768, 1152), i2i_info)
+    check("图生图 Hires 不会把 2:3 压成 1:1（回归：曾回退成 512x512）",
+          i2i_info["width"] * 3 == i2i_info["height"] * 2, (i2i_info["width"], i2i_info["height"]))
+    check("图生图用 LatentUpscale 显式指定尺寸",
+          i2i_info["upscale_node"] == "LatentUpscale", i2i_info["upscale_node"])
+
+    # 拿不到任何尺寸信息（自定义工作流）→ 按比例放大，绝不自作主张写 512x512
+    bare = {
+        "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "m.safetensors"}},
+        "2": {"class_type": "CLIPTextEncode", "inputs": {"text": "a", "clip": ["1", 1]}},
+        "3": {"class_type": "CLIPTextEncode", "inputs": {"text": "b", "clip": ["1", 1]}},
+        "4": {"class_type": "LoadImage", "inputs": {"image": "x.png"}},
+        "6": {"class_type": "VAEEncode", "inputs": {"pixels": ["4", 0], "vae": ["1", 2]}},
+        "7": {"class_type": "KSampler", "inputs": {
+            "model": ["1", 0], "seed": 1, "steps": 20, "cfg": 7.0,
+            "sampler_name": "euler", "scheduler": "normal", "denoise": 0.6,
+            "positive": ["2", 0], "negative": ["3", 0], "latent_image": ["6", 0]}},
+        "8": {"class_type": "VAEDecode", "inputs": {"samples": ["7", 0], "vae": ["1", 2]}},
+        "9": {"class_type": "SaveImage", "inputs": {"images": ["8", 0], "filename_prefix": "x"}},
+    }
+    bare_bindings = {"sampler": "7", "positive": ["2", "text"], "negative": ["3", "text"],
+                     "latent": "6", "save": "9", "image_loader": ["4", "image"]}
+    bare_info = wt.add_hires_fix(bare, bare_bindings, scale=1.5, denoise=0.5)
+    wt.validate_graph(bare)
+    check("尺寸完全未知时改用按比例放大（保宽高比）",
+          bare_info["upscale_node"] == "LatentUpscaleBy", bare_info)
+    check("尺寸未知时不谎报具体尺寸",
+          (bare_info["width"], bare_info["height"]) == (0, 0), bare_info)
+    check("按比例放大节点带 scale_by 且没有写死的宽高",
+          bare[bare_info["hires_upscale"]]["inputs"].get("scale_by") == 1.5
+          and "width" not in bare[bare_info["hires_upscale"]]["inputs"],
+          bare[bare_info["hires_upscale"]]["inputs"])
+
+    # 结果行：尺寸未知时说倍数，而不是显示 0x0
+    real_add = m.add_hires_fix
+    m.add_hires_fix = lambda graph, bindings, **kw: {
+        "hires_sampler": "90", "hires_upscale": "91", "upscale_node": "LatentUpscaleBy",
+        "width": 0, "height": 0, "scale": 2.0}
+    try:
+        res_unknown, _ = capture_result("少女", {}, {"enable": True, "scale": 2.0})
+    finally:
+        m.add_hires_fix = real_add
+    check("尺寸未知时结果为 ×倍数 而不是 0x0",
+          res_unknown["hires"].get("scale") == 2.0
+          and res_unknown["width"] > 0, res_unknown.get("hires"))
+
+    # 结果文案：尺寸未知只说倍数，绝不编一个尺寸出来
+    from astrbot.api.event import AstrMessageEvent as _Ev
+
+    def result_text(hires):
+        chain = plugin._compose_result_chain(
+            _Ev(message_str="/画图 x"), "u1",
+            {"template": "t", "arch": "sd15", "model": "m", "width": 512, "height": 768,
+             "seed": 1, "seconds": 1.0, "images": [], "hires": hires})
+        return "".join(getattr(c, "text", "") for c in chain)
+
+    text_unknown = result_text({"width": 0, "height": 0, "scale": 2.0})
+    check("尺寸未知时结果行显示 ×倍数 且不出现 0x0",
+          "×2.0" in text_unknown and "0x0" not in text_unknown, text_unknown)
+    text_known = result_text({"width": 768, "height": 1152, "scale": 1.5})
+    check("尺寸已知时结果行显示最终尺寸",
+          "Hires Fix：768x1152" in text_known, text_known)
+
     print("\n=== 画廊详情：参数落盘 + 界面字段一致性 ===")
     # 界面字段一致性：弹窗里展示的参数名必须都是后端真的会写的
     import re as _re
@@ -1543,6 +1616,88 @@ def main() -> int:
           len(ctx.llm_calls))
     check("出图结果发给了用户",
           any(x.get("type") == "chain" for x in out_draw), [x.get("type") for x in out_draw])
+
+    print("\n=== 反推：模型看不见图时必须报错，而不是编内容 ===")
+
+    class _FakeProvider:
+        """桩：带 provider_config.modalities，模拟 AstrBot 的模态判定。"""
+
+        def __init__(self, pid, model="", modalities=None):
+            self._pid = pid
+            self._model = model
+            self.provider_config = {} if modalities is None else {"modalities": modalities}
+
+        def meta(self):
+            return type("M", (), {"id": self._pid, "model": self._model})()
+
+    vision = _FakeProvider("vision-model", "qwen-vl-max", ["text", "image"])
+    textonly = _FakeProvider("text-model", "deepseek-chat", ["text"])
+    unknown = _FakeProvider("unknown-model", "whatever", None)
+    ctx._providers = {"vision-model": vision, "text-model": textonly,
+                      "unknown-model": unknown}
+    svc = plugin.llm
+
+    check("模态含 image → 判定支持", svc.provider_vision_support("vision-model") is True)
+    check("模态不含 image → 判定不支持", svc.provider_vision_support("text-model") is False)
+    check("未配置 modalities → 无法判断（按 AstrBot 语义视作支持）",
+          svc.provider_vision_support("unknown-model") is None)
+    check("provider 不存在 → 无法判断", svc.provider_vision_support("nope") is None)
+    check("provider 描述带模型名",
+          "qwen-vl-max" in svc.provider_label("vision-model"), svc.provider_label("vision-model"))
+
+    asyncio.run(enable_llm('{"positive":"1girl","negative":"bad hands","summary":"x"}'))
+    ctx._providers = {"vision-model": vision, "text-model": textonly,
+                      "unknown-model": unknown}
+    ctx.llm_calls = []
+
+    # 用不支持看图的模型反推 → 必须明确报错
+    try:
+        asyncio.run(svc.reverse_prompt(["/tmp/pic.png"], provider_id="text-model"))
+        check("不支持看图时报错而不是返回编造内容", False)
+    except RuntimeError as exc:
+        text = str(exc)
+        check("不支持看图时报错而不是返回编造内容",
+              "不支持看图" in text and "反推专用模型" in text, text[:90])
+    check("报错时不消耗一次 LLM 调用", ctx.llm_calls == [], ctx.llm_calls)
+
+    # 指定支持看图的模型 → 正常反推，且用的是它
+    res_vision = asyncio.run(svc.reverse_prompt(["/tmp/pic.png"], provider_id="vision-model"))
+    check("指定看图模型后正常反推", res_vision.get("positive") == "1girl", res_vision.get("positive"))
+    check("确实把该 provider 传给了 AstrBot",
+          ctx.llm_calls and ctx.llm_calls[-1].get("chat_provider_id") == "vision-model",
+          ctx.llm_calls[-1].get("chat_provider_id") if ctx.llm_calls else None)
+    check("结果里带上看图模型，便于排查",
+          "qwen-vl-max" in str(res_vision.get("model")), res_vision.get("model"))
+
+    # 配置里的 vision_provider 生效（无需行内指定）
+    # LLMService 接收的是完整插件配置（不是 llm_settings 子字典）
+    svc2 = llm.LLMService(ctx, {"llm_settings": {"vision_provider": "vision-model"}})
+    ctx.llm_calls = []
+    asyncio.run(svc2.reverse_prompt(["/tmp/pic.png"]))
+    check("配置了 vision_provider 时自动用它",
+          ctx.llm_calls and ctx.llm_calls[-1].get("chat_provider_id") == "vision-model",
+          ctx.llm_calls[-1].get("chat_provider_id") if ctx.llm_calls else None)
+
+    # 配置了一个不存在的 provider → 明确报错
+    svc3 = llm.LLMService(ctx, {"llm_settings": {"vision_provider": "不存在的模型"}})
+    try:
+        asyncio.run(svc3.reverse_prompt(["/tmp/pic.png"]))
+        check("vision_provider 填错时报错", False)
+    except RuntimeError as exc:
+        check("vision_provider 填错时报错", "不存在" in str(exc), str(exc)[:70])
+
+    # 行内 --provider
+    plugin.config["llm_settings"] = {"enable_prompt_optimize": False}
+    ctx.llm_calls = []
+    ev_prov = AstrMessageEvent(message_str="/反推 --provider vision-model",
+                              message=[StubImage("/tmp/pic.png")])
+    out_prov = asyncio.run(drive(plugin.cmd_reverse_prompt(ev_prov)))
+    check("行内 --provider 生效",
+          ctx.llm_calls and ctx.llm_calls[-1].get("chat_provider_id") == "vision-model",
+          ctx.llm_calls[-1].get("chat_provider_id") if ctx.llm_calls else None)
+    check("结果里标注看图模型",
+          any("看图模型" in x.get("text", "") for x in out_prov),
+          [x.get("text", "")[:40] for x in out_prov])
 
     ctx._providers = {}
     plugin.config["llm_settings"] = {"enable_prompt_optimize": False}
@@ -1709,6 +1864,120 @@ def main() -> int:
           and not any(n["class_type"] == "LoadImage" for n in sub_off.values()),
           sorted({n["class_type"] for n in (sub_off or {}).values()}))
     plugin.config["i2i"] = {"enable": True, "denoise": 0.6, "max_side": 1536, "subfolder": "astrbot"}
+
+    print("\n=== Hires 三个开关 ===")
+
+    def hires_run(purpose_i2i, hires_cfg, opts=None, pid="hsw"):
+        sess = api.aiohttp.ClientSession()
+        sess.route("GET", "/models", api.aiohttp.ClientResponse(200, payload=["checkpoints"]))
+        sess.route("GET", "/models/checkpoints", api.aiohttp.ClientResponse(
+            200, payload=["SDXL/m.safetensors"]))
+        sess.route("POST", "/upload/image", api.aiohttp.ClientResponse(
+            200, payload={"name": "in.png", "subfolder": "astrbot", "type": "input"}))
+        sess.route("POST", "/prompt", api.aiohttp.ClientResponse(
+            200, payload={"prompt_id": pid}))
+        sess.route("GET", "/queue", api.aiohttp.ClientResponse(
+            200, payload={"queue_running": [], "queue_pending": []}))
+        hist_node = "9" if purpose_i2i else "7"
+        sess.route("GET", f"/history/{pid}", api.aiohttp.ClientResponse(200, payload={pid: {
+            "status": {"status_str": "success", "completed": True},
+            "outputs": {hist_node: {"images": [{"filename": "h.png", "type": "output"}]}}}}))
+        sess.route("GET", "/view", api.aiohttp.ClientResponse(200, text="PNG"))
+        plugin.comfy._session = sess
+        plugin.comfy.invalidate_model_cache()
+        plugin.config["hires"] = hires_cfg
+        plugin.config["i2i"] = {"enable": True, "denoise": 0.6, "max_side": 1536,
+                                "subfolder": "astrbot"}
+        res = asyncio.run(plugin.generate(
+            user_desc="少女", opts=opts or {},
+            source_image=str(png_path) if purpose_i2i else ""))
+        return res
+
+    # 文生图：enable 控制
+    check("enable=false 时文生图不用 Hires",
+          not hires_run(False, {"enable": False}).get("hires"))
+    check("enable=true 时文生图自动用 Hires",
+          bool(hires_run(False, {"enable": True, "scale": 1.5}).get("hires")))
+
+    # 图生图：enable 与 enable_for_i2i 共同决定
+    check("图生图：enable=true 且 enable_for_i2i=true → 用",
+          bool(hires_run(True, {"enable": True, "enable_for_i2i": True}).get("hires")))
+    check("图生图：enable_for_i2i=false → 不用",
+          not hires_run(True, {"enable": True, "enable_for_i2i": False}).get("hires"))
+    check("图生图：enable=false → 不用",
+          not hires_run(True, {"enable": False, "enable_for_i2i": True}).get("hires"))
+
+    # 单次指令覆盖
+    check("allow_inline=true 时 --hires 生效",
+          bool(hires_run(False, {"enable": False, "allow_inline": True},
+                         opts={"hires": "1.5"}).get("hires")))
+    check("allow_inline=false 时 --hires 被忽略",
+          not hires_run(False, {"enable": False, "allow_inline": False},
+                        opts={"hires": "2.0"}).get("hires"))
+    check("allow_inline=false 时仍按配置启用",
+          bool(hires_run(False, {"enable": True, "allow_inline": False},
+                         opts={"hires": "0"}).get("hires")))
+    check("--hires 0 可单次关闭",
+          not hires_run(False, {"enable": True, "allow_inline": True},
+                        opts={"hires": "0"}).get("hires"))
+
+    # /状态 里能看到 Hires 状态
+    plugin.config["draw_settings"] = {"default_negative": "lowres"}
+    ev_status = AstrMessageEvent(message_str="/状态")
+    out_status = asyncio.run(drive(plugin.cmd_status(ev_status)))
+    check("/状态 显示 Hires 开关状态",
+          any("Hires Fix" in x.get("text", "") for x in out_status),
+          [x.get("text", "")[:60] for x in out_status])
+
+    print("\n=== 反推专用模型（vision_settings）===")
+
+    class _VP:
+        def __init__(self, pid, model="", modalities=None):
+            self._pid = pid
+            self._model = model
+            self.provider_config = {} if modalities is None else {"modalities": modalities}
+
+        def meta(self):
+            return type("M", (), {"id": self._pid, "model": self._model})()
+
+    ctx._providers = {"vis": _VP("vis", "qwen-vl-max", ["text", "image"]),
+                      "txt": _VP("txt", "deepseek-chat", ["text"])}
+    ctx.llm_calls = []
+    ctx.llm_reply = '{"positive":"1girl, kimono","negative":"bad hands","summary":"和服"}'
+
+    svc_v = llm.LLMService(ctx, {"vision_settings": {"provider": "vis"}})
+    res_v = asyncio.run(svc_v.reverse_prompt(["/tmp/pic.png"]))
+    check("vision_settings.provider 被用于反推",
+          ctx.llm_calls and ctx.llm_calls[-1].get("chat_provider_id") == "vis",
+          ctx.llm_calls[-1].get("chat_provider_id") if ctx.llm_calls else None)
+    check("反推结果正常返回", res_v.get("positive") == "1girl, kimono", res_v.get("positive"))
+
+    # vision_settings.base_url → 走自定义接口，不用 AstrBot 的 provider
+    ctx.llm_calls = []
+    captured = {}
+
+    async def fake_custom(system, user, image_urls=None, conf=None):
+        captured["conf"] = conf
+        captured["image_urls"] = image_urls
+        return '{"positive":"cat","negative":"dog","summary":"猫"}'
+
+    svc_c = llm.LLMService(ctx, {"vision_settings": {
+        "base_url": "https://example.com/v1", "api_key": "k", "model": "qwen-vl-max"}})
+    svc_c._call_custom = fake_custom
+    res_c = asyncio.run(svc_c.reverse_prompt(["/tmp/pic.png"]))
+    check("配了自定义接口时走自定义端点（不经过 AstrBot 提供商）",
+          ctx.llm_calls == [] and captured.get("conf", {}).get("model") == "qwen-vl-max",
+          (len(ctx.llm_calls), captured.get("conf")))
+    check("自定义接口也带上了图片",
+          captured.get("image_urls") == ["/tmp/pic.png"], captured.get("image_urls"))
+    check("结果里标注用的是自定义接口",
+          "自定义接口" in str(res_c.get("model")), res_c.get("model"))
+
+    # 自定义接口时不做 modalities 校验（无法判定）
+    check("自定义接口不因看不到模态而误拦", res_c.get("positive") == "cat")
+
+    ctx._providers = {}
+    plugin.config["llm_settings"] = {"enable_prompt_optimize": False}
 
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）
