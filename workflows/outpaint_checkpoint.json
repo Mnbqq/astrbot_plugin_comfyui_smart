@@ -1,0 +1,84 @@
+{
+  "name": "outpaint_checkpoint",
+  "purpose": "outpaint",
+  "arch": "generic",
+  "loader": "checkpoint",
+  "description": "扩图（outpaint）：把画面往外扩，补全被裁掉的构图。用核心节点 ImagePadForOutpaint 画布外扩 + SetLatentNoiseMask 只重画新区域，原图部分保持不变，不需要额外模型。左右上下扩展量与羽化由插件按 /扩图 的参数写入（见 params）。",
+  "params": {
+    "left": "5",
+    "top": "5",
+    "right": "5",
+    "bottom": "5",
+    "feathering": "5"
+  },
+  "graph": {
+    "1": {
+      "class_type": "CheckpointLoaderSimple",
+      "_meta": { "title": "底模 Checkpoint" },
+      "inputs": { "ckpt_name": "put_your_checkpoint_here.safetensors" }
+    },
+    "2": {
+      "class_type": "CLIPTextEncode",
+      "_meta": { "title": "正面提示词" },
+      "inputs": { "text": "", "clip": ["1", 1] }
+    },
+    "3": {
+      "class_type": "CLIPTextEncode",
+      "_meta": { "title": "负面提示词" },
+      "inputs": { "text": "", "clip": ["1", 1] }
+    },
+    "4": {
+      "class_type": "LoadImage",
+      "_meta": { "title": "输入图片" },
+      "inputs": { "image": "astrbot/placeholder.png" }
+    },
+    "5": {
+      "class_type": "ImagePadForOutpaint",
+      "_meta": { "title": "画布外扩（扩图）" },
+      "inputs": {
+        "image": ["4", 0],
+        "left": 128,
+        "top": 128,
+        "right": 128,
+        "bottom": 128,
+        "feathering": 40
+      }
+    },
+    "6": {
+      "class_type": "VAEEncode",
+      "_meta": { "title": "编码为潜空间" },
+      "inputs": { "pixels": ["5", 0], "vae": ["1", 2] }
+    },
+    "7": {
+      "class_type": "SetLatentNoiseMask",
+      "_meta": { "title": "只重画新区域（扩图遮罩）" },
+      "inputs": { "samples": ["6", 0], "mask": ["5", 1] }
+    },
+    "8": {
+      "class_type": "KSampler",
+      "_meta": { "title": "采样器" },
+      "inputs": {
+        "model": ["1", 0],
+        "seed": 0,
+        "steps": 25,
+        "cfg": 7.0,
+        "sampler_name": "dpmpp_2m",
+        "scheduler": "karras",
+        "positive": ["2", 0],
+        "negative": ["3", 0],
+        "latent_image": ["7", 0],
+        "denoise": 1.0
+      }
+    },
+    "9": {
+      "class_type": "VAEDecode",
+      "_meta": { "title": "VAE 解码" },
+      "inputs": { "samples": ["8", 0], "vae": ["1", 2] }
+    },
+    "10": {
+      "class_type": "SaveImage",
+      "_meta": { "title": "保存图片" },
+      "inputs": { "images": ["9", 0], "filename_prefix": "astrbot_smart_outpaint" }
+    }
+  }
+}

@@ -2546,6 +2546,157 @@ def main() -> int:
     plugin._active_jobs.clear()
     plugin._job_cancel.clear()
 
+    print("\n=== 扩图 outpaint（v0.9.0）===")
+    tpl_op = wt.load_templates(ROOT / "workflows")["outpaint_checkpoint"]
+    check("内置扩图模板已加载，用途是 outpaint",
+          tpl_op.purpose == "outpaint", tpl_op.purpose)
+    check("扩图模板只用 ComfyUI 自带核心节点（无需自定义节点）",
+          {"ImagePadForOutpaint", "SetLatentNoiseMask"} <= tpl_op.required_nodes(),
+          sorted(tpl_op.required_nodes()))
+    check("扩图模板声明了五个可注入参数（左右上下 + 羽化）",
+          sorted(tpl_op.params) == ["bottom", "feathering", "left", "right", "top"],
+          tpl_op.params)
+
+    pads_default = m.default_outpaint_pads(640, 960)
+    check("默认扩展量是每边 25%（对齐 8 的倍数）",
+          (pads_default["left"], pads_default["right"],
+           pads_default["top"], pads_default["bottom"]) == (160, 160, 240, 240), pads_default)
+    huge = {"left": 4096, "right": 4096, "top": 4096, "bottom": 4096, "feathering": 40}
+    fitted = m.fit_outpaint_pads(1024, 1024, huge)
+    check("扩展后会超出像素预算时按比例压回去（防止一扩就爆显存）",
+          sum(fitted[k] for k in ("left", "right", "top", "bottom")) < 16384
+          and all(fitted[k] % 8 == 0 for k in ("left", "right", "top", "bottom")), fitted)
+
+    built_op = tpl_op.build(
+        positive="p", negative="n", model_name="SDXL/m.safetensors",
+        width=960, height=1440, steps=20, cfg=6.0,
+        sampler="dpmpp_2m", scheduler="karras", seed=1,
+        image_name="astrbot/in.png",
+        params={"left": 256, "right": 256, "top": 0, "bottom": 0,
+                "feathering": 32, "根本没声明": 5},
+    )
+    pad_inputs = built_op["5"]["inputs"]
+    check("扩图参数写进了 ImagePadForOutpaint 节点",
+          (pad_inputs["left"], pad_inputs["right"], pad_inputs["top"],
+           pad_inputs["bottom"], pad_inputs["feathering"]) == (256, 256, 0, 0, 32), pad_inputs)
+    check("模板没声明的参数不会凭空写进工作流",
+          "根本没声明" not in pad_inputs, pad_inputs)
+    check("尺寸只写进真实存在的输入（VAEEncode 没有 width/height）",
+          "width" not in built_op["6"]["inputs"] and "height" not in built_op["6"]["inputs"],
+          built_op["6"]["inputs"])
+    check("扩图语义：采样器吃的是「遮罩后的潜空间」",
+          built_op["8"]["inputs"]["latent_image"] == ["7", 0],
+          built_op["8"]["inputs"]["latent_image"])
+    check("LoadImage 拿到上传后的图片引用",
+          built_op["4"]["inputs"]["image"] == "astrbot/in.png", built_op["4"]["inputs"]["image"])
+    check("扩图默认 denoise 保持 1.0（靠遮罩保住原图区域，不是靠低重绘幅度）",
+          built_op["8"]["inputs"]["denoise"] == 1.0, built_op["8"]["inputs"]["denoise"])
+
+    # params 写错要在**加载时**报错，而不是等出图才失败
+    op_graph = json.loads(
+        (ROOT / "workflows" / "outpaint_checkpoint.json").read_text(encoding="utf-8")
+    )["graph"]
+    bad_node = ""
+    try:
+        wt.WorkflowTemplate("bad_params", op_graph, params={"left": "999"})
+    except wt.TemplateError as e:
+        bad_node = str(e)
+    check("params 指向不存在的节点时拒绝加载", "不存在的节点" in bad_node, bad_node)
+    bad_key = ""
+    try:
+        wt.WorkflowTemplate("bad_params2", op_graph, params={"没有这个输入": "5"})
+    except wt.TemplateError as e:
+        bad_key = str(e)
+    check("params 指向节点上不存在的输入时拒绝加载", "不存在该输入" in bad_key, bad_key)
+
+    only_t2i = {"sd_checkpoint": plugin.templates["sd_checkpoint"]}
+    picked_op, _op_arch = wt.pick_template(
+        only_t2i, model_name="SDXL/m.safetensors", model_folder="checkpoints",
+        purpose="outpaint",
+    )
+    check("没有扩图模板时明确失败，而不是退回文生图模板（否则输入图被静默忽略）",
+          picked_op is None, picked_op)
+
+    def outpaint_session(pid="op-1"):
+        sess = api.aiohttp.ClientSession()
+        sess.route("GET", "/models", api.aiohttp.ClientResponse(200, payload=["checkpoints"]))
+        sess.route("GET", "/models/checkpoints", api.aiohttp.ClientResponse(
+            200, payload=["SDXL/m.safetensors"]))
+        sess.route("POST", "/upload/image", api.aiohttp.ClientResponse(
+            200, payload={"name": "in.png", "subfolder": "astrbot", "type": "input"}))
+        sess.route("POST", "/prompt", api.aiohttp.ClientResponse(
+            200, payload={"prompt_id": pid}))
+        sess.route("GET", "/queue", api.aiohttp.ClientResponse(
+            200, payload={"queue_running": [], "queue_pending": []}))
+        sess.route("GET", f"/history/{pid}", api.aiohttp.ClientResponse(200, payload={pid: {
+            "status": {"status_str": "success", "completed": True},
+            "outputs": {"10": {"images": [{"filename": "op.png", "type": "output"}]}}}}))
+        sess.route("GET", "/view", api.aiohttp.ClientResponse(200, text="PNG"))
+        plugin.comfy._session = sess
+        plugin.comfy.invalidate_model_cache()
+        return sess
+
+    plugin.config["llm_settings"] = {"enable_prompt_optimize": False}
+    plugin.config["hires"] = {"enable": False}
+    plugin.config["draw_settings"] = {"default_negative": "lowres"}
+    # 前面的用例已经在配额里记了账：这里显式清掉限制、并用一个干净的发送者，
+    # 免得测的是「今日已达上限」而不是扩图本身
+    plugin.config["permission"] = {}
+    plugin.permission.reload({})
+    OP_UID = "7007"
+
+    sess_op = outpaint_session()
+    ev_op = AstrMessageEvent(sender_id=OP_UID, message_str="/扩图 --left 256 --right 256",
+                             message=[StubImage(str(png_path))])
+    out_op = asyncio.run(drive(plugin.cmd_outpaint(ev_op)))
+    submitted_op = None
+    for method, path, kw in sess_op.calls:
+        if method == "POST" and path == "/prompt":
+            submitted_op = kw["json"]["prompt"]
+    check("/扩图 提交的确实是扩图工作流",
+          submitted_op is not None
+          and {"ImagePadForOutpaint", "SetLatentNoiseMask"}
+          <= {n["class_type"] for n in submitted_op.values()},
+          sorted({n["class_type"] for n in (submitted_op or {}).values()}))
+    check("「只往左右扩」时上下保持 0（不会偷偷带上默认的上下扩展）",
+          (submitted_op["5"]["inputs"]["left"], submitted_op["5"]["inputs"]["right"],
+           submitted_op["5"]["inputs"]["top"], submitted_op["5"]["inputs"]["bottom"])
+          == (256, 256, 0, 0), submitted_op["5"]["inputs"])
+    # 出图详情在 chain 里（Plain 组件），不在顶层 text
+    def _flatten(items):
+        parts = []
+        for item in items:
+            if item.get("type") == "chain":
+                parts.extend(getattr(comp, "text", "") for comp in item.get("chain") or [])
+            else:
+                parts.append(item.get("text", ""))
+        return "\n".join(p for p in parts if p)
+
+    op_text = _flatten(out_op)
+    check("/扩图 消息里报出「原图 → 扩后」尺寸",
+          "扩图：640x960 → 1152x960" in op_text, op_text[:300])
+    check("/扩图 结果里带上了图片",
+          any(c.__class__.__name__ == "Image" for item in out_op
+              if item.get("type") == "chain" for c in item.get("chain") or []),
+          [item.get("type") for item in out_op])
+
+    # 一边都没扩：明确报错，而不是提交一张等于原图的图
+    sess_op2 = outpaint_session(pid="op-2")
+    ev_op2 = AstrMessageEvent(sender_id=OP_UID, message_str="/扩图 --left 0",
+                              message=[StubImage(str(png_path))])
+    out_op2 = asyncio.run(drive(plugin.cmd_outpaint(ev_op2)))
+    check("扩展量为 0 时明确报错", "至少要往一边扩" in out_op2[-1]["text"], out_op2[-1]["text"])
+
+    # 没给扩图模板时给出可操作的报错
+    saved_tpl = plugin.templates.pop("outpaint_checkpoint")
+    sess_op3 = outpaint_session(pid="op-3")
+    ev_op3 = AstrMessageEvent(sender_id=OP_UID, message_str="/扩图 --left 128",
+                              message=[StubImage(str(png_path))])
+    out_op3 = asyncio.run(drive(plugin.cmd_outpaint(ev_op3)))
+    plugin.templates["outpaint_checkpoint"] = saved_tpl
+    check("缺扩图模板时报错并指出该放哪个文件",
+          "outpaint_checkpoint.json" in out_op3[-1]["text"], out_op3[-1]["text"])
+
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）
     field_re = _re.compile(

@@ -34,7 +34,7 @@ from .workflow_templates import (
 
 PLUGIN_NAME = "astrbot_plugin_comfyui_smart"
 # 与 metadata.yaml 的 version 保持一致（tests/test_logic.py 会校验二者不漂移）
-PLUGIN_VERSION = "0.8.0"
+PLUGIN_VERSION = "0.9.0"
 PLUGIN_DIR = Path(__file__).resolve().parent
 BUILTIN_TEMPLATE_DIR = PLUGIN_DIR / "workflows"
 
@@ -56,6 +56,12 @@ PARAM_ALIASES = {
     "hires-steps": "hires_steps",
     "lora": "lora", "模型": "model", "model": "model",
     "negative": "negative", "负面": "negative",
+    # 扩图（outpaint）：左右上下扩展量与羽化
+    "left": "left", "左": "left", "左边": "left",
+    "right": "right", "右": "right", "右边": "right",
+    "top": "top", "上": "top", "上边": "top",
+    "bottom": "bottom", "下": "bottom", "下边": "bottom",
+    "feather": "feather", "feathering": "feather", "羽化": "feather",
 }
 RATIO_PRESETS = {
     "1:1": (1024, 1024), "16:9": (1344, 768), "9:16": (768, 1344),
@@ -64,6 +70,8 @@ RATIO_PRESETS = {
 }
 # 采样尺寸必须是 8 的倍数
 DIM_ALIGN = 8
+# 扩图接缝羽化的默认值（ImagePadForOutpaint 的 feathering）
+DEFAULT_OUTPAINT_FEATHER = 40
 DIM_MIN = 64
 DIM_MAX = 4096
 MAX_PIXELS = 2048 * 2048
@@ -532,6 +540,11 @@ class ComfyUISmartPlugin(Star):
                 raise ComfyUIError(
                     "没有可用的图生图模板。请确认插件 workflows 目录里有 img2img_checkpoint.json"
                 )
+            if purpose == "outpaint":
+                raise ComfyUIError(
+                    "没有可用的扩图模板。请确认插件 workflows 目录里有 outpaint_checkpoint.json"
+                    "（用到 ComfyUI 自带的 ImagePadForOutpaint 与 SetLatentNoiseMask 节点）"
+                )
             if folder == "diffusion_models" and arch != "flux":
                 raise ComfyUIError(
                     f"模型 {model} 位于 diffusion_models 目录，但它被识别为 {arch} 架构，"
@@ -677,6 +690,7 @@ class ComfyUISmartPlugin(Star):
         on_progress=None,
         preset: dict | None = None,
         source_image: str = "",
+        force_purpose: str = "",
     ) -> dict:
         """完整出图流程：选型 → 建图 → 排队取名额 → 提交 → 等待 → 下载。
 
@@ -689,6 +703,7 @@ class ComfyUISmartPlugin(Star):
             on_progress: 出图进度回调（WebSocket 推送的第 n / 总步数）。
             preset: 现成的提示词（如反推结果），给了就跳过 LLM 改写。
             source_image: 图生图的输入图本地路径；给了就走图生图模板。
+            force_purpose: 强制用途（如 outpaint 扩图），空则按有无输入图推断。
 
         Returns:
             {"images": [Path...], "template": str, "model": str, "lora": str,
@@ -746,10 +761,10 @@ class ComfyUISmartPlugin(Star):
         else:
             llm_note = "（提示词优化已关闭，直接使用你的原话）"
 
-        # 图生图：先把输入图上传到 ComfyUI，拿到 LoadImage 能用的引用
-        purpose = "i2i" if source_image else "t2i"
+        # 图生图 / 扩图：先把输入图上传到 ComfyUI，拿到 LoadImage 能用的引用
+        purpose = force_purpose or ("i2i" if source_image else "t2i")
         image_ref = ""
-        if purpose == "i2i":
+        if source_image:
             i2i_sub = str((self.config.get("i2i", {}) or {}).get("subfolder") or "astrbot").strip()
             image_ref = await self.comfy.upload_image(source_image, subfolder=i2i_sub)
 
@@ -758,7 +773,10 @@ class ComfyUISmartPlugin(Star):
         sampling = self._resolve_sampling(selection["arch"], opt, opts, draw_conf)
 
         # 图生图：尺寸按原图比例（受 max_side 限制），重绘幅度可调
+        # 扩图：尺寸由「原图 + 四周扩展量」决定（节点自己会算，这里只用于汇报与限额）
         denoise = None
+        outpaint_info: dict = {}
+        template_params: dict = {}
         if purpose == "i2i":
             i2i_conf = self.config.get("i2i", {}) or {}
             try:
@@ -782,6 +800,24 @@ class ComfyUISmartPlugin(Star):
             logger.info(
                 "图生图｜输入 %s｜目标 %sx%s｜denoise %s",
                 image_ref, sampling["width"], sampling["height"], denoise,
+            )
+        elif purpose == "outpaint":
+            source_size = read_image_size(source_image)
+            if not source_size:
+                raise ComfyUIError(
+                    "读不到输入图的尺寸，扩图需要知道原图宽高。请换一张 PNG / JPEG / WebP 图片"
+                )
+            outpaint_info = self._resolve_outpaint(source_size[0], source_size[1], opts)
+            template_params = outpaint_info["pads"]
+            sampling["width"] = outpaint_info["width"]
+            sampling["height"] = outpaint_info["height"]
+            logger.info(
+                "扩图｜输入 %s（%sx%s）→ 目标 %sx%s｜扩展 %s/%s/%s/%s｜羽化 %s",
+                image_ref, source_size[0], source_size[1],
+                outpaint_info["width"], outpaint_info["height"],
+                template_params.get("left"), template_params.get("right"),
+                template_params.get("top"), template_params.get("bottom"),
+                template_params.get("feathering"),
             )
         profile = arch_profile(selection["arch"])
 
@@ -862,6 +898,7 @@ class ComfyUISmartPlugin(Star):
             filename_prefix="astrbot_smart",
             denoise=denoise,
             image_name=image_ref,
+            params=template_params,
             **sampling,
         )
 
@@ -873,8 +910,8 @@ class ComfyUISmartPlugin(Star):
         hires_steps = int(hires_conf.get("steps", 0) or 0)
         hires_method = str(hires_conf.get("method") or "bislerp")
 
-        # 自动开关分文生图/图生图两个，互不影响
-        if purpose == "i2i":
+        # 自动开关分文生图/图生图两个，互不影响（扩图属于「改图」，跟随图生图那一个）
+        if purpose in ("i2i", "outpaint"):
             hires_on = bool(hires_conf.get("enable", False)) and bool(
                 hires_conf.get("enable_for_i2i", True)
             )
@@ -1026,6 +1063,7 @@ class ComfyUISmartPlugin(Star):
             "hires_note": hires_note,
             "i2i": bool(image_ref),
             "denoise": denoise if denoise is not None else 1.0,
+            "outpaint": outpaint_info,
             "seconds": time.time() - started,
             "queued_seconds": queued_seconds,
             # 有 Hires 时对外报最终尺寸，消息与画廊显示的才是真实产物尺寸
@@ -1033,6 +1071,56 @@ class ComfyUISmartPlugin(Star):
             "width": hires_info.get("width") or sampling["width"],
             "height": hires_info.get("height") or sampling["height"],
             **{k: sampling[k] for k in ("steps", "cfg", "sampler")},
+        }
+
+    def _resolve_outpaint(self, width: int, height: int, opts: dict) -> dict:
+        """算出扩图的四周扩展量与最终尺寸。
+
+        Args:
+            width: 原图宽。
+            height: 原图高。
+            opts: 行内参数（left/right/top/bottom/feather）。
+
+        Returns:
+            {"pads": {left,right,top,bottom,feathering}, "width":.., "height":.., "source": (w,h)}
+
+        Raises:
+            ComfyUIError: 扩展量非法（全是 0、或超出预算后仍为 0）。
+        """
+        # 明确给了任意一边，就**只用给的这些边**（其余为 0）：
+        # `/扩图 --left 256 --right 256` 的语义是「只往左右扩」，不是「左右 256 + 默认的上下」
+        given_sides: dict[str, int] = {}
+        for key in ("left", "right", "top", "bottom"):
+            raw = opts.get(key)
+            if raw in (None, ""):
+                continue
+            try:
+                value = max(0, int(float(str(raw))))
+            except (TypeError, ValueError):
+                raise ComfyUIError(f"扩图参数 --{key} 需要是像素数，收到的是 {raw!r}")
+            given_sides[key] = value - value % DIM_ALIGN
+        pads = default_outpaint_pads(width, height) if not given_sides else {}
+        pads.update(given_sides)
+        for key in ("left", "right", "top", "bottom"):
+            pads.setdefault(key, 0)
+        pads.setdefault("feathering", DEFAULT_OUTPAINT_FEATHER)
+        if opts.get("feather") not in (None, ""):
+            try:
+                pads["feathering"] = max(0, min(256, int(float(str(opts["feather"])))))
+            except (TypeError, ValueError):
+                raise ComfyUIError(f"羽化参数 --feather 需要是像素数，收到的是 {opts['feather']!r}")
+        pads = fit_outpaint_pads(width, height, pads)
+        total = sum(int(pads[k]) for k in ("left", "right", "top", "bottom"))
+        if total <= 0:
+            raise ComfyUIError(
+                "扩图至少要往一边扩一点：用 --left/--right/--top/--bottom 指定像素数"
+                "（例如 /扩图 描述 --left 256 --right 256）"
+            )
+        return {
+            "pads": pads,
+            "width": width + int(pads["left"]) + int(pads["right"]),
+            "height": height + int(pads["top"]) + int(pads["bottom"]),
+            "source": (width, height),
         }
 
     def _queue_notifiers(self, event: AstrMessageEvent):
@@ -1349,6 +1437,15 @@ class ComfyUISmartPlugin(Star):
                 detail += f"\nℹ️ {result['llm_note']}"
             if result.get("i2i"):
                 detail += f"\n🖼 图生图：重绘幅度 {result.get('denoise', 0.6)}"
+            if result.get("outpaint"):
+                _op = result["outpaint"]
+                _pads = _op.get("pads") or {}
+                _src = _op.get("source") or (0, 0)
+                detail += (
+                    f"\n🪄 扩图：{_src[0]}x{_src[1]} → {_op.get('width')}x{_op.get('height')}"
+                    f"（左右 +{_pads.get('left', 0)}/+{_pads.get('right', 0)}"
+                    f"、上下 +{_pads.get('top', 0)}/+{_pads.get('bottom', 0)}）"
+                )
             if result.get("hires"):
                 _hw = result["hires"].get("width")
                 _hh = result["hires"].get("height")
@@ -1543,6 +1640,62 @@ class ComfyUISmartPlugin(Star):
         await self._record_generation(uid, event, result)
         yield event.chain_result(self._compose_result_chain(event, uid, result))
 
+    @filter.command("扩图", alias={"外扩", "outpaint", "扩画"})
+    async def cmd_outpaint(self, event: AstrMessageEvent):
+        """把图片的构图往外扩（outpaint）。"""
+        uid = str(event.get_sender_id())
+        is_admin = bool(event.is_admin())
+        allowed, reason = await self.permission.check(
+            uid, is_admin=is_admin, storage=self.storage
+        )
+        if not allowed:
+            yield event.plain_result(reason)
+            return
+
+        raw = _extract_command_payload(event, "扩图", "外扩", "outpaint", "扩画")
+        desc, opts = parse_inline_params(raw)
+
+        images = await self._collect_images(event)
+        if not images:
+            yield event.plain_result(
+                "🪄 用法：把图片和 /扩图 一起发，或者回复一张图片再发\n"
+                "　　/扩图 把画面往两边扩成宽幅　（不给参数时四周各扩原图的 25%）\n"
+                "　　/扩图 --left 256 --right 256　只往左右扩\n"
+                "　　/扩图 往下补出脚和地面 --bottom 384 --top 0\n"
+                "参数：--left/--right/--top/--bottom（像素，自动对齐 8 的倍数）、\n"
+                "　　　--feather（接缝羽化，默认 40）、--model 指定底模、--seed 复现"
+            )
+            return
+        if not desc:
+            # 不给描述也能用：给一句通用的「往外延伸」，交给 LLM 改写（若开启）
+            desc = "继续向外延伸画面，补全被裁掉的构图，保持一致的风格、光影与细节"
+
+        yield event.plain_result("🪄 正在把画面往外扩…")
+        on_wait, on_queued, on_progress = self._queue_notifiers(event)
+
+        try:
+            result = await self.generate(
+                user_desc=desc,
+                opts=opts,
+                event=event,
+                on_wait=on_wait,
+                on_queued=on_queued,
+                on_progress=on_progress,
+                source_image=images[0],
+                force_purpose="outpaint",
+            )
+        except (ComfyUIError, TemplateError) as e:
+            logger.warning("扩图失败：%s", e)
+            yield event.plain_result(f"💥 扩图失败：{e}")
+            return
+        except RuntimeError as e:
+            yield event.plain_result(f"💥 {e}")
+            return
+
+        await self.permission.record(uid, is_admin=is_admin, storage=self.storage)
+        await self._record_generation(uid, event, result)
+        yield event.chain_result(self._compose_result_chain(event, uid, result))
+
     @filter.command("反推", alias={"反推提示词", "识图", "img2prompt"})
     async def cmd_reverse_prompt(self, event: AstrMessageEvent):
         """看一张图，反推出可用的提示词。"""
@@ -1667,6 +1820,7 @@ class ComfyUISmartPlugin(Star):
             "　　　　　　--steps 30 / --cfg 6 / --lora 名字:0.8\n"
             "　　　　　　--model 关键词 / --batch 2 / --negative \"...\"\n"
             "/图生图　　以图为底按描述重绘（别名 /改图，--denoise 控制幅度）\n"
+            "/扩图　　　把画面往外扩，补全构图（--left/--right/--top/--bottom 像素）\n"
             "/反推　　　看图反推提示词（发图或回复图片，加 --画 直接出图）\n"
             "/模型列表　查看可用模型\n"
             "/模板列表　查看工作流模板（可放自定义模板）\n"
@@ -1837,6 +1991,54 @@ def read_image_size(path: str) -> tuple[int, int] | None:
     except (OSError, struct.error, ValueError):
         return None
     return None
+
+
+def default_outpaint_pads(width: int, height: int) -> dict:
+    """扩图的默认扩展量：每边扩原图对应边长的 25%，对齐 8 的倍数且至少 64。
+
+    Args:
+        width: 原图宽。
+        height: 原图高。
+
+    Returns:
+        {"left":.., "right":.., "top":.., "bottom":.., "feathering":..}
+    """
+    side_x = max(64, int(width * 0.25))
+    side_y = max(64, int(height * 0.25))
+    return {
+        "left": side_x - side_x % DIM_ALIGN,
+        "right": side_x - side_x % DIM_ALIGN,
+        "top": side_y - side_y % DIM_ALIGN,
+        "bottom": side_y - side_y % DIM_ALIGN,
+        "feathering": DEFAULT_OUTPAINT_FEATHER,
+    }
+
+
+def fit_outpaint_pads(width: int, height: int, pads: dict) -> dict:
+    """把扩展量压到像素预算内（避免一扩就爆显存）。
+
+    Args:
+        width: 原图宽。
+        height: 原图高。
+        pads: 期望的扩展量（已含 left/right/top/bottom）。
+
+    Returns:
+        缩放后的扩展量（各值对齐 8 的倍数）。
+    """
+    left, right = int(pads.get("left") or 0), int(pads.get("right") or 0)
+    top, bottom = int(pads.get("top") or 0), int(pads.get("bottom") or 0)
+    final_w, final_h = width + left + right, height + top + bottom
+    if final_w * final_h > MAX_PIXELS:
+        scale = (MAX_PIXELS / (final_w * final_h)) ** 0.5
+        left = int(left * scale)
+        right = int(right * scale)
+        top = int(top * scale)
+        bottom = int(bottom * scale)
+    fitted = dict(pads)
+    for key, value in (("left", left), ("right", right), ("top", top), ("bottom", bottom)):
+        value = max(0, min(int(value), DIM_MAX))
+        fitted[key] = value - value % DIM_ALIGN
+    return fitted
 
 
 def fit_to_limit(width: int, height: int, max_side: int) -> tuple[int, int]:

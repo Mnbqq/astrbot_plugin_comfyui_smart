@@ -617,6 +617,7 @@ class WorkflowTemplate:
         source: str = "",
         bindings: dict | None = None,
         purpose: str = "",
+        params: dict | None = None,
     ):
         """初始化模板。
 
@@ -627,10 +628,13 @@ class WorkflowTemplate:
             loader: 模型加载方式，checkpoint 或 unet。
             source: 来源描述（内置或文件路径）。
             bindings: 可选的注入点覆盖（按节点 id 或标题），用于自动推导选错节点的场景。
-            purpose: 用途，t2i（文生图，默认）或 i2i（图生图）。
+            purpose: 用途，t2i（文生图，默认）、i2i（图生图）或 outpaint（扩图）。
+            params: 模板自己声明的可注入参数，形如 `{"left": "5", "feathering": "5"}`
+                （参数键 -> 节点 id）。扩图这类工作流的参数（左右上下扩展量、羽化）
+                只有模板知道写哪个节点，所以由模板声明，`build()` 按需写入。
 
         Raises:
-            TemplateError: 图结构不合法、缺必需注入点，或 bindings 指向不存在的节点。
+            TemplateError: 图结构不合法、缺必需注入点、bindings 或 params 指向不存在的东西。
         """
         if not isinstance(graph, dict):
             raise TemplateError(f"模板 {name} 不是有效的工作流对象")
@@ -647,6 +651,7 @@ class WorkflowTemplate:
         self.bindings = _apply_binding_overrides(
             cleaned, _derive_bindings(cleaned), bindings or {}, name
         )
+        self.params = _validate_params(cleaned, params or {}, name)
 
     def describe(self) -> dict:
         """返回模板摘要，供 /模板列表 与 Pages 展示。"""
@@ -657,6 +662,7 @@ class WorkflowTemplate:
             "purpose": self.purpose,
             "source": self.source,
             "nodes": len(self.graph),
+            "params": sorted(self.params),
             "class_types": sorted(self.required_nodes()),
         }
 
@@ -709,6 +715,7 @@ class WorkflowTemplate:
         guidance: float | None = None,
         filename_prefix: str = "astrbot_smart",
         image_name: str = "",
+        params: dict | None = None,
     ) -> dict:
         """按模板生成可直接提交的图。
 
@@ -731,6 +738,9 @@ class WorkflowTemplate:
             guidance: Flux guidance 值。
             filename_prefix: 输出文件名前缀。
             image_name: 图生图的输入图引用（ComfyUI input 目录下的相对路径）。
+            params: 模板声明的参数（如扩图的 left/top/right/bottom/feathering）。
+                只写**模板 params 段声明过**的键：模板已经声明了「哪个节点上有这个输入」，
+                插件不会凭空往节点上塞字段。
 
         Returns:
             可提交给 /prompt 的图。
@@ -800,6 +810,14 @@ class WorkflowTemplate:
         # 8) 输出前缀
         if b["save"] and "filename_prefix" in graph[b["save"]]["inputs"]:
             graph[b["save"]]["inputs"]["filename_prefix"] = filename_prefix
+        # 9) 模板声明的参数（扩图/局部重绘这类工作流的左右上下、羽化等）
+        for key, value in (params or {}).items():
+            node_id = self.params.get(key)
+            if not node_id or value is None:
+                continue
+            inputs = graph[node_id]["inputs"]
+            if key in inputs:
+                inputs[key] = int(value)
         return graph
 
 
@@ -1101,6 +1119,42 @@ def _apply_lora(graph: dict, bindings: dict, lora_name: str, strength: float) ->
 # --------------------------------------------------------------------------- #
 # 加载与选择
 # --------------------------------------------------------------------------- #
+def _validate_params(graph: dict, params: dict, name: str) -> dict:
+    """校验模板声明的可注入参数：节点要在、输入键要在。
+
+    与 bindings 一样，写错要在**加载时**就报出来，而不是等到出图才失败 ——
+    凭空往节点上塞一个不存在的输入键，会被 ComfyUI 以 `invalid_input_type` 拒绝。
+
+    Args:
+        graph: 已校验的工作流。
+        params: 清单里的 params 段（参数键 -> 节点 id）。
+        name: 模板名，用于报错信息。
+
+    Returns:
+        校验后的 `{参数键: 节点 id}`。
+
+    Raises:
+        TemplateError: params 不是对象，或指向不存在的节点/输入键。
+    """
+    if not isinstance(params, dict):
+        raise TemplateError(f"模板 {name} 的 params 必须是对象")
+    checked: dict[str, str] = {}
+    for key, target in params.items():
+        node_id = str(target or "").strip()
+        if not node_id:
+            raise TemplateError(f"模板 {name} 的 params.{key} 必须给出节点 id")
+        if node_id not in graph:
+            raise TemplateError(
+                f"模板 {name} 的 params.{key} 指向不存在的节点 {node_id!r}"
+            )
+        if key not in (graph[node_id].get("inputs") or {}):
+            raise TemplateError(
+                f"模板 {name} 的 params.{key} 在节点 {node_id} 上不存在该输入"
+            )
+        checked[key] = node_id
+    return checked
+
+
 def parse_template_payload(payload: dict, name: str, source: str = "") -> dict:
     """解析模板文件内容，支持裸图与带元信息的包装两种写法。
 
@@ -1110,7 +1164,7 @@ def parse_template_payload(payload: dict, name: str, source: str = "") -> dict:
         source: 来源描述。
 
     Returns:
-        {"name":..., "arch":..., "loader":..., "graph":...}
+        {"name":..., "arch":..., "loader":..., "purpose":..., "bindings":..., "params":..., "graph":...}
 
     Raises:
         TemplateError: 无法识别的结构。
@@ -1124,6 +1178,8 @@ def parse_template_payload(payload: dict, name: str, source: str = "") -> dict:
 
     spec = payload.get("bindings")
     spec = spec if isinstance(spec, dict) else {}
+    params = payload.get("params")
+    params = params if isinstance(params, dict) else {}
 
     if "graph" in payload and isinstance(payload["graph"], dict):
         return {
@@ -1132,6 +1188,7 @@ def parse_template_payload(payload: dict, name: str, source: str = "") -> dict:
             "loader": _field("loader"),
             "purpose": _field("purpose"),
             "bindings": spec,
+            "params": params,
             "graph": payload["graph"],
         }
     # 裸 API 图：顶层就是 {"节点id": {...}}；也容忍 ComfyUI 的 {"prompt": {...}} 包裹
@@ -1142,11 +1199,12 @@ def parse_template_payload(payload: dict, name: str, source: str = "") -> dict:
             "loader": "",
             "purpose": "",
             "bindings": {},
+            "params": {},
             "graph": payload["prompt"],
         }
     if all(isinstance(v, dict) and "class_type" in v for v in payload.values()):
         return {"name": name, "arch": "", "loader": "", "purpose": "",
-                "bindings": {}, "graph": payload}
+                "bindings": {}, "params": {}, "graph": payload}
     raise TemplateError(f"模板 {name} 结构无法识别（既不是 API 图也不是包装格式）")
 
 
@@ -1175,6 +1233,7 @@ def load_templates(*dirs: Path) -> dict[str, WorkflowTemplate]:
                     purpose=meta.get("purpose") or "",
                     source=str(path),
                     bindings=meta.get("bindings") or {},
+                    params=meta.get("params") or {},
                 )
             except (OSError, json.JSONDecodeError, TemplateError):
                 # 坏模板不应拖垮插件启动
@@ -1236,9 +1295,9 @@ def pick_template(
     arch = guess_arch(model_name, arch_override)
     want_loader = "unet" if model_folder == "diffusion_models" else "checkpoint"
 
-    # 先按用途筛：图生图不能拿到文生图模板（二者节点结构不同）
+    # 先按用途筛：图生图/扩图不能拿到文生图模板（三者节点结构不同）
     by_purpose = [t for t in templates.values() if t.purpose == purpose]
-    if not by_purpose and purpose == "i2i":
+    if not by_purpose and purpose in ("i2i", "outpaint"):
         return None, guess_arch(model_name, arch_override)
     pool = [t for t in (by_purpose or templates.values()) if t.loader == want_loader]
     if not pool:
