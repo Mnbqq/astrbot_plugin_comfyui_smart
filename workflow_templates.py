@@ -69,10 +69,11 @@ ROLE_DEFAULT_INPUT = {
     "lora_loader": "lora_name",
     "mask_loader": "image",
     "image_loader": "image",
+    "end_image_loader": "image",
 }
 # 这些角色的绑定形态是 (节点id, 输入键)
 KEYED_ROLES = ("positive", "negative", "model_loader", "vae_loader", "lora_loader",
-               "mask_loader", "image_loader")
+               "mask_loader", "image_loader", "end_image_loader")
 # 这些角色的绑定形态只有一个节点 id
 NODE_ROLES = ("sampler", "latent", "save", "guidance")
 
@@ -407,6 +408,7 @@ def _derive_bindings(graph: dict) -> dict:
         "guidance": None,
         "image_loader": None,
         "mask_loader": None,
+        "end_image_loader": None,
         "scaler": None,
     }
 
@@ -441,6 +443,10 @@ def _derive_bindings(graph: dict) -> dict:
             bindings["mask_loader"] = (node_id, "image")
         elif class_type in IMAGE_LOADER_CLASSES and bindings["image_loader"] is None:
             bindings["image_loader"] = (node_id, "image")
+        elif class_type in IMAGE_LOADER_CLASSES and bindings["end_image_loader"] is None:
+            # 第二张输入图（图生视频的首帧/尾帧、图生图的参考图）：按出现顺序认成尾帧。
+            # 认错了也不怕：模板可以显式声明 end_image_loader。
+            bindings["end_image_loader"] = (node_id, "image")
         elif class_type in SCALER_CLASSES and bindings["scaler"] is None:
             bindings["scaler"] = node_id
 
@@ -772,6 +778,7 @@ class WorkflowTemplate:
         filename_prefix: str = "astrbot_smart",
         image_name: str = "",
         mask_name: str = "",
+        end_image_name: str = "",
         params: dict | None = None,
     ) -> dict:
         """按模板生成可直接提交的图。
@@ -796,9 +803,11 @@ class WorkflowTemplate:
             filename_prefix: 输出文件名前缀。
             image_name: 图生图的输入图引用（ComfyUI input 目录下的相对路径）。
             mask_name: 局部重绘的遮罩图引用（白=要重画，黑=保留；用 LoadImageMask 读取）。
+            end_image_name: 图生视频的尾帧图引用（模板声明了 end_image_loader 时才生效）。
             params: 模板声明的参数（如扩图的 left/top/right/bottom/feathering）。
                 只写**模板 params 段声明过**的键：模板已经声明了「哪个节点上有这个输入」，
-                插件不会凭空往节点上塞字段。
+                插件不会凭空往节点上塞字段。值为**空字符串表示删掉这个输入**
+                （用于可选输入：没有尾帧时把 `end_image` 从图里摘掉，而不是留一条死链）。
 
         Returns:
             可提交给 /prompt 的图。
@@ -869,16 +878,27 @@ class WorkflowTemplate:
         if mask_name and b["mask_loader"]:
             mask_id, mask_key = b["mask_loader"]
             graph[mask_id]["inputs"][mask_key] = mask_name
+        # 7.7) 图生视频的尾帧图（首尾帧模式）
+        if end_image_name and b["end_image_loader"]:
+            end_id, end_key = b["end_image_loader"]
+            graph[end_id]["inputs"][end_key] = end_image_name
         # 8) 输出前缀
         if b["save"] and "filename_prefix" in graph[b["save"]]["inputs"]:
             graph[b["save"]]["inputs"]["filename_prefix"] = filename_prefix
-        # 9) 模板声明的参数（扩图/局部重绘这类工作流的左右上下、羽化、遮罩外扩等）
+        # 9) 模板声明的参数（扩图/局部重绘/视频的左右上下、羽化、帧数、帧率等）
+        dropped = False
         for key, value in (params or {}).items():
             node_id = self.params.get(key)
             if not node_id or value is None:
                 continue
             inputs = graph[node_id]["inputs"]
             if key not in inputs:
+                continue
+            if value == "" and not isinstance(inputs[key], str):
+                # 空字符串 = 删掉这个可选输入（例如没有尾帧时摘掉 end_image），
+                # 不然会留下一条指向占位文件的死链，ComfyUI 直接拒绝整张图
+                inputs.pop(key, None)
+                dropped = True
                 continue
             # 按模板里原有值的类型写入：写错类型会被 ComfyUI 以 invalid_input_type 拒绝
             current = inputs[key]
@@ -892,6 +912,10 @@ class WorkflowTemplate:
                 inputs[key] = value
             else:
                 inputs[key] = str(value)
+        if dropped:
+            # 摘掉可选输入后，可能会留下没用的前置节点（例如第二张 LoadImage），
+            # 它们带着占位文件名进图同样会被 ComfyUI 拒绝，所以重新做一次可达性裁剪
+            graph = prune_unreachable(graph)
         return graph
 
 

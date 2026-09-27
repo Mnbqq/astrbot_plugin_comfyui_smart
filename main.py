@@ -36,7 +36,7 @@ from .workflow_templates import (
 
 PLUGIN_NAME = "astrbot_plugin_comfyui_smart"
 # 与 metadata.yaml 的 version 保持一致（tests/test_logic.py 会校验二者不漂移）
-PLUGIN_VERSION = "0.13.0"
+PLUGIN_VERSION = "0.14.0"
 PLUGIN_DIR = Path(__file__).resolve().parent
 BUILTIN_TEMPLATE_DIR = PLUGIN_DIR / "workflows"
 
@@ -620,6 +620,13 @@ class ComfyUISmartPlugin(Star):
                     "没有可用的局部重绘模板。请确认插件 workflows 目录里有 inpaint_checkpoint.json"
                     "（用到 ComfyUI 自带的 LoadImageMask / GrowMask / SetLatentNoiseMask 节点）"
                 )
+            if purpose == "i2v":
+                raise ComfyUIError(
+                    "没有可用的图生视频模板。插件内置的 wan_i2v.json 需要 ComfyUI 的原生 Wan "
+                    "支持（UNETLoader / CLIPLoader / VAELoader / WanFirstLastFrameToVideo / "
+                    "ModelSamplingSD3 / SaveWEBM）与 Wan I2V 权重。用别的视频模型时，"
+                    "请把对应的 API 格式工作流放进模板目录并声明 \"purpose\": \"i2v\""
+                )
             if purpose == "t2v":
                 raise ComfyUIError(
                     "没有可用的文生视频模板。插件内置的 wan_t2v.json 需要 ComfyUI 的原生 Wan 支持"
@@ -773,6 +780,7 @@ class ComfyUISmartPlugin(Star):
         preset: dict | None = None,
         source_image: str = "",
         mask_image: str = "",
+        end_image: str = "",
         force_purpose: str = "",
     ) -> dict:
         """完整出图流程：选型 → 建图 → 排队取名额 → 提交 → 等待 → 下载。
@@ -787,7 +795,9 @@ class ComfyUISmartPlugin(Star):
             preset: 现成的提示词（如反推结果），给了就跳过 LLM 改写。
             source_image: 图生图/扩图/局部重绘的输入图本地路径。
             mask_image: 局部重绘的遮罩图本地路径（白=重画，黑=保留）。
-            force_purpose: 强制用途（outpaint 扩图 / inpaint 局部重绘），空则按有无输入图推断。
+            end_image: 图生视频的尾帧图本地路径（给了就走「首尾帧」模式）。
+            force_purpose: 强制用途（outpaint 扩图 / inpaint 局部重绘 / t2v 文生视频 /
+                i2v 图生视频），空则按有无输入图推断。
 
         Returns:
             {"images": [Path...], "template": str, "model": str, "lora": str,
@@ -865,6 +875,12 @@ class ComfyUISmartPlugin(Star):
                 (self.config.get("i2i", {}) or {}).get("subfolder") or "astrbot"
             ).strip()
             mask_ref = await comfy.upload_image(mask_image, subfolder=mask_sub)
+        end_ref = ""
+        if end_image:
+            end_sub = str(
+                (self.config.get("i2i", {}) or {}).get("subfolder") or "astrbot"
+            ).strip()
+            end_ref = await comfy.upload_image(end_image, subfolder=end_sub)
 
         selection = await self._resolve_selection(
             catalog, opt, opts, purpose=purpose, client=comfy
@@ -880,6 +896,26 @@ class ComfyUISmartPlugin(Star):
         inpaint_info: dict = {}
         video_info: dict = {}
         template_params: dict = {}
+        if purpose == "i2v":
+            video_conf = self.config.get("video", {}) or {}
+            video_info = resolve_video_params(opts, video_conf)
+            template_params = {
+                "length": video_info["length"],
+                "fps": int(round(video_info["fps"])),
+            }
+            if not end_ref:
+                # 没有尾帧：把模板里的可选输入 end_image 摘掉（否则会留一条指向占位文件的死链）
+                template_params["end_image"] = ""
+            source_size = read_image_size(source_image)
+            if source_size:
+                sampling["width"], sampling["height"] = fit_video_size(
+                    source_size[0], source_size[1]
+                )
+            logger.info(
+                "图生视频｜首帧 %s｜尾帧 %s｜%sx%s｜%s 帧｜%.0f fps｜约 %.1f 秒",
+                image_ref, end_ref or "无", sampling["width"], sampling["height"],
+                video_info["length"], video_info["fps"], video_info["seconds"],
+            )
         if purpose == "t2v":
             video_conf = self.config.get("video", {}) or {}
             video_info = resolve_video_params(opts, video_conf)
@@ -1034,6 +1070,7 @@ class ComfyUISmartPlugin(Star):
             denoise=denoise,
             image_name=image_ref,
             mask_name=mask_ref,
+            end_image_name=end_ref,
             params=template_params,
             **sampling,
         )
@@ -1216,6 +1253,8 @@ class ComfyUISmartPlugin(Star):
             "outpaint": outpaint_info,
             "inpaint": inpaint_info,
             "video": video_info,
+            "i2v": bool(purpose == "i2v" and image_ref),
+            "end_frame": bool(end_ref),
             "backend": backend.name if self.pool.multi else "",
             "seconds": time.time() - started,
             "queued_seconds": queued_seconds,
@@ -1738,6 +1777,9 @@ class ComfyUISmartPlugin(Star):
                 detail += f"\n⚠️ {result['hires_note']}"
             if result.get("prompt_note"):
                 detail += f"\nℹ️ {result['prompt_note']}"
+            if result.get("i2v"):
+                detail += ("\n🖼 图生视频："
+                           + ("首帧 → 尾帧" if result.get("end_frame") else "以首帧为起点"))
             if result.get("backend"):
                 detail += f"\n🖥 后端：{result['backend']}"
             if result.get("queued_seconds"):
@@ -2007,6 +2049,66 @@ class ComfyUISmartPlugin(Star):
         await self._record_generation(uid, event, result)
         yield event.chain_result(self._compose_result_chain(event, uid, result))
 
+    @filter.command("图生视频", alias={"首尾帧", "i2v", "让图动起来"})
+    async def cmd_image_to_video(self, event: AstrMessageEvent):
+        """以一张图为起点生成视频（可给第二张图当尾帧）。"""
+        uid = str(event.get_sender_id())
+        is_admin = bool(event.is_admin())
+        allowed, reason = await self.permission.check(
+            uid, is_admin=is_admin, storage=self.storage
+        )
+        if not allowed:
+            yield event.plain_result(reason)
+            return
+
+        raw = _extract_command_payload(event, "图生视频", "首尾帧", "i2v", "让图动起来")
+        desc, opts = parse_inline_params(raw)
+
+        images = await self._collect_images(event)
+        if not images:
+            yield event.plain_result(
+                "🎬 用法：把图片和 /图生视频 一起发，或者回复一张图片再发\n"
+                "　　/图生视频 让她的头发飘动起来 --seconds 3\n"
+                "　　/图生视频 从白天过渡到夜晚（发两张图：第一张首帧、第二张尾帧）\n"
+                "　　/图生视频 镜头缓慢推近 --ratio 16:9 --fps 16\n"
+                "参数与 /视频 相同：--seconds 时长、--fps 帧率、--length 帧数\n"
+                "⚠️ 需要 ComfyUI 里装好视频模型（如 Wan 2.x I2V）与节点；缺什么会直接告诉你"
+            )
+            return
+        if not desc:
+            desc = "让画面自然地动起来，保持主体与风格一致"
+
+        start_image = images[0]
+        end_image = images[1] if len(images) > 1 else ""
+        tip = "🎬 收到（首帧 → 尾帧），正在生成视频（比出图慢很多，请耐心等）…" if end_image \
+            else "🎬 收到图片，正在让它动起来（比出图慢很多，请耐心等）…"
+        yield event.plain_result(tip)
+
+        on_wait, on_queued, on_progress = self._queue_notifiers(event)
+        try:
+            result = await self.generate(
+                user_desc=desc,
+                opts=opts,
+                event=event,
+                on_wait=on_wait,
+                on_queued=on_queued,
+                on_progress=on_progress,
+                source_image=start_image,
+                end_image=end_image,
+                force_purpose="i2v",
+            )
+        except (ComfyUIError, TemplateError) as e:
+            logger.warning("图生视频失败：%s", e)
+            yield event.plain_result(f"💥 视频生成失败：{e}")
+            return
+        except RuntimeError as e:
+            yield event.plain_result(f"💥 {e}")
+            return
+
+        await self.permission.record(uid, is_admin=is_admin, storage=self.storage)
+        await self._record_generation(uid, event, result)
+        yield event.chain_result(self._compose_result_chain(event, uid, result))
+
     @filter.command("视频", alias={"生成视频", "文生视频", "video", "t2v"})
     async def cmd_video(self, event: AstrMessageEvent):
         """按描述生成一段短视频（文生视频）。"""
@@ -2187,6 +2289,7 @@ class ComfyUISmartPlugin(Star):
             "/图生图　　以图为底按描述重绘（别名 /改图，--denoise 控制幅度）\n"
             "/扩图　　　把画面往外扩，补全构图（--left/--right/--top/--bottom 像素）\n"
             "/视频　　　按描述生成短视频（--seconds 时长 / --fps 帧率 / --length 帧数）\n"
+            "/图生视频　让一张图动起来（发两张图=首帧→尾帧，别名 /i2v）\n"
             "/反推　　　看图反推提示词（发图或回复图片，加 --画 直接出图）\n"
             "/模型列表　查看可用模型\n"
             "/模板列表　查看工作流模板（可放自定义模板）\n"
@@ -2421,6 +2524,34 @@ def align_video_frames(frames: int, *, block: int = 4, up: bool = True) -> int:
     frames = max(1, int(frames or 0))
     steps = -(-(frames - 1) // block) if up else ((frames - 1) // block)
     return max(5, steps * block + 1)
+
+
+def fit_video_size(width: int, height: int, *, align: int = 16,
+                   budget: int = 832 * 480) -> tuple[int, int]:
+    """把输入图尺寸调整成视频模型能接受的大小。
+
+    视频模型对尺寸有硬约束：宽高必须是 16 的倍数（Wan / HunyuanVideo 都一样），
+    而且比出图更容易爆显存，所以按像素预算等比压一档。
+
+    Args:
+        width: 原图宽。
+        height: 原图高。
+        align: 对齐倍数（默认 16）。
+        budget: 像素预算（默认 832x480，Wan 480p 档）。
+
+    Returns:
+        (宽, 高)，均为 align 的倍数。
+    """
+    if width <= 0 or height <= 0:
+        return width, height
+    scale = 1.0
+    if budget > 0 and width * height > budget:
+        scale = (budget / (width * height)) ** 0.5
+    out_w = max(align, int(width * scale))
+    out_h = max(align, int(height * scale))
+    out_w -= out_w % align
+    out_h -= out_h % align
+    return max(align, out_w), max(align, out_h)
 
 
 def resolve_video_params(opts: dict, video_conf: dict) -> dict:

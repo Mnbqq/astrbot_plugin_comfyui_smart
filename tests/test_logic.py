@@ -3460,6 +3460,148 @@ def main() -> int:
     clamped_lines = [line for line in _stub_logger.text().splitlines() if "截到" in line]
     check("超长视频被配置上限截断（日志里说明）", bool(clamped_lines), clamped_lines[:1])
 
+    print("\n=== 图生视频 i2v / 首尾帧（v0.14.0）===")
+    tpl_i2v = wt.load_templates(ROOT / "workflows")["wan_i2v"]
+    check("内置图生视频模板已加载，用途是 i2v", tpl_i2v.purpose == "i2v", tpl_i2v.purpose)
+    check("i2v 模板用 Wan 首尾帧节点（可选 start/end image）",
+          {"WanFirstLastFrameToVideo", "UNETLoader", "CLIPLoader", "VAELoader",
+           "ModelSamplingSD3", "SaveWEBM"} <= tpl_i2v.required_nodes(),
+          sorted(tpl_i2v.required_nodes()))
+    check("首帧与尾帧绑定到两个不同的 LoadImage（输入键都叫 image，必须分开）",
+          tpl_i2v.bindings["image_loader"] == ("4", "image")
+          and tpl_i2v.bindings["end_image_loader"] == ("7", "image"),
+          (tpl_i2v.bindings["image_loader"], tpl_i2v.bindings["end_image_loader"]))
+
+    i2v_both = tpl_i2v.build(
+        positive="p", negative="n", model_name="wan2.1_i2v_480p_14B.safetensors",
+        width=832, height=480, steps=30, cfg=6.0, sampler="uni_pc", scheduler="simple",
+        seed=3, image_name="astrbot/start.png", end_image_name="astrbot/end.png",
+        params={"length": 81, "fps": 16},
+    )
+    check("有尾帧：两张图分别写进两个 LoadImage，首尾帧节点拿到两条连线",
+          i2v_both["4"]["inputs"]["image"] == "astrbot/start.png"
+          and i2v_both["7"]["inputs"]["image"] == "astrbot/end.png"
+          and i2v_both["5"]["inputs"]["start_image"] == ["4", 0]
+          and i2v_both["5"]["inputs"]["end_image"] == ["7", 0],
+          (i2v_both["5"]["inputs"]["start_image"], i2v_both["5"]["inputs"]["end_image"]))
+    check("帧数/帧率写进模板声明的参数",
+          i2v_both["5"]["inputs"]["length"] == 81 and i2v_both["12"]["inputs"]["fps"] == 16.0,
+          (i2v_both["5"]["inputs"]["length"], i2v_both["12"]["inputs"]["fps"]))
+
+    i2v_one = tpl_i2v.build(
+        positive="p", negative="n", model_name="m", width=832, height=480, steps=30, cfg=6.0,
+        sampler="uni_pc", scheduler="simple", seed=3, image_name="astrbot/start.png",
+        params={"length": 49, "fps": 16, "end_image": ""},
+    )
+    check("只给首帧：可选输入 end_image 被摘掉（不留死链）",
+          "end_image" not in i2v_one["5"]["inputs"], i2v_one["5"]["inputs"])
+    check("只给首帧：没用到的第二张 LoadImage 会被剪掉（否则占位文件名会让整张图被拒）",
+          "7" not in i2v_one and "4" in i2v_one and i2v_one["5"]["inputs"]["start_image"] == ["4", 0],
+          sorted(i2v_one))
+    check("params 空串=删除输入的语义，不会误删字符串控件（提示词仍在）",
+          i2v_one["6"]["inputs"]["text"] == "p" and i2v_one["5"]["inputs"]["length"] == 49,
+          i2v_one["6"]["inputs"])
+
+    check("视频输入图尺寸按 16 的倍数贴合、并压到像素预算内",
+          m.fit_video_size(640, 960) == (512, 768)
+          and m.fit_video_size(1920, 1080) == (832, 464)
+          and m.fit_video_size(832, 480) == (832, 480)
+          and all(v % 16 == 0 for v in m.fit_video_size(1000, 700)),
+          [m.fit_video_size(*wh) for wh in ((640, 960), (1920, 1080), (1000, 700))])
+
+    def i2v_session(pid="i2v-1"):
+        sess = api.aiohttp.ClientSession()
+        sess.route("GET", "/models", api.aiohttp.ClientResponse(200, payload=["diffusion_models"]))
+        sess.route("GET", "/models/diffusion_models", api.aiohttp.ClientResponse(
+            200, payload=["wan2.1_i2v_480p_14B_fp8_e4m3fn.safetensors"]))
+        sess.route("POST", "/upload/image", api.aiohttp.ClientResponse(
+            200, payload={"name": "in.png", "subfolder": "astrbot", "type": "input"}))
+        sess.route("POST", "/prompt", api.aiohttp.ClientResponse(200, payload={"prompt_id": pid}))
+        sess.route("GET", "/queue", api.aiohttp.ClientResponse(
+            200, payload={"queue_running": [], "queue_pending": []}))
+        sess.route("GET", f"/history/{pid}", api.aiohttp.ClientResponse(200, payload={pid: {
+            "status": {"status_str": "success", "completed": True},
+            "outputs": {"12": {"images": [{"filename": "i2v_00001_.webm", "subfolder": "",
+                                           "type": "output"}], "animated": [True]}}}}))
+        sess.route("GET", "/view", api.aiohttp.ClientResponse(200, text="WEBMDATA"))
+        plugin.comfy._session = sess
+        plugin.comfy.invalidate_model_cache()
+        return sess
+
+    plugin.config["llm_settings"] = {"enable_prompt_optimize": False}
+    plugin.config["hires"] = {"enable": False}
+    plugin.config["permission"] = {}
+    plugin.config["video"] = {"default_seconds": 4, "default_fps": 16, "max_seconds": 10,
+                              "send_video": True}
+    plugin.permission.reload({})
+
+    # 单张图：以首帧为起点
+    sess_i2v = i2v_session(pid="i2v-1")
+    ev_i2v = AstrMessageEvent(sender_id="6006", message_str="/图生视频 让她的头发飘动 --seconds 3",
+                              message=[StubImage(str(png_path))])
+    out_i2v = asyncio.run(drive(plugin.cmd_image_to_video(ev_i2v)))
+    submitted_i2v = None
+    for method, path, kw in sess_i2v.calls:
+        if method == "POST" and path == "/prompt":
+            submitted_i2v = kw["json"]["prompt"]
+    check("/图生视频 提交的是 Wan 首尾帧工作流",
+          submitted_i2v is not None
+          and submitted_i2v["5"]["class_type"] == "WanFirstLastFrameToVideo"
+          and submitted_i2v["12"]["class_type"] == "SaveWEBM",
+          sorted({n["class_type"] for n in (submitted_i2v or {}).values()}))
+    check("单张图时不带尾帧（可选输入已被摘掉、孤儿节点已剪掉）",
+          submitted_i2v is not None and "end_image" not in submitted_i2v["5"]["inputs"]
+          and "7" not in submitted_i2v, sorted(submitted_i2v or {}))
+    check("尺寸贴合输入图（640x960 → 512x768，16 的倍数）",
+          submitted_i2v["5"]["inputs"]["width"] == 512
+          and submitted_i2v["5"]["inputs"]["height"] == 768, submitted_i2v["5"]["inputs"])
+    check("秒数换算成帧数写进模板（3 秒 16fps → 49 帧）",
+          submitted_i2v["5"]["inputs"]["length"] == 49, submitted_i2v["5"]["inputs"]["length"])
+    chain_i2v = [x for x in out_i2v if x.get("type") == "chain"][-1]["chain"]
+    check("视频用 Video 组件发出，并说明是「以首帧为起点」",
+          any(comp.__class__.__name__ == "Video" for comp in chain_i2v)
+          and any("以首帧为起点" in getattr(comp, "text", "") for comp in chain_i2v),
+          [getattr(comp, "text", "")[:30] for comp in chain_i2v])
+
+    # 两张图：首帧 → 尾帧（必须是两个不同的文件：同一路径会被 _collect_images 去重）
+    end_frame_path = Path(tempfile.mkdtemp(prefix="smart_i2v_end_")) / "end.png"
+    end_frame_path.write_bytes(png_path.read_bytes())
+    sess_i2v2 = i2v_session(pid="i2v-2")
+    ev_flf = AstrMessageEvent(sender_id="6006", message_str="/图生视频 从白天过渡到夜晚 --seconds 2",
+                              message=[StubImage(str(png_path)),
+                                       StubImage(str(end_frame_path))])
+    out_flf = asyncio.run(drive(plugin.cmd_image_to_video(ev_flf)))
+    submitted_flf = None
+    for method, path, kw in sess_i2v2.calls:
+        if method == "POST" and path == "/prompt":
+            submitted_flf = kw["json"]["prompt"]
+    uploads = [c for c in sess_i2v2.calls if c[0] == "POST" and c[1] == "/upload/image"]
+    check("两张图时走「首帧 → 尾帧」（两张图都上传、两条连线都在）",
+          len(uploads) == 2 and submitted_flf is not None
+          and submitted_flf["5"]["inputs"].get("start_image") == ["4", 0]
+          and submitted_flf["5"]["inputs"].get("end_image") == ["7", 0]
+          and "7" in submitted_flf,
+          (len(uploads), submitted_flf["5"]["inputs"] if submitted_flf else None))
+    chain_flf = [x for x in out_flf if x.get("type") == "chain"][-1]["chain"]
+    check("首尾帧模式在结果里说明清楚",
+          any("首帧 → 尾帧" in getattr(comp, "text", "") for comp in chain_flf),
+          [getattr(comp, "text", "")[:30] for comp in chain_flf])
+
+    # 用法与报错
+    out_i2v_none = asyncio.run(drive(plugin.cmd_image_to_video(
+        AstrMessageEvent(sender_id="6006", message_str="/图生视频 动起来"))))
+    check("/图生视频 没给图时给出用法",
+          "用法" in out_i2v_none[0]["text"] and "首帧" in out_i2v_none[0]["text"],
+          out_i2v_none[0]["text"][:60])
+    saved_i2v_tpl = plugin.templates.pop("wan_i2v")
+    i2v_session(pid="i2v-3")
+    out_i2v_missing = asyncio.run(drive(plugin.cmd_image_to_video(
+        AstrMessageEvent(sender_id="6006", message_str="/图生视频 动起来",
+                         message=[StubImage(str(png_path))]))))
+    plugin.templates["wan_i2v"] = saved_i2v_tpl
+    check("缺图生视频模板时报错并指出该放哪个文件",
+          "wan_i2v.json" in out_i2v_missing[-1]["text"], out_i2v_missing[-1]["text"][:80])
+
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）
     field_re = _re.compile(
