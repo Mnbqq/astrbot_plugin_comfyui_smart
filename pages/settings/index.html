@@ -69,6 +69,26 @@
             </div>
           </div>
         </article>
+
+        <article class="card">
+          <div class="card-header">
+            <div><h3>出图队列与并发</h3><p>限制同时出图的数量，超出的先排队并告知位次，避免多人同时出图把显存打满。</p></div>
+          </div>
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="queue_max_concurrent">同时出图上限</label>
+              <input type="number" id="queue_max_concurrent" class="input-modern" min="1" />
+            </div>
+            <div class="form-group">
+              <label for="queue_per_user_limit">单人同时出图上限</label>
+              <input type="number" id="queue_per_user_limit" class="input-modern" min="0" />
+            </div>
+            <div class="form-group">
+              <label for="queue_wait_timeout">排队等待上限（秒）</label>
+              <input type="number" id="queue_wait_timeout" class="input-modern" min="0" />
+            </div>
+          </div>
+        </article>
       </section>
 
       <!-- 模型 -->

@@ -29,6 +29,30 @@
       }
     }
   },
+  "queue": {
+    "description": "出图队列与并发（防止多人同时出图把显存打满）",
+    "type": "object",
+    "items": {
+      "max_concurrent": {
+        "description": "同时出图上限",
+        "type": "int",
+        "hint": "同一时间最多有几个任务在 ComfyUI 里跑，超出的在插件侧排队。单卡建议 1（ComfyUI 本身也是逐个执行）；多卡或 ComfyUI 开了并行执行时可以调大。",
+        "default": 1
+      },
+      "per_user_limit": {
+        "description": "单人同时出图上限",
+        "type": "int",
+        "hint": "同一个人最多同时有几个任务在跑，超出的排到队尾，避免一个人连发十几次把队列占满。0 表示不限制。",
+        "default": 1
+      },
+      "wait_timeout": {
+        "description": "排队等待上限（秒）",
+        "type": "int",
+        "hint": "在插件侧最多排多久，超时会明确告知并取消本次出图，不会静默挂住。0 表示不限制。",
+        "default": 300
+      }
+    }
+  },
   "llm_settings": {
     "description": "LLM 设置（用于把中文描述转成提示词并选模型）",
     "type": "object",

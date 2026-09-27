@@ -417,7 +417,8 @@ class Reply:
 PLUGIN_SRC_ROOT = Path(__file__).resolve().parent.parent
 # 参与上架规范检查的源码（tests/ 自身不算插件运行时）
 _AUDIT_FILES = ("main.py", "comfyui_api.py", "llm_service.py", "storage.py",
-                "permission.py", "workflow_templates.py", "pages/__init__.py")
+                "permission.py", "workflow_templates.py", "queue_gate.py",
+                "pages/__init__.py")
 _AUDIT_DIRS = ("pages/settings",)
 
 
@@ -2060,6 +2061,243 @@ def main() -> int:
 
     ctx._providers = {}
     plugin.config["llm_settings"] = {"enable_prompt_optimize": False}
+
+    print("\n=== 出图并发与排队治理（v0.7.0）===")
+    from astrbot_plugin_comfyui_smart import queue_gate as qg
+
+    async def gate_fifo():
+        """并发上限 1：后来者按先来后到排队，并拿到位次。"""
+        gate = qg.ConcurrencyGate(max_concurrent=1, per_user_limit=0, wait_timeout=5)
+        order: list[str] = []
+        waits: list[dict] = []
+
+        async def worker(name: str, hold: float):
+            async with gate.hold(name, on_wait=waits.append) as slot:
+                order.append(f"{name}:start")
+                await asyncio.sleep(hold)
+                order.append(f"{name}:end")
+            return slot
+
+        tasks = [asyncio.create_task(worker("a", 0.2))]
+        await asyncio.sleep(0.05)  # 让 a 先拿到名额
+        tasks.append(asyncio.create_task(worker("b", 0.01)))
+        tasks.append(asyncio.create_task(worker("c", 0.01)))
+        slots = await asyncio.gather(*tasks)
+        return gate, order, waits, slots
+
+    gate, order, waits, slots = asyncio.run(gate_fifo())
+    check("同时出图上限生效：同一时刻只跑一个任务",
+          order == ["a:start", "a:end", "b:start", "b:end", "c:start", "c:end"], order)
+    check("排队者拿到正确位次（位次要算上正在跑的）",
+          [w["ahead"] for w in waits] == [1, 2], waits)
+    check("排队原因标为 capacity（名额被前面的人占着）",
+          all(w["reason"] == "capacity" for w in waits), waits)
+    check("无需排队时等待为 0、位次为 1",
+          slots[0].waited == 0 and slots[0].position == 1, slots[0])
+    check("排队过的任务记录了等待时长",
+          slots[1].waited > 0 and slots[2].waited >= slots[1].waited,
+          [s.waited for s in slots])
+    check("跑完后名额与队列都归零（没有泄漏）",
+          gate.snapshot()["running"] == 0 and gate.snapshot()["waiting"] == 0, gate.snapshot())
+
+    async def gate_per_user():
+        """单人上限 1：一个人连发不会把队伍堵死，后面的人照样进场。"""
+        gate = qg.ConcurrencyGate(max_concurrent=2, per_user_limit=1, wait_timeout=5)
+        started: list[str] = []
+        blocking = asyncio.Event()
+
+        async def job(name: str, hold_open: bool = False):
+            async with gate.hold(name):
+                started.append(name)
+                if hold_open:
+                    await blocking.wait()
+
+        first = asyncio.create_task(job("a", True))
+        await asyncio.sleep(0.05)
+        second = asyncio.create_task(job("a"))  # 自己已有一个：被单人上限挡住
+        await asyncio.sleep(0.05)
+        third = asyncio.create_task(job("b", True))  # 另一个人：直接进场，不用等 a 的第二个
+        await asyncio.sleep(0.05)
+        during = gate.snapshot()
+        blocking.set()
+        await asyncio.gather(first, second, third)
+        return during, started
+
+    during, started = asyncio.run(gate_per_user())
+    check("单人上限生效：同一个人不会同时占两个名额",
+          during["running_by_user"] == {"a": 1, "b": 1}, during["running_by_user"])
+    check("单人上限挡住队首时，后面的人照样能进场（不堵队）",
+          started[:2] == ["a", "b"], started)
+
+    async def gate_timeout():
+        """排队超时必须明确报错，并且不泄漏名额。"""
+        gate = qg.ConcurrencyGate(max_concurrent=1, per_user_limit=0, wait_timeout=0.1)
+        blocking = asyncio.Event()
+
+        async def holder():
+            async with gate.hold("x"):
+                await blocking.wait()
+
+        task = asyncio.create_task(holder())
+        await asyncio.sleep(0.03)
+        message = ""
+        try:
+            async with gate.hold("y"):
+                message = "居然进场了"
+        except qg.QueueTimeout as e:
+            message = str(e)
+        blocking.set()
+        await task
+        return message, gate.snapshot()
+
+    message, snapshot = asyncio.run(gate_timeout())
+    check("排队超时给出中文原因并指出可调项",
+          "排队等待超过" in message and "同时出图上限" in message, message)
+    check("排队超时后名额与队列都归零（不泄漏名额）",
+          snapshot["running"] == 0 and snapshot["waiting"] == 0, snapshot)
+
+    async def gate_error_release():
+        """出图中途抛异常也必须归还名额。"""
+        gate = qg.ConcurrencyGate(max_concurrent=1, per_user_limit=0, wait_timeout=1)
+        try:
+            async with gate.hold("u"):
+                raise ValueError("出图过程中炸了")
+        except ValueError:
+            pass
+        async with gate.hold("u2") as slot:
+            immediate = slot.waited == 0
+        return immediate, gate.snapshot()
+
+    immediate, snapshot = asyncio.run(gate_error_release())
+    check("出图中途抛异常也会归还名额（否则后面的人全被卡死）", immediate, snapshot)
+
+    async def gate_configure():
+        """配置热更新（上限调大）后，等待者立刻进场。"""
+        gate = qg.ConcurrencyGate(max_concurrent=1, per_user_limit=0, wait_timeout=5)
+        started: list[str] = []
+        blocking = asyncio.Event()
+
+        async def job(name: str, hold_open: bool = False):
+            async with gate.hold(name):
+                started.append(name)
+                if hold_open:
+                    await blocking.wait()
+
+        first = asyncio.create_task(job("first", True))
+        await asyncio.sleep(0.03)
+        second = asyncio.create_task(job("second"))
+        await asyncio.sleep(0.03)
+        before = list(started)
+        gate.configure(max_concurrent=2)
+        await asyncio.sleep(0.05)
+        after = list(started)
+        blocking.set()
+        await asyncio.gather(first, second)
+        return before, after, gate.snapshot()
+
+    before, after, snapshot = asyncio.run(gate_configure())
+    check("上限调大后排队的人立刻进场（不必等下一次 release）",
+          before == ["first"] and after == ["first", "second"], (before, after))
+    check("配置热更新后状态一致",
+          snapshot["max_concurrent"] == 2 and snapshot["running"] == 0, snapshot)
+
+    async def gate_shutdown():
+        """插件卸载/重载时唤醒等待者，而不是让他们挂到排队超时。"""
+        gate = qg.ConcurrencyGate(max_concurrent=1, per_user_limit=0, wait_timeout=30)
+        blocking = asyncio.Event()
+
+        async def holder():
+            async with gate.hold("x"):
+                await blocking.wait()
+
+        task = asyncio.create_task(holder())
+        await asyncio.sleep(0.03)
+        waiter = asyncio.create_task(gate.acquire("y"))
+        await asyncio.sleep(0.03)
+        woken = gate.shutdown("插件正在重载")
+        blocking.set()
+        await task
+        error = ""
+        try:
+            await waiter
+        except qg.QueueClosed as e:
+            error = str(e)
+        return woken, error, gate.snapshot()
+
+    woken, error, snapshot = asyncio.run(gate_shutdown())
+    check("插件卸载时唤醒排队中的人（而不是让他们干等到超时）",
+          woken == 1 and "重载" in error, (woken, error))
+    check("关闭后闸门状态可见（closed=True）", snapshot["closed"] is True, snapshot)
+
+    print("\n=== 并发闸门接入出图主流程（两个人同时发 /画图）===")
+    plugin.config["llm_settings"] = {"enable_prompt_optimize": False}
+    plugin.config["queue"] = {"max_concurrent": 1, "per_user_limit": 0, "wait_timeout": 10}
+    plugin._configure_gate()
+    fresh_ok_session(pid="q-1")
+
+    inflight = {"now": 0, "max": 0}
+    real_wait = plugin.comfy.wait_for_images
+
+    async def _slow_wait(prompt_id, output_dir, on_queued=None, cancel_event=None):
+        """桩：把「等待出图」拉长到 0.1s，并记录同时在跑的任务数。"""
+        inflight["now"] += 1
+        inflight["max"] = max(inflight["max"], inflight["now"])
+        try:
+            await asyncio.sleep(0.1)
+            target = Path(output_dir) / f"{prompt_id}.png"
+            target.write_bytes(b"PNGQ")
+            return [target]
+        finally:
+            inflight["now"] -= 1
+
+    plugin.comfy.wait_for_images = _slow_wait
+    waits_seen: list[dict] = []
+
+    async def _two_users():
+        return await asyncio.gather(
+            plugin.generate(user_desc="一只白猫", opts={},
+                            event=AstrMessageEvent(sender_id="1001"),
+                            on_wait=waits_seen.append),
+            plugin.generate(user_desc="一只黑猫", opts={},
+                            event=AstrMessageEvent(sender_id="1002"),
+                            on_wait=waits_seen.append),
+        )
+
+    results = asyncio.run(_two_users())
+    plugin.comfy.wait_for_images = real_wait
+    check("两人同时出图时 ComfyUI 侧只跑一个（并发上限 1 真的生效）",
+          inflight["max"] == 1, inflight)
+    check("两人都拿到了图", all(len(r["images"]) == 1 for r in results),
+          [len(r["images"]) for r in results])
+    check("被排队的人收到了排队提示（含前方任务数）",
+          bool(waits_seen) and waits_seen[0]["ahead"] >= 1, waits_seen)
+    check("结果里带上了排队秒数（便于解释这次为什么慢）",
+          all("queued_seconds" in r for r in results),
+          [r.get("queued_seconds") for r in results])
+    check("排队秒数真的被记下来了（第二个人 > 0）",
+          sorted(r["queued_seconds"] for r in results)[1] > 0,
+          [r["queued_seconds"] for r in results])
+
+    out_gate = asyncio.run(drive(plugin.cmd_status(AstrMessageEvent(message_str="/状态"))))
+    status_text = "\n".join(x.get("text", "") for x in out_gate)
+    check("/状态 显示并发上限与排队情况",
+          "并发：上限 1" in status_text and "排队" in status_text, status_text[:160])
+    gate_resp = asyncio.run(handlers[(f"{base}/status", ("GET",))]())
+    check("Pages 状态接口带上网关信息（配置页状态栏要显示）",
+          isinstance(gate_resp.get("gate"), dict) and "max_concurrent" in gate_resp["gate"],
+          gate_resp.get("gate"))
+
+    plugin.config["queue"] = {}
+    plugin._configure_gate()
+    default_gate = plugin.gate.snapshot()
+    check("未配置队列时按保守默认（同时 1、单人 1、排队等待 300 秒）",
+          (default_gate["max_concurrent"], default_gate["per_user_limit"],
+           default_gate["wait_timeout"]) == (1, 1, 300.0), default_gate)
+    schema_queue = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+    check("schema 里有 queue 组，三个开关齐全（否则用户改不了并发）",
+          {"max_concurrent", "per_user_limit", "wait_timeout"}
+          <= set((schema_queue.get("queue") or {}).get("items") or {}),
+          sorted((schema_queue.get("queue") or {}).get("items") or {}))
 
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）

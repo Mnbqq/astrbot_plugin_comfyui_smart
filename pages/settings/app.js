@@ -18,6 +18,10 @@ const FIELDS = [
   { id: 'server_poll_interval', path: ['server', 'poll_interval'], kind: 'float' },
   { id: 'server_max_tasks_ahead', path: ['server', 'max_tasks_ahead'], kind: 'int' },
 
+  { id: 'queue_max_concurrent', path: ['queue', 'max_concurrent'], kind: 'int' },
+  { id: 'queue_per_user_limit', path: ['queue', 'per_user_limit'], kind: 'int' },
+  { id: 'queue_wait_timeout', path: ['queue', 'wait_timeout'], kind: 'int' },
+
   { id: 'llm_enable_optimize', path: ['llm_settings', 'enable_prompt_optimize'], kind: 'bool' },
   { id: 'llm_provider', path: ['llm_settings', 'provider'], kind: 'string' },
   { id: 'vision_provider', path: ['vision_settings', 'provider'], kind: 'string' },
@@ -206,6 +210,10 @@ async function loadStatus() {
       ['连接状态', info.online ? '✅ 正常' : ('❌ ' + (info.error || '不可用'))],
       ['设备', info.device || '—'],
       ['队列', info.queue ? ('执行中 ' + info.queue.running + ' · 等待中 ' + info.queue.pending) : '—'],
+      ['并发', info.gate
+        ? ('上限 ' + info.gate.max_concurrent + ' · 进行中 ' + info.gate.running
+           + ' · 排队 ' + info.gate.waiting)
+        : '—'],
       ['模板', (info.templates || []).length + ' 个'],
     ];
     box.innerHTML = '<table class="stat-table"><tbody>' + rows.map(

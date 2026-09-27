@@ -18,6 +18,7 @@ from .comfyui_api import ComfyUI, ComfyUIError, normalize_base_url
 from .llm_service import LLMService
 from .pages import register_pages_routes
 from .permission import PermissionManager
+from .queue_gate import ConcurrencyGate, QueueTimeout
 from .storage import Storage
 from .workflow_templates import (
     ARCH_PROFILES,
@@ -33,7 +34,7 @@ from .workflow_templates import (
 
 PLUGIN_NAME = "astrbot_plugin_comfyui_smart"
 # 与 metadata.yaml 的 version 保持一致（tests/test_logic.py 会校验二者不漂移）
-PLUGIN_VERSION = "0.6.3"
+PLUGIN_VERSION = "0.7.0"
 PLUGIN_DIR = Path(__file__).resolve().parent
 BUILTIN_TEMPLATE_DIR = PLUGIN_DIR / "workflows"
 
@@ -192,6 +193,9 @@ class ComfyUISmartPlugin(Star):
         self.permission = PermissionManager(self.config.get("permission", {}) or {})
         self.llm = LLMService(context, self.config)
         self.comfy = self._build_client()
+        # 出图并发闸门：限制同时交给 ComfyUI 的任务数，超出的在插件侧排队
+        self.gate = ConcurrencyGate(logger=logger)
+        self._configure_gate()
         self.templates: dict[str, WorkflowTemplate] = {}
         self.template_errors: list[str] = []
         # 在 __init__ 里就加载，避免任何早于 initialize() 的调用（Pages /模板列表）看到空模板
@@ -234,6 +238,15 @@ class ComfyUISmartPlugin(Star):
         """用户自带模板目录（位于数据目录，插件更新不会覆盖）。"""
         return self.data_dir / "workflows"
 
+    def _configure_gate(self) -> None:
+        """按最新配置更新出图并发闸门（同时上限 / 单人上限 / 排队等待时长）。"""
+        queue_conf = self.config.get("queue", {}) or {}
+        self.gate.configure(
+            max_concurrent=queue_conf.get("max_concurrent", 1),
+            per_user_limit=queue_conf.get("per_user_limit", 1),
+            wait_timeout=queue_conf.get("wait_timeout", 300),
+        )
+
     def reload_components(self) -> None:
         """按最新配置重建各组件（配置变更后调用）。"""
         self.permission.reload(self.config.get("permission", {}) or {})
@@ -243,6 +256,7 @@ class ComfyUISmartPlugin(Star):
         # 继承旧的模型缓存，避免改配置后要重新全量扫描
         self.comfy._model_cache = getattr(old_client, "_model_cache", {})
         self.comfy._model_cache_at = getattr(old_client, "_model_cache_at", 0.0)
+        self._configure_gate()
         self._load_templates()
 
     def _load_templates(self) -> None:
@@ -265,16 +279,20 @@ class ComfyUISmartPlugin(Star):
     async def initialize(self) -> None:
         """插件激活时调用。"""
         self._load_templates()
+        # 插件可能被禁用后再启用（同一实例）：把闸门重新打开，否则所有出图都会被判为「已关闭」
+        self.gate.resume()
+        self._configure_gate()
         # 启动横幅：一眼确认「跑的是哪一版、加载了几个模板、日志走哪条路径」。
         # 排查「装的是新版还是旧版」这类问题时非常省事。
         logger.info(
             "ComfyUI 智能绘图 v%s 已激活｜模板 %d 个｜数据目录 %s｜"
-            "日志走 astrbot.api.logger｜Pages %s｜排队补偿上限 %s 个任务",
+            "日志走 astrbot.api.logger｜Pages %s｜排队补偿上限 %s 个任务｜同时出图上限 %d",
             PLUGIN_VERSION,
             len(self.templates),
             self.data_dir,
             "已注册" if self.pages_ready else "注册失败（配置页与状态页将不可用）",
             self.comfy.max_tasks_ahead,
+            self.gate.snapshot()["max_concurrent"],
         )
         keep = int((self.config.get("output") or {}).get("keep_images", 500) or 500)
         age = int((self.config.get("output") or {}).get("image_max_age_days", 30) or 30)
@@ -286,6 +304,10 @@ class ComfyUISmartPlugin(Star):
     async def terminate(self) -> None:
         """插件被禁用/重载时调用：收口连接与在途任务。"""
         self._cancel.set()
+        # 先把排队等名额的人唤醒（否则这些 handler 会一直挂到排队超时）
+        woken = self.gate.shutdown("插件正在重载，本次出图已取消，请稍后再发一次")
+        if woken:
+            logger.info("插件卸载：已取消 %d 个排队中的出图请求", woken)
         for prompt_id in list(self._active_jobs):
             try:
                 await self.comfy.interrupt(prompt_id)
@@ -403,6 +425,8 @@ class ComfyUISmartPlugin(Star):
             "base_url": self.comfy.base_url,
             "online": False,
             "templates": [t.describe() for t in self.templates.values()],
+            # 插件侧并发闸门：配置页状态栏与 /状态 都读它
+            "gate": self.gate.snapshot(),
         }
         try:
             stats = await self.comfy.ping()
@@ -642,28 +666,30 @@ class ComfyUISmartPlugin(Star):
         opts: dict | None = None,
         event: AstrMessageEvent | None = None,
         on_queued=None,
+        on_wait=None,
         preset: dict | None = None,
         source_image: str = "",
     ) -> dict:
-        """完整出图流程：选型 → 建图 → 提交 → 等待 → 下载。
+        """完整出图流程：选型 → 建图 → 排队取名额 → 提交 → 等待 → 下载。
 
         Args:
             user_desc: 用户描述。
             opts: 行内参数。
-            event: 消息事件，用于 LLM 会话级 provider 与统计。
-            on_queued: 排队提示回调。
+            event: 消息事件，用于 LLM 会话级 provider、统计与「单人并发上限」。
+            on_queued: ComfyUI 队列位置提示回调（已提交，等 ComfyUI 轮到）。
+            on_wait: 插件侧排队提示回调（并发已满，还没轮到提交）。
             preset: 现成的提示词（如反推结果），给了就跳过 LLM 改写。
             source_image: 图生图的输入图本地路径；给了就走图生图模板。
 
         Returns:
             {"images": [Path...], "template": str, "model": str, "lora": str,
              "vae": str, "positive": str, "negative": str, "seconds": float,
-             "arch": str, "seed": int, "width": int, "height": int}
+             "queued_seconds": float, "arch": str, "seed": int, "width": int, "height": int}
 
         Raises:
             ComfyUIError: 出图失败，message 面向用户。
             TemplateError: 工作流模板问题。
-            RuntimeError: LLM 不可用。
+            RuntimeError: LLM 不可用，或排队等待超时（QueueTimeout）。
         """
         opts = opts or {}
         draw_conf = self.config.get("draw_settings", {}) or {}
@@ -924,35 +950,49 @@ class ComfyUISmartPlugin(Star):
             )
 
         started = time.time()
+        uid = str(event.get_sender_id()) if event is not None else "anonymous"
+        queued_seconds = 0.0
+        # 并发闸门：名额在「提交 + 等待成图」期间持有，超出的在插件侧按先来后到排队。
+        # 拿到名额才算真正开始占用 ComfyUI，因此提示分两条：插件侧排队（on_wait）
+        # 与 ComfyUI 自己的队列（on_queued），含义不同，都需要告诉用户。
         try:
-            prompt_id = await self.comfy.submit(
-                graph, extra_data={"astrbot_plugin": PLUGIN_NAME}
-            )
-        except ComfyUIError as e:
-            # 把「实际提交的图」落盘：服务端偶尔不返回节点级原因，没有这个就只能靠猜
-            path = self._dump_failed_graph(graph, e)
-            logger.warning(
-                "提交失败｜正向提示词 %d 字符｜模板 %s｜底模 %s｜LoRA %s｜图已存 %s",
-                len(positive), template.name, selection["model"],
-                selection["lora"] or "无", path,
-            )
-            detail = f"{e}\n　· 本次工作流已保存到 {path}，可据此排查"
-            if problems:
-                # 服务端没给节点级原因时，预检结论就是最有用的线索
-                detail += "\n　· 本地预检发现（供参考）：\n" + "\n".join(
-                    f"　　- {item}" for item in problems
-                )
-            raise ComfyUIError(detail) from e
-        self._active_jobs.add(prompt_id)
-        try:
-            images = await self.comfy.wait_for_images(
-                prompt_id,
-                self.storage.output_dir,
-                on_queued=on_queued,
-                cancel_event=self._cancel,
-            )
-        finally:
-            self._active_jobs.discard(prompt_id)
+            async with self.gate.hold(uid, on_wait=on_wait) as slot:
+                queued_seconds = slot.waited
+                if queued_seconds >= 1.0:
+                    logger.info("插件侧排队 %.1f 秒后获得出图名额", queued_seconds)
+                try:
+                    prompt_id = await self.comfy.submit(
+                        graph, extra_data={"astrbot_plugin": PLUGIN_NAME}
+                    )
+                except ComfyUIError as e:
+                    # 把「实际提交的图」落盘：服务端偶尔不返回节点级原因，没有这个就只能靠猜
+                    path = self._dump_failed_graph(graph, e)
+                    logger.warning(
+                        "提交失败｜正向提示词 %d 字符｜模板 %s｜底模 %s｜LoRA %s｜图已存 %s",
+                        len(positive), template.name, selection["model"],
+                        selection["lora"] or "无", path,
+                    )
+                    detail = f"{e}\n　· 本次工作流已保存到 {path}，可据此排查"
+                    if problems:
+                        # 服务端没给节点级原因时，预检结论就是最有用的线索
+                        detail += "\n　· 本地预检发现（供参考）：\n" + "\n".join(
+                            f"　　- {item}" for item in problems
+                        )
+                    raise ComfyUIError(detail) from e
+                self._active_jobs.add(prompt_id)
+                try:
+                    images = await self.comfy.wait_for_images(
+                        prompt_id,
+                        self.storage.output_dir,
+                        on_queued=on_queued,
+                        cancel_event=self._cancel,
+                    )
+                finally:
+                    self._active_jobs.discard(prompt_id)
+        except QueueTimeout as e:
+            # 排队超时不是「出图失败」而是「没轮上」：记 info 便于区分，再交给指令层告知用户
+            logger.info("出图排队超时：%s", e)
+            raise
         if not images:
             raise ComfyUIError("出图失败：没有取到任何图片")
         return {
@@ -972,12 +1012,50 @@ class ComfyUISmartPlugin(Star):
             "i2i": bool(image_ref),
             "denoise": denoise if denoise is not None else 1.0,
             "seconds": time.time() - started,
+            "queued_seconds": queued_seconds,
             # 有 Hires 时对外报最终尺寸，消息与画廊显示的才是真实产物尺寸
             # Hires 生效时以放大后的最终尺寸为准；拿不到具体数值（0）则退回配置尺寸
             "width": hires_info.get("width") or sampling["width"],
             "height": hires_info.get("height") or sampling["height"],
             **{k: sampling[k] for k in ("steps", "cfg", "sampler")},
         }
+
+    def _queue_notifiers(self, event: AstrMessageEvent):
+        """构造两条队列提示回调，供各指令复用。
+
+        两条提示含义不同，都需要：
+        - `on_wait`：并发名额已满（或自己已有任务在跑），还没轮到提交；
+        - `on_queued`：已提交给 ComfyUI，等它自己的队列轮到。
+
+        Args:
+            event: 消息事件，提示直接发回当前会话。
+
+        Returns:
+            (on_wait, on_queued) 两个回调。
+        """
+
+        async def _on_wait(info: dict):
+            if info.get("reason") == "user":
+                text = (
+                    f"⏳ 你已有一张在出，本次排队等待"
+                    f"（同时出图上限 {info['max_concurrent']}）…"
+                )
+            else:
+                text = (
+                    f"⏳ 前面还有 {info['ahead']} 个任务，排队中"
+                    f"（同时出图上限 {info['max_concurrent']}）…"
+                )
+            await event.send(event.plain_result(text))
+
+        async def _on_queued(status):
+            await event.send(
+                event.plain_result(
+                    f"⏳ 已提交，队列第 {min(status.own_positions.values() or [1])} 位"
+                    f"（前方 {status.tasks_ahead} 个任务）"
+                )
+            )
+
+        return _on_wait, _on_queued
 
     # ------------------------------------------------------------------ #
     # 指令
@@ -1018,20 +1096,15 @@ class ComfyUISmartPlugin(Star):
             else "🎨 收到灵感，正在分析并生成…"
         )
 
-        async def _notify_queue(status):
-            await event.send(
-                event.plain_result(
-                    f"⏳ 已提交，队列第 {min(status.own_positions.values() or [1])} 位"
-                    f"（前方 {status.tasks_ahead} 个任务）"
-                )
-            )
+        on_wait, on_queued = self._queue_notifiers(event)
 
         try:
             result = await self.generate(
                 user_desc=desc,
                 opts=opts,
                 event=event,
-                on_queued=_notify_queue,
+                on_wait=on_wait,
+                on_queued=on_queued,
                 source_image=source_image,
             )
         except (ComfyUIError, TemplateError) as e:
@@ -1193,6 +1266,9 @@ class ComfyUISmartPlugin(Star):
                 detail += f"\n⚠️ {result['hires_note']}"
             if result.get("prompt_note"):
                 detail += f"\nℹ️ {result['prompt_note']}"
+            if result.get("queued_seconds"):
+                # 排队时间与出图时间分开报，否则「这次怎么这么慢」说不清
+                detail += f"\n⏳ 排队等待 {result['queued_seconds']:.0f}s"
             chain.append(Plain(detail + "\n"))
         for path in result["images"]:
             chain.append(Image.fromFileSystem(str(path)))
@@ -1263,6 +1339,18 @@ class ComfyUISmartPlugin(Star):
         version = await self.comfy.comfyui_version()
         if version:
             lines.append(f"　ComfyUI 版本：{version}")
+        # 插件侧并发闸门：出图慢/排队久时，先看这一行
+        gate = self.gate.snapshot()
+        per_user = (
+            f"｜单人上限 {gate['per_user_limit']}"
+            if gate["per_user_limit"] > 0
+            else "｜单人不限"
+        )
+        wait_limit = f"{gate['wait_timeout']:.0f} 秒" if gate["wait_timeout"] else "不限"
+        lines.append(
+            f"　并发：上限 {gate['max_concurrent']}｜进行中 {gate['running']}"
+            f"｜排队 {gate['waiting']}{per_user}｜排队等待上限 {wait_limit}"
+        )
         lines.append(f"　模板：{len(self.templates)} 个")
         hires_conf = self.config.get("hires", {}) or {}
         lines.append(
@@ -1336,20 +1424,15 @@ class ComfyUISmartPlugin(Star):
 
         yield event.plain_result("🖼 正在按你的描述重绘…")
 
-        async def _notify_queue(status):
-            await event.send(
-                event.plain_result(
-                    f"⏳ 已提交，队列第 {min(status.own_positions.values() or [1])} 位"
-                    f"（前方 {status.tasks_ahead} 个任务）"
-                )
-            )
+        on_wait, on_queued = self._queue_notifiers(event)
 
         try:
             result = await self.generate(
                 user_desc=desc,
                 opts=opts,
                 event=event,
-                on_queued=_notify_queue,
+                on_wait=on_wait,
+                on_queued=on_queued,
                 source_image=images[0],
             )
         except (ComfyUIError, TemplateError) as e:
@@ -1426,20 +1509,15 @@ class ComfyUISmartPlugin(Star):
 
         yield event.plain_result("\n".join(lines) + "\n\n🎨 正在按反推结果出图…")
 
-        async def _notify_queue(status):
-            await event.send(
-                event.plain_result(
-                    f"⏳ 已提交，队列第 {min(status.own_positions.values() or [1])} 位"
-                    f"（前方 {status.tasks_ahead} 个任务）"
-                )
-            )
+        on_wait, on_queued = self._queue_notifiers(event)
 
         try:
             drawn = await self.generate(
                 user_desc=result["positive"],
                 opts=opts,
                 event=event,
-                on_queued=_notify_queue,
+                on_wait=on_wait,
+                on_queued=on_queued,
                 preset=result,
             )
         except (ComfyUIError, TemplateError) as e:
