@@ -334,6 +334,36 @@ vm.runInContext(source, sandbox, { filename: 'app.js' });
         vm.runInContext('inpaintClearMask()', sandbox) === true
         && vm.runInContext('inpaintPayload()', sandbox) === null);
 
+  console.log('\n=== 视频产物（画廊与弹窗用 <video> 渲染）===');
+
+  statsPayload.records.push({
+    time: '2026-09-21 17:00:00', user_id: 'u1', user_name: '画手',
+    positive: 'a cat runs on grass', negative: '', template: 'wan_t2v',
+    model: 'wan2.1_t2v_1.3B_fp16.safetensors', seconds: 42.0, images: ['images/v.webm'],
+    params: { width: 832, height: 480, steps: 30, cfg: 6.0, sampler: 'uni_pc', seed: 1 },
+  });
+  await vm.runInContext('loadStats()', sandbox);
+  const galleryVideoHtml = getEl('stats-container').innerHTML;
+  check('画廊给视频条目渲染 <video>（不是硬塞进 <img>）',
+        galleryVideoHtml.includes('<video'),
+        (galleryVideoHtml.match(/<video[^>]*>/) || [''])[0]);
+  check('视频条目也排在最前（最新在前）',
+        vm.runInContext('galleryItems[0].video', sandbox) === true,
+        vm.runInContext('galleryItems[0].ref', sandbox));
+  check('图片条目仍然渲染 <img>', galleryVideoHtml.includes('<img'));
+
+  check('isVideoRef 认得出常见视频扩展名',
+        vm.runInContext("isVideoRef('images/a.webm')", sandbox) === true
+        && vm.runInContext("isVideoRef('images/a.MP4')", sandbox) === true
+        && vm.runInContext("isVideoRef('images/a.png')", sandbox) === false
+        && vm.runInContext("isVideoRef('images/a.gif')", sandbox) === false);
+
+  await vm.runInContext('openDetail(0)', sandbox);
+  check('视频详情弹窗指向视频地址',
+        String(getEl('modal-image').src).indexOf('images/v.webm') >= 0,
+        getEl('modal-image').src);
+  statsPayload.records.pop();
+
   console.log('\n=== 复制与关闭 ===');
   await vm.runInContext("copyField('modal-positive', '正向提示词')", sandbox);
   check('剪贴板不可用时退化为选中文本', getEl('modal-positive').selected === true);

@@ -851,7 +851,7 @@ class ComfyUI:
         cancel_event: asyncio.Event | None = None,
         user_cancel_event: asyncio.Event | None = None,
     ) -> list[Path]:
-        """等待出图完成并下载图片。
+        """等待任务完成并下载产物（图片或视频）。
 
         超时 = 配置的 timeout + 队列补偿（前方任务数 * 60s，最多 max_tasks_ahead 个）。
 
@@ -866,10 +866,10 @@ class ComfyUI:
                 以便给出不同的提示。
 
         Returns:
-            下载到本地的图片路径列表。
+            下载到本地的文件路径列表（图片与视频混在一起，按扩展名区分）。
 
         Raises:
-            ComfyUIError: 超时、执行失败、被取消或未产出图片。
+            ComfyUIError: 超时、执行失败、被取消或未产出任何产物。
         """
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -945,8 +945,8 @@ class ComfyUI:
                 # 只有执行已明确结束时才判定失败，否则继续等待，避免误报。
                 if status_obj.get("completed"):
                     raise ComfyUIError(
-                        "任务已结束但没有图片输出。请确认工作流包含 SaveImage 节点，"
-                        "或该工作流输出的是非图片产物。"
+                        "任务已结束但没有任何产物。请确认工作流包含 SaveImage / SaveWEBM / "
+                        "SaveVideo 这类输出节点。"
                     )
                 last_error = "仍在执行中"
         finally:
@@ -1010,32 +1010,62 @@ async def _safe_callback(callback, *args) -> None:
         pass
 
 
-def _collect_output_images(outputs: dict) -> list[dict]:
-    """从 /history 的 outputs 里取出真正的图片产物。
+# 视频产物的扩展名（ComfyUI 的 PreviewVideo/SaveVideo/SaveWEBM 都落在 outputs 的
+# images 字段里，靠扩展名区分是图片还是视频）
+VIDEO_SUFFIXES = (".mp4", ".webm", ".mkv", ".mov", ".m4v", ".avi")
+# 动图：当图片发（很多平台能直接显示）
+ANIMATED_SUFFIXES = (".gif", ".webp")
 
-    只保留 type == output 的图片，跳过预览类产物（部分自定义节点会塞入临时缩略图）。
+
+def media_kind(filename: str) -> str:
+    """按扩展名判断产物是视频还是图片。
+
+    Args:
+        filename: 产物文件名（可含子目录）。
+
+    Returns:
+        `"video"` 或 `"image"`。
+    """
+    name = str(filename or "").lower()
+    if name.endswith(VIDEO_SUFFIXES):
+        return "video"
+    return "image"
+
+
+def _collect_output_images(outputs: dict) -> list[dict]:
+    """从 /history 的 outputs 里取出真正的产物（图片**和**视频）。
+
+    ComfyUI 的约定：
+    - `PreviewImage` / `SaveImage` → outputs 的 `images` 字段；
+    - `PreviewVideo` / `SaveVideo` / `SaveWEBM` → **同样**落在 `images` 字段，靠扩展名区分；
+    - 老版本的动图节点会写到 `gifs` 字段。
+
+    只保留 `type == output`（跳过 temp 预览），并给每条打上 `media` 标记。
 
     Args:
         outputs: /history 条目的 outputs 字段。
 
     Returns:
-        图片描述列表。
+        产物描述列表（含 `media` 字段：image / video）。
     """
-    images: list[dict] = []
+    collected: list[dict] = []
     if not isinstance(outputs, dict):
-        return images
+        return collected
     for node_output in outputs.values():
         if not isinstance(node_output, dict):
             continue
-        for img in node_output.get("images") or []:
-            if not isinstance(img, dict):
-                continue
-            if img.get("type", "output") != "output":
-                continue
-            if not img.get("filename"):
-                continue
-            images.append(img)
-    return images
+        for key in ("images", "gifs", "videos"):
+            for item in node_output.get(key) or []:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type", "output") != "output":
+                    continue
+                if not item.get("filename"):
+                    continue
+                entry = dict(item)
+                entry["media"] = media_kind(entry["filename"])
+                collected.append(entry)
+    return collected
 
 
 def _describe_history_error(entry: dict) -> str:

@@ -422,6 +422,19 @@ class At:
         self.qq = qq
 
 
+class Video:
+    """桩：AstrBot 的 Video 组件（file 是 file:// URI，path 是本地路径）。"""
+
+    def __init__(self, file="", path="", **kw):
+        self.file = file
+        self.path = path or (file or "")
+        self.url = ""
+
+    @classmethod
+    def fromFileSystem(cls, path):
+        return cls(file="file://" + str(path), path=str(path))
+
+
 class Image:
     """桩：file 里放本地路径，convert_to_file_path 直接返回它。"""
 
@@ -3300,6 +3313,152 @@ def main() -> int:
           (ui_result.get("template"), len(ui_result.get("images") or [])))
     (plugin.user_template_dir / "ui_sd15.json").unlink()
     plugin._load_templates()
+
+    print("\n=== 文生视频 t2v（v0.13.0）===")
+    check("帧数按 4n+1 向上对齐（宁可多一帧，不少给）",
+          [m.align_video_frames(n) for n in (1, 4, 5, 49, 50, 80, 81, 100)]
+          == [5, 5, 5, 49, 53, 81, 81, 101]
+          and all((m.align_video_frames(n) - 1) % 4 == 0 for n in (1, 50, 80, 100)),
+          [m.align_video_frames(n) for n in (1, 50, 80)])
+    check("时长×帧率换算成帧数（5 秒 16fps → 81 帧）",
+          m.resolve_video_params({"seconds": "5", "fps": "16"}, {})["length"] == 81,
+          m.resolve_video_params({"seconds": "5", "fps": "16"}, {}))
+    check("也可以直接给 --length（并对齐）",
+          m.resolve_video_params({"length": "50"}, {"default_fps": 16})["length"] == 53,
+          m.resolve_video_params({"length": "50"}, {"default_fps": 16}))
+    check("超过配置的时长上限会被截断并标记",
+          m.resolve_video_params({"seconds": "60"}, {"max_seconds": 10})["seconds"] == 9.81
+          and m.resolve_video_params({"seconds": "60"}, {"max_seconds": 10})["clamped"] is True,
+          m.resolve_video_params({"seconds": "60"}, {"max_seconds": 10}))
+
+    # 产物类型判定（ComfyUI 把视频也放在 outputs 的 images 字段里）
+    check("按扩展名区分视频与图片",
+          api.media_kind("astrbot_video_00001_.webm") == "video"
+          and api.media_kind("a/b.mp4") == "video"
+          and api.media_kind("out.png") == "image"
+          and api.media_kind("anim.gif") == "image",
+          [api.media_kind(x) for x in ("x.webm", "x.mp4", "x.png", "x.gif")])
+    mixed = api._collect_output_images({
+        "10": {"images": [{"filename": "v.webm", "subfolder": "", "type": "output"},
+                          {"filename": "temp.png", "type": "temp"}]},
+        "11": {"images": [{"filename": "i.png", "subfolder": "", "type": "output"}]},
+        "12": {"gifs": [{"filename": "old.gif", "subfolder": "", "type": "output"}]},
+    })
+    check("产物收集同时覆盖 images / gifs，并打上 media 标记",
+          [(item["filename"], item["media"]) for item in mixed]
+          == [("v.webm", "video"), ("i.png", "image"), ("old.gif", "image")],
+          [(item["filename"], item["media"]) for item in mixed])
+    check("预览类产物（type=temp）不会被当成结果",
+          all("temp.png" != item["filename"] for item in mixed), mixed)
+
+    tpl_video = wt.load_templates(ROOT / "workflows")["wan_t2v"]
+    check("内置文生视频模板已加载，用途是 t2v", tpl_video.purpose == "t2v", tpl_video.purpose)
+    check("视频模板用 Wan 原生节点（含 SaveWEBM 输出锚点）",
+          {"UNETLoader", "CLIPLoader", "VAELoader", "EmptyHunyuanLatentVideo",
+           "ModelSamplingSD3", "SaveWEBM"} <= tpl_video.required_nodes(),
+          sorted(tpl_video.required_nodes()))
+    check("视频输出节点被当成「产物落地」的锚点（否则不可达节点会被误删）",
+          tpl_video.bindings["save"] == "10", tpl_video.bindings["save"])
+    built_video = tpl_video.build(
+        positive="一只猫在草地上奔跑", negative="bad", model_name="wan2.1_t2v_1.3B_fp16.safetensors",
+        width=832, height=480, steps=30, cfg=6.0, sampler="uni_pc", scheduler="simple", seed=9,
+        params={"length": 81, "fps": 16},
+    )
+    check("帧数与帧率写进模板声明的参数（潜空间 + 保存节点）",
+          built_video["6"]["inputs"]["length"] == 81 and built_video["10"]["inputs"]["fps"] == 16.0,
+          (built_video["6"]["inputs"], built_video["10"]["inputs"]))
+    check("尺寸注入到视频潜空间节点", built_video["6"]["inputs"]["width"] == 832
+          and built_video["6"]["inputs"]["height"] == 480, built_video["6"]["inputs"])
+    check("Wan 档案参与采样参数（832x480 / uni_pc / simple / CFG 6）",
+          wt.guess_arch("wan2.1_t2v_1.3B_fp16.safetensors") == "wan"
+          and wt.arch_profile("wan")["sampler"] == "uni_pc"
+          and wt.arch_profile("wan")["size"] == (832, 480),
+          (wt.guess_arch("wan2.1_t2v_1.3B_fp16.safetensors"), wt.arch_profile("wan")["size"]))
+    check("没有视频模板时明确失败，而不是退回文生图模板",
+          wt.pick_template({"sd_checkpoint": plugin.templates["sd_checkpoint"]},
+                           model_name="wan2.1_t2v.safetensors",
+                           model_folder="diffusion_models", purpose="t2v")[0] is None, True)
+
+    def video_session(pid="vid-1", filename="astrbot_video_00001_.webm"):
+        sess = api.aiohttp.ClientSession()
+        sess.route("GET", "/models", api.aiohttp.ClientResponse(200, payload=["diffusion_models"]))
+        sess.route("GET", "/models/diffusion_models", api.aiohttp.ClientResponse(
+            200, payload=["wan2.1_t2v_1.3B_fp16.safetensors"]))
+        sess.route("POST", "/prompt", api.aiohttp.ClientResponse(200, payload={"prompt_id": pid}))
+        sess.route("GET", "/queue", api.aiohttp.ClientResponse(
+            200, payload={"queue_running": [], "queue_pending": []}))
+        sess.route("GET", f"/history/{pid}", api.aiohttp.ClientResponse(200, payload={pid: {
+            "status": {"status_str": "success", "completed": True},
+            "outputs": {"10": {"images": [{"filename": filename, "subfolder": "",
+                                           "type": "output"}], "animated": [True]}}}}))
+        sess.route("GET", "/view", api.aiohttp.ClientResponse(200, text="WEBMDATA"))
+        plugin.comfy._session = sess
+        plugin.comfy.invalidate_model_cache()
+        return sess
+
+    plugin.config["llm_settings"] = {"enable_prompt_optimize": False}
+    plugin.config["hires"] = {"enable": False}
+    plugin.config["permission"] = {}
+    plugin.config["video"] = {"default_seconds": 4, "default_fps": 16, "max_seconds": 10,
+                              "send_video": True}
+    plugin.permission.reload({})
+
+    sess_vid = video_session()
+    ev_vid = AstrMessageEvent(sender_id="9009", message_str="/视频 一只猫在草地上奔跑 --seconds 5 --fps 16")
+    out_vid = asyncio.run(drive(plugin.cmd_video(ev_vid)))
+    submitted_vid = None
+    for method, path, kw in sess_vid.calls:
+        if method == "POST" and path == "/prompt":
+            submitted_vid = kw["json"]["prompt"]
+    check("/视频 提交的是 Wan 文生视频工作流",
+          submitted_vid is not None
+          and submitted_vid["10"]["class_type"] == "SaveWEBM"
+          and submitted_vid["6"]["class_type"] == "EmptyHunyuanLatentVideo",
+          sorted({n["class_type"] for n in (submitted_vid or {}).values()}))
+    check("--seconds/--fps 落到潜空间帧数与保存帧率上",
+          (submitted_vid or {}).get("6", {}).get("inputs", {}).get("length") == 81
+          and (submitted_vid or {}).get("10", {}).get("inputs", {}).get("fps") == 16.0,
+          ((submitted_vid or {}).get("6", {}).get("inputs"),
+           (submitted_vid or {}).get("10", {}).get("inputs")))
+    chain_vid = [x for x in out_vid if x.get("type") == "chain"][-1]["chain"]
+    check("视频产物用 AstrBot 的 Video 组件发出（不是硬塞进 Image）",
+          any(comp.__class__.__name__ == "Video" for comp in chain_vid),
+          [comp.__class__.__name__ for comp in chain_vid])
+    check("视频结果里带上时长/帧数/帧率，便于复现",
+          any("81 帧" in getattr(comp, "text", "") for comp in chain_vid),
+          [getattr(comp, "text", "")[:40] for comp in chain_vid])
+
+    # 关掉「直接发视频」后只给路径
+    plugin.config["video"] = {"default_seconds": 4, "default_fps": 16, "max_seconds": 10,
+                              "send_video": False}
+    video_session(pid="vid-2")
+    out_vid2 = asyncio.run(drive(plugin.cmd_video(
+        AstrMessageEvent(sender_id="9009", message_str="/视频 一只猫 --seconds 2"))))
+    chain_vid2 = [x for x in out_vid2 if x.get("type") == "chain"][-1]["chain"]
+    check("关掉后不发 Video 组件，改成给出本地路径",
+          not any(comp.__class__.__name__ == "Video" for comp in chain_vid2)
+          and any("已保存到" in getattr(comp, "text", "") for comp in chain_vid2),
+          [getattr(comp, "text", "")[:50] for comp in chain_vid2])
+
+    plugin.config["video"] = {"default_seconds": 4, "default_fps": 16, "max_seconds": 10,
+                              "send_video": True}
+    out_vid3 = asyncio.run(drive(plugin.cmd_video(
+        AstrMessageEvent(sender_id="9009", message_str="/视频"))))
+    check("/视频 没给描述时给出用法与参数说明",
+          "用法" in out_vid3[0]["text"] and "--seconds" in out_vid3[0]["text"],
+          out_vid3[0]["text"][:60])
+    video_session(pid="vid-4")
+    out_vid4 = asyncio.run(drive(plugin.cmd_video(
+        AstrMessageEvent(sender_id="9009", message_str="/视频 一只猫 --seconds abc"))))
+    check("时长参数非法时明确报错", "需要一个数字" in out_vid4[-1]["text"], out_vid4[-1]["text"][:60])
+
+    # 尺寸/帧数上限：超出配置上限会截断并在 LOG 里说明
+    video_session(pid="vid-5")
+    asyncio.run(drive(plugin.cmd_video(
+        AstrMessageEvent(sender_id="9009", message_str="/视频 一只猫 --seconds 60"))))
+    from astrbot.api import logger as _stub_logger
+    clamped_lines = [line for line in _stub_logger.text().splitlines() if "截到" in line]
+    check("超长视频被配置上限截断（日志里说明）", bool(clamped_lines), clamped_lines[:1])
 
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）

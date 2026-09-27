@@ -26,13 +26,28 @@ LATENT_CLASSES = (
     "EmptySD3LatentImage",
     "EmptyLatentImagePresets",
     "VAEEncode",
+    # 视频模型的空潜空间（尺寸/帧数写在它们身上）
+    "EmptyHunyuanLatentVideo",
+    "EmptyLatentVideo",
+    "EmptyMochiLatentVideo",
+    "EmptyLTXVLatentVideo",
+    "WanImageToVideo",
+    "WanFirstLastFrameToVideo",
 )
 # 输入图节点（图生图）
 IMAGE_LOADER_CLASSES = ("LoadImage", "LoadImageMask", "LoadImageOutput")
 # 缩放节点：图生图的目标尺寸写在这里，而不是潜空间节点
 SCALER_CLASSES = ("ImageScale",)
 SAMPLER_CLASSES = ("KSampler", "KSamplerAdvanced")
-SAVE_CLASSES = ("SaveImage", "SaveImageWebsocket")
+SAVE_CLASSES = (
+    "SaveImage",
+    "SaveImageWebsocket",
+    # 视频/动图输出节点：同样是「产物落地」的锚点（prune_unreachable 靠它找输出）
+    "SaveWEBM",
+    "SaveVideo",
+    "SaveAnimatedWEBP",
+    "SaveAnimatedPNG",
+)
 # 模型加载器 -> 输入键
 MODEL_LOADER_KEYS = {
     "CheckpointLoaderSimple": "ckpt_name",
@@ -544,6 +559,34 @@ ARCH_PROFILES: dict[str, dict] = {
         "guidance": None,
         "negative": True,
     },
+    "wan": {
+        # Wan 2.x：官方示例就是 832x480 / 81 帧 / uni_pc / simple / CFG 6
+        "pixels": 832 * 480,
+        "label": "Wan 2.x（视频）",
+        "size": (832, 480),
+        "steps": 30,
+        "cfg": 6.0,
+        "sampler": "uni_pc",
+        "scheduler": "simple",
+        "guidance": None,
+        "negative": True,
+        "quality_tags": "",
+        "negative_extra": "",
+    },
+    "video": {
+        # 其它视频模型（HunyuanVideo / LTX-Video / Mochi...）：给一个保守的中档
+        "pixels": 768 * 512,
+        "label": "其它视频模型",
+        "size": (768, 512),
+        "steps": 30,
+        "cfg": 6.0,
+        "sampler": "uni_pc",
+        "scheduler": "simple",
+        "guidance": None,
+        "negative": True,
+        "quality_tags": "",
+        "negative_extra": "",
+    },
 }
 # 未识别时的兜底架构。
 # 取 sd15 而不是 sdxl：社区里 SDXL 系模型的命名几乎都带 xl（juggernautXL、
@@ -554,6 +597,9 @@ DEFAULT_ARCH = "sd15"
 
 # 显式关键词 -> 架构（顺序即优先级，"xl" 这条在后面单独判断）
 _ARCH_HINTS: tuple[tuple[tuple[str, ...], str], ...] = (
+    # 视频模型：名字里带 wan 的走视频档案（832x480、uni_pc、CFG 6）
+    (("wan",), "wan"),
+    (("hunyuan", "ltxv", "ltx-video", "mochi", "cogvideo"), "video"),
     (("flux",), "flux"),
     (("pony", "illustrious", "noobai", "animagine", "autismmix"), "pony"),
     (("sd3", "stable-diffusion-3", "sd35", "sd35"), "sd3"),
@@ -1361,7 +1407,7 @@ def pick_template(
 
     # 先按用途筛：图生图/扩图/局部重绘不能拿到文生图模板（四者节点结构不同）
     by_purpose = [t for t in templates.values() if t.purpose == purpose]
-    if not by_purpose and purpose in ("i2i", "outpaint", "inpaint"):
+    if not by_purpose and purpose in ("i2i", "outpaint", "inpaint", "t2v", "i2v"):
         return None, guess_arch(model_name, arch_override)
     pool = [t for t in (by_purpose or templates.values()) if t.loader == want_loader]
     if not pool:

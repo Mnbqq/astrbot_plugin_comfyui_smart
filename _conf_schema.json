@@ -286,6 +286,36 @@
       }
     }
   },
+  "video": {
+    "description": "视频（文生视频 / 图生视频）",
+    "type": "object",
+    "items": {
+      "default_seconds": {
+        "description": "默认时长（秒）",
+        "type": "int",
+        "hint": "不写 --seconds 时用这个。视频比出图慢很多，建议先 4 秒试水。",
+        "default": 4
+      },
+      "default_fps": {
+        "description": "默认帧率",
+        "type": "int",
+        "hint": "Wan / HunyuanVideo 常用 16；帧数会按 4n+1 自动对齐。",
+        "default": 16
+      },
+      "max_seconds": {
+        "description": "时长上限（秒）",
+        "type": "int",
+        "hint": "超过就按这个截断并在日志里提示，避免有人要 60 秒把显存跑爆。0=不限制。",
+        "default": 10
+      },
+      "send_video": {
+        "description": "直接把视频发到聊天",
+        "type": "bool",
+        "hint": "关掉后只在聊天里给出本地保存路径（有些平台发不了视频时用）。",
+        "default": true
+      }
+    }
+  },
   "output": {
     "description": "结果发送与图片保留",
     "type": "object",

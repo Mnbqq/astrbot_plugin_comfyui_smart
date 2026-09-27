@@ -12,11 +12,11 @@ from pathlib import Path
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.message_components import At, Image, Plain, Reply
+from astrbot.api.message_components import At, Image, Plain, Reply, Video
 from astrbot.api.star import Context, Star, StarTools
 
 from .backend_pool import Backend, BackendPool, is_backend_fault, parse_backend_specs
-from .comfyui_api import ComfyUI, ComfyUIError, normalize_base_url
+from .comfyui_api import ComfyUI, ComfyUIError, media_kind, normalize_base_url
 from .llm_service import LLMService
 from .pages import register_pages_routes
 from .permission import PermissionManager
@@ -36,7 +36,7 @@ from .workflow_templates import (
 
 PLUGIN_NAME = "astrbot_plugin_comfyui_smart"
 # 与 metadata.yaml 的 version 保持一致（tests/test_logic.py 会校验二者不漂移）
-PLUGIN_VERSION = "0.12.0"
+PLUGIN_VERSION = "0.13.0"
 PLUGIN_DIR = Path(__file__).resolve().parent
 BUILTIN_TEMPLATE_DIR = PLUGIN_DIR / "workflows"
 
@@ -64,6 +64,10 @@ PARAM_ALIASES = {
     "top": "top", "上": "top", "上边": "top",
     "bottom": "bottom", "下": "bottom", "下边": "bottom",
     "feather": "feather", "feathering": "feather", "羽化": "feather",
+    # 视频（t2v / i2v）
+    "seconds": "seconds", "second": "seconds", "时长": "seconds", "秒": "seconds",
+    "fps": "fps", "帧率": "fps",
+    "length": "length", "frames": "length", "帧数": "length",
 }
 RATIO_PRESETS = {
     "1:1": (1024, 1024), "16:9": (1344, 768), "9:16": (768, 1344),
@@ -616,6 +620,13 @@ class ComfyUISmartPlugin(Star):
                     "没有可用的局部重绘模板。请确认插件 workflows 目录里有 inpaint_checkpoint.json"
                     "（用到 ComfyUI 自带的 LoadImageMask / GrowMask / SetLatentNoiseMask 节点）"
                 )
+            if purpose == "t2v":
+                raise ComfyUIError(
+                    "没有可用的文生视频模板。插件内置的 wan_t2v.json 需要 ComfyUI 的原生 Wan 支持"
+                    "（UNETLoader / CLIPLoader / VAELoader / EmptyHunyuanLatentVideo / "
+                    "ModelSamplingSD3 / SaveWEBM）。如果你的视频模型是别的家族，"
+                    "请把对应的 API 格式工作流放进模板目录并声明 \"purpose\": \"t2v\""
+                )
             if folder == "diffusion_models" and arch != "flux":
                 raise ComfyUIError(
                     f"模型 {model} 位于 diffusion_models 目录，但它被识别为 {arch} 架构，"
@@ -781,7 +792,8 @@ class ComfyUISmartPlugin(Star):
         Returns:
             {"images": [Path...], "template": str, "model": str, "lora": str,
              "vae": str, "positive": str, "negative": str, "seconds": float,
-             "queued_seconds": float, "arch": str, "seed": int, "width": int, "height": int}
+             "queued_seconds": float, "arch": str, "seed": int, "width": int, "height": int,
+             "videos": [Path...], "video": {"seconds":.., "fps":.., "length":..}}
 
         Raises:
             ComfyUIError: 出图失败，message 面向用户。
@@ -862,10 +874,28 @@ class ComfyUISmartPlugin(Star):
 
         # 图生图 / 局部重绘：尺寸按原图比例（受 max_side 限制），重绘幅度可调
         # 扩图：尺寸由「原图 + 四周扩展量」决定（节点自己会算，这里只用于汇报与限额）
+        # 文生视频：尺寸走架构档案（Wan 就是 832x480），帧数与帧率写进模板声明的参数
         denoise = None
         outpaint_info: dict = {}
         inpaint_info: dict = {}
+        video_info: dict = {}
         template_params: dict = {}
+        if purpose == "t2v":
+            video_conf = self.config.get("video", {}) or {}
+            video_info = resolve_video_params(opts, video_conf)
+            template_params = {
+                "length": video_info["length"],
+                "fps": int(round(video_info["fps"])),
+            }
+            if video_info["clamped"]:
+                logger.info(
+                    "视频时长被配置上限截到 %.1f 秒（video.max_seconds）", video_info["seconds"]
+                )
+            logger.info(
+                "文生视频｜%sx%s｜%s 帧｜%.0f fps｜约 %.1f 秒",
+                sampling["width"], sampling["height"], video_info["length"],
+                video_info["fps"], video_info["seconds"],
+            )
         if purpose in ("i2i", "inpaint"):
             i2i_conf = self.config.get("i2i", {}) or {}
             try:
@@ -1163,9 +1193,12 @@ class ComfyUISmartPlugin(Star):
             logger.info("出图排队超时：%s", e)
             raise
         if not images:
-            raise ComfyUIError("出图失败：没有取到任何图片")
+            raise ComfyUIError("出图失败：没有取到任何产物")
+        videos = [p for p in images if media_kind(p.name) == "video"]
+        pictures = [p for p in images if media_kind(p.name) != "video"]
         return {
-            "images": images,
+            "images": pictures,
+            "videos": videos,
             "template": template.name,
             "model": selection["model"],
             "lora": selection["lora"],
@@ -1182,6 +1215,7 @@ class ComfyUISmartPlugin(Star):
             "denoise": denoise if denoise is not None else 1.0,
             "outpaint": outpaint_info,
             "inpaint": inpaint_info,
+            "video": video_info,
             "backend": backend.name if self.pool.multi else "",
             "seconds": time.time() - started,
             "queued_seconds": queued_seconds,
@@ -1461,7 +1495,7 @@ class ComfyUISmartPlugin(Star):
                 "vae": result["vae"],
                 "template": result["template"],
             },
-            images=[f"images/{p.name}" for p in result["images"]],
+            images=[f"images/{p.name}" for p in (result["images"] + (result.get("videos") or []))],
             seconds=result["seconds"],
             params={
                 "width": result.get("width"),
@@ -1710,6 +1744,21 @@ class ComfyUISmartPlugin(Star):
                 # 排队时间与出图时间分开报，否则「这次怎么这么慢」说不清
                 detail += f"\n⏳ 排队等待 {result['queued_seconds']:.0f}s"
             chain.append(Plain(detail + "\n"))
+        shown_video = False
+        video_conf = self.config.get("video", {}) or {}
+        for path in result.get("videos") or []:
+            detail = f"🎬 视频 {result.get('video', {}).get('seconds', '')} 秒"
+            if video_conf.get("send_video", True):
+                chain.append(Video.fromFileSystem(str(path)))
+                shown_video = True
+            else:
+                detail += f"（已保存到 {path}）"
+            chain.append(Plain(detail + "\n"))
+        if result.get("videos") and shown_video:
+            chain.append(Plain(
+                f"（{result['video'].get('length')} 帧 / "
+                f"{result['video'].get('fps'):.0f} fps）\n"
+            ))
         for path in result["images"]:
             chain.append(Image.fromFileSystem(str(path)))
         return chain
@@ -1958,6 +2007,60 @@ class ComfyUISmartPlugin(Star):
         await self._record_generation(uid, event, result)
         yield event.chain_result(self._compose_result_chain(event, uid, result))
 
+    @filter.command("视频", alias={"生成视频", "文生视频", "video", "t2v"})
+    async def cmd_video(self, event: AstrMessageEvent):
+        """按描述生成一段短视频（文生视频）。"""
+        uid = str(event.get_sender_id())
+        is_admin = bool(event.is_admin())
+        allowed, reason = await self.permission.check(
+            uid, is_admin=is_admin, storage=self.storage
+        )
+        if not allowed:
+            yield event.plain_result(reason)
+            return
+
+        raw = _extract_command_payload(event, "视频", "生成视频", "文生视频", "video", "t2v")
+        desc, opts = parse_inline_params(raw)
+        if not desc:
+            video_conf = self.config.get("video", {}) or {}
+            yield event.plain_result(
+                "🎬 用法：/视频 <描述> [参数]\n"
+                "例如：/视频 一只猫在草地上奔跑 --seconds 5 --fps 16\n"
+                "　　　/视频 赛博朋克城市延时 --ratio 16:9 --steps 30\n"
+                f"参数：--seconds（时长，默认 {video_conf.get('default_seconds', 4)} 秒，"
+                f"上限 {video_conf.get('max_seconds', 10)} 秒）、"
+                f"--fps（帧率，默认 {video_conf.get('default_fps', 16)}）、"
+                "--length（直接给帧数，按 4n+1 对齐）\n"
+                "尺寸用 --size/--ratio/--width/--height，其余参数与 /画图 相同\n"
+                "⚠️ 需要 ComfyUI 里已装好视频模型与节点（如 Wan 2.x）；缺什么会直接告诉你"
+            )
+            return
+
+        yield event.plain_result("🎬 收到，正在生成视频（比出图慢很多，请耐心等）…")
+        on_wait, on_queued, on_progress = self._queue_notifiers(event)
+
+        try:
+            result = await self.generate(
+                user_desc=desc,
+                opts=opts,
+                event=event,
+                on_wait=on_wait,
+                on_queued=on_queued,
+                on_progress=on_progress,
+                force_purpose="t2v",
+            )
+        except (ComfyUIError, TemplateError) as e:
+            logger.warning("文生视频失败：%s", e)
+            yield event.plain_result(f"💥 视频生成失败：{e}")
+            return
+        except RuntimeError as e:
+            yield event.plain_result(f"💥 {e}")
+            return
+
+        await self.permission.record(uid, is_admin=is_admin, storage=self.storage)
+        await self._record_generation(uid, event, result)
+        yield event.chain_result(self._compose_result_chain(event, uid, result))
+
     @filter.command("反推", alias={"反推提示词", "识图", "img2prompt"})
     async def cmd_reverse_prompt(self, event: AstrMessageEvent):
         """看一张图，反推出可用的提示词。"""
@@ -2083,6 +2186,7 @@ class ComfyUISmartPlugin(Star):
             "　　　　　　--model 关键词 / --batch 2 / --negative \"...\"\n"
             "/图生图　　以图为底按描述重绘（别名 /改图，--denoise 控制幅度）\n"
             "/扩图　　　把画面往外扩，补全构图（--left/--right/--top/--bottom 像素）\n"
+            "/视频　　　按描述生成短视频（--seconds 时长 / --fps 帧率 / --length 帧数）\n"
             "/反推　　　看图反推提示词（发图或回复图片，加 --画 直接出图）\n"
             "/模型列表　查看可用模型\n"
             "/模板列表　查看工作流模板（可放自定义模板）\n"
@@ -2301,6 +2405,70 @@ def fit_outpaint_pads(width: int, height: int, pads: dict) -> dict:
         value = max(0, min(int(value), DIM_MAX))
         fitted[key] = value - value % DIM_ALIGN
     return fitted
+
+
+def align_video_frames(frames: int, *, block: int = 4, up: bool = True) -> int:
+    """把帧数对齐到视频模型要求的 `block*n + 1`（Wan / HunyuanVideo 的约定）。
+
+    Args:
+        frames: 期望帧数。
+        block: 对齐块（默认 4）。
+        up: True 向上对齐（宁可多一帧），False 向下对齐（用于「不许超时长上限」）。
+
+    Returns:
+        对齐后的帧数（至少 5 帧）。
+    """
+    frames = max(1, int(frames or 0))
+    steps = -(-(frames - 1) // block) if up else ((frames - 1) // block)
+    return max(5, steps * block + 1)
+
+
+def resolve_video_params(opts: dict, video_conf: dict) -> dict:
+    """算出这次视频的秒数、帧率与帧数。
+
+    Args:
+        opts: 行内参数（--seconds / --fps / --length）。
+        video_conf: 配置里的 video 段。
+
+    Returns:
+        {"seconds": float, "fps": float, "length": int, "clamped": bool}
+
+    Raises:
+        ComfyUIError: 参数非法或超出上限。
+    """
+    def _number(value, fallback, name, low, high):
+        if value in (None, ""):
+            return float(fallback)
+        try:
+            number = float(str(value))
+        except (TypeError, ValueError):
+            raise ComfyUIError(f"{name} 需要一个数字，收到的是 {value!r}")
+        if number <= 0:
+            raise ComfyUIError(f"{name} 必须大于 0，收到的是 {value!r}")
+        return min(max(number, low), high)
+
+    default_seconds = float(video_conf.get("default_seconds", 4) or 4)
+    default_fps = float(video_conf.get("default_fps", 16) or 16)
+    max_seconds = float(video_conf.get("max_seconds", 10) or 0)
+    seconds = _number(opts.get("seconds"), default_seconds, "--seconds", 0.5, 600)
+    fps = _number(opts.get("fps"), default_fps, "--fps", 1, 60)
+    clamped = False
+    if max_seconds > 0 and seconds > max_seconds:
+        seconds = max_seconds
+        clamped = True
+    if opts.get("length") not in (None, ""):
+        try:
+            length = align_video_frames(int(float(str(opts["length"]))))
+        except (TypeError, ValueError):
+            raise ComfyUIError(f"--length 需要帧数，收到的是 {opts['length']!r}")
+    else:
+        length = align_video_frames(int(round(seconds * fps)))
+        if max_seconds > 0 and length / fps > max_seconds:
+            # 截断时改成向下对齐：对齐后不允许再超过上限
+            length = align_video_frames(int(max_seconds * fps), up=False)
+            clamped = True
+    seconds = round(length / fps, 2)
+    return {"seconds": seconds, "fps": fps, "length": length, "clamped": clamped}
 
 
 def fit_to_limit(width: int, height: int, max_side: int) -> tuple[int, int]:

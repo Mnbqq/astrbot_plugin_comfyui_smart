@@ -64,6 +64,11 @@ const FIELDS = [
   { id: 'hires_method', path: ['hires', 'method'], kind: 'select',
     options: ['bislerp', 'bilinear', 'bicubic', 'area', 'nearest-exact'] },
 
+  { id: 'video_default_seconds', path: ['video', 'default_seconds'], kind: 'int' },
+  { id: 'video_default_fps', path: ['video', 'default_fps'], kind: 'int' },
+  { id: 'video_max_seconds', path: ['video', 'max_seconds'], kind: 'int' },
+  { id: 'video_send_video', path: ['video', 'send_video'], kind: 'bool' },
+
   { id: 'out_mention', path: ['output', 'mention_trigger_user'], kind: 'bool' },
   { id: 'out_show_params', path: ['output', 'show_params'], kind: 'bool' },
   { id: 'out_show_progress', path: ['output', 'show_progress'], kind: 'bool' },
@@ -211,6 +216,11 @@ function esc(value) {
 
 function imageUrl(ref) {
   return '/api/v1/plugins/extensions/' + PLUGIN_NAME + '/' + String(ref || '');
+}
+
+/* 产物是视频还是图片：按扩展名判断（画廊与弹窗要分别用 <video> / <img> 渲染） */
+function isVideoRef(ref) {
+  return /\.(mp4|webm|mkv|mov|m4v|avi)$/i.test(String(ref || ''));
 }
 
 /* ============================================================
@@ -611,6 +621,7 @@ async function loadStats() {
     // 展平出画廊条目，并保留完整记录供弹窗展示
     galleryItems = records.slice(-60).reverse().flatMap((record) => (record.images || []).map((ref) => ({
       url: imageUrl(ref),
+      video: isVideoRef(ref),
       ref: ref,
       prompt: record.positive,
       negative: record.negative,
@@ -635,8 +646,10 @@ async function loadStats() {
         ? '<p class="muted gallery-hint">点击任意图片可查看正/负面提示词与完整参数</p>'
           + '<div class="gallery-grid">' + galleryItems.map((item, index) =>
             '<figure class="gallery-item" data-index="' + index + '" title="点击查看提示词与参数">'
-            + '<img src="' + esc(item.url) + '" loading="lazy" alt="" '
-            + 'onerror="this.parentNode.classList.add(\'missing\')" />'
+            + (item.video
+              ? '<video src="' + esc(item.url) + '" muted loop playsinline preload="metadata"></video>'
+              : '<img src="' + esc(item.url) + '" loading="lazy" alt="" '
+                + 'onerror="this.parentNode.classList.add(\'missing\')" />')
             + '<figcaption><span class="gal-prompt">' + esc(item.prompt || '')
             + '</span><span class="gal-meta">' + esc(item.meta) + '</span></figcaption></figure>').join('') + '</div>'
         : '<p class="muted">暂无作品，出图后这里会展示</p>') + '</div>';
@@ -679,7 +692,18 @@ function openDetail(index) {
   if (!item || !modal) return;
   modal.hidden = false;
   modal.classList.add('open');
-  $('#modal-image').src = item.url;
+  const modalImage = $('#modal-image');
+  if (modalImage) {
+    if (item.video) {
+      modalImage.outerHTML = '<video id="modal-image" class="modal-image" src="'
+        + esc(item.url) + '" controls autoplay loop></video>';
+      const fresh = $('#modal-image');
+      if (fresh) fresh.src = item.url;
+    } else {
+      modalImage.outerHTML = '<img id="modal-image" class="modal-image" src="'
+        + esc(item.url) + '" alt="" />';
+    }
+  }
   $('#modal-image').alt = item.prompt || '';
   $('#modal-params').innerHTML = renderParams(item);
   $('#modal-positive').value = item.prompt || '';

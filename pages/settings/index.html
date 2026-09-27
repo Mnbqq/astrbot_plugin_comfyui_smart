@@ -318,6 +318,28 @@
         </article>
 
         <article class="card">
+          <div class="card-header"><div><h3>视频（文生视频 / 图生视频）</h3><p>用 /视频 按描述生成短视频；需要 ComfyUI 里已装好视频模型与节点（如 Wan 2.x）。</p></div></div>
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="video_default_seconds">默认时长（秒）</label>
+              <input type="number" id="video_default_seconds" class="input-modern" min="1" />
+            </div>
+            <div class="form-group">
+              <label for="video_default_fps">默认帧率</label>
+              <input type="number" id="video_default_fps" class="input-modern" min="1" />
+            </div>
+            <div class="form-group">
+              <label for="video_max_seconds">时长上限（秒）</label>
+              <input type="number" id="video_max_seconds" class="input-modern" min="0" />
+            </div>
+          </div>
+          <div class="setting-row">
+            <div><h3>直接把视频发到聊天</h3><p>关掉后只在聊天里给出本地保存路径（有些平台发不了视频时用）。</p></div>
+            <label class="switch-wrapper"><input type="checkbox" id="video_send_video" class="ios-switch" /></label>
+          </div>
+        </article>
+
+        <article class="card">
           <div class="card-header"><div><h3>结果发送与图片保留</h3><p>图片按时间与数量双重上限清理，避免磁盘被撑满。</p></div></div>
           <div class="setting-row">
             <div><h3>群聊出图时 @ 触发人</h3><p>在群里出图时艾特发起人。</p></div>
