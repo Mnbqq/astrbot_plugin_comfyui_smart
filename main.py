@@ -36,7 +36,7 @@ from .workflow_templates import (
 
 PLUGIN_NAME = "astrbot_plugin_comfyui_smart"
 # 与 metadata.yaml 的 version 保持一致（tests/test_logic.py 会校验二者不漂移）
-PLUGIN_VERSION = "0.11.0"
+PLUGIN_VERSION = "0.12.0"
 PLUGIN_DIR = Path(__file__).resolve().parent
 BUILTIN_TEMPLATE_DIR = PLUGIN_DIR / "workflows"
 
@@ -318,10 +318,15 @@ class ComfyUISmartPlugin(Star):
         self._load_templates()
 
     def _load_templates(self) -> None:
-        """加载内置模板与用户自带模板（用户同名模板优先）。"""
+        """加载内置模板与用户自带模板（用户同名模板优先）。
+
+        把上次拉到的 `/object_info` 传下去：用户放的**界面格式**工作流要靠它
+        把界面控件值映射到真实输入名（没有也能转，靠节点自带的 widget 信息与内置表）。
+        """
         self.user_template_dir.mkdir(parents=True, exist_ok=True)
-        templates = load_templates(BUILTIN_TEMPLATE_DIR)
-        user_templates = load_templates(self.user_template_dir)
+        object_info = getattr(self.comfy, "_object_info", None) or None
+        templates = load_templates(BUILTIN_TEMPLATE_DIR, object_info=object_info)
+        user_templates = load_templates(self.user_template_dir, object_info=object_info)
         templates.update(user_templates)
         self.templates = templates
 

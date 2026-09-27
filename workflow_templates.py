@@ -15,6 +15,8 @@ import copy
 import json
 from pathlib import Path
 
+from .ui_workflow import is_ui_workflow, ui_to_api
+
 # 文本注入键的候选顺序：命中第一个存在的键。
 TEXT_INPUT_KEYS = ("text", "clip_l", "t5xxl", "prompt", "text_g", "string", "value")
 # 尺寸节点候选（SD 系用 EmptyLatentImage，Flux/SD3 用 EmptySD3LatentImage）。
@@ -1181,19 +1183,25 @@ def _validate_params(graph: dict, params: dict, name: str) -> dict:
     return checked
 
 
-def parse_template_payload(payload: dict, name: str, source: str = "") -> dict:
-    """解析模板文件内容，支持裸图与带元信息的包装两种写法。
+def parse_template_payload(
+    payload: dict, name: str, source: str = "", object_info: dict | None = None
+) -> dict:
+    """解析模板文件内容，支持裸图、界面格式与带元信息的包装三种写法。
+
+    **界面格式**（ComfyUI 里点「保存/导出」拿到的 `nodes`/`links`/`widgets_values`）
+    会被自动转成 API 格式 —— 用户不必再进开发者模式点「Export (API)」。
 
     Args:
         payload: 文件解析出的对象。
         name: 模板名。
         source: 来源描述。
+        object_info: `/object_info` 结果（可选），用于把界面的控件值精确映射到输入名。
 
     Returns:
         {"name":..., "arch":..., "loader":..., "purpose":..., "bindings":..., "params":..., "graph":...}
 
     Raises:
-        TemplateError: 无法识别的结构。
+        TemplateError: 无法识别的结构，或界面格式转换失败。
     """
     if not isinstance(payload, dict):
         raise TemplateError(f"模板 {name} 不是对象")
@@ -1215,8 +1223,13 @@ def parse_template_payload(payload: dict, name: str, source: str = "") -> dict:
             "purpose": _field("purpose"),
             "bindings": spec,
             "params": params,
-            "graph": payload["graph"],
+            "graph": _as_api_graph(payload["graph"], name, object_info),
         }
+    # 裸界面格式：顶层就是 {"nodes": [...], "links": [...]}
+    if is_ui_workflow(payload):
+        return {"name": name, "arch": "", "loader": "", "purpose": "",
+                "bindings": {}, "params": {},
+                "graph": _as_api_graph(payload, name, object_info)}
     # 裸 API 图：顶层就是 {"节点id": {...}}；也容忍 ComfyUI 的 {"prompt": {...}} 包裹
     if "prompt" in payload and isinstance(payload["prompt"], dict):
         return {
@@ -1234,11 +1247,34 @@ def parse_template_payload(payload: dict, name: str, source: str = "") -> dict:
     raise TemplateError(f"模板 {name} 结构无法识别（既不是 API 图也不是包装格式）")
 
 
-def load_templates(*dirs: Path) -> dict[str, WorkflowTemplate]:
+def _as_api_graph(graph: dict, name: str, object_info: dict | None) -> dict:
+    """界面格式就转成 API 格式，已经是 API 格式则原样返回。
+
+    Args:
+        graph: 待检查的工作流对象。
+        name: 模板名（报错用）。
+        object_info: `/object_info` 结果，可为空。
+
+    Returns:
+        API 格式工作流。
+
+    Raises:
+        TemplateError: 界面格式转换失败（原因原样带上，便于用户定位）。
+    """
+    if not is_ui_workflow(graph):
+        return graph
+    try:
+        return ui_to_api(graph, object_info=object_info)
+    except Exception as e:
+        raise TemplateError(f"模板 {name} 是 ComfyUI 界面格式，但自动转换失败：{e}") from e
+
+
+def load_templates(*dirs: Path, object_info: dict | None = None) -> dict[str, WorkflowTemplate]:
     """加载目录下的全部模板，后者覆盖同名前者。
 
     Args:
         *dirs: 模板目录，按顺序加载。
+        object_info: `/object_info` 结果（可选）：界面格式的模板靠它把控件值映射到输入名。
 
     Returns:
         模板名 -> WorkflowTemplate。坏模板会被跳过，不影响其余模板。
@@ -1250,7 +1286,9 @@ def load_templates(*dirs: Path) -> dict[str, WorkflowTemplate]:
         for path in sorted(Path(directory).glob("*.json")):
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
-                meta = parse_template_payload(payload, path.stem, str(path))
+                meta = parse_template_payload(
+                    payload, path.stem, str(path), object_info=object_info
+                )
                 templates[meta["name"]] = WorkflowTemplate(
                     meta["name"],
                     meta["graph"],

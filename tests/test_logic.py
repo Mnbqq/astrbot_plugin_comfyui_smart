@@ -453,7 +453,7 @@ PLUGIN_SRC_ROOT = Path(__file__).resolve().parent.parent
 # 参与上架规范检查的源码（tests/ 自身不算插件运行时）
 _AUDIT_FILES = ("main.py", "comfyui_api.py", "llm_service.py", "storage.py",
                 "permission.py", "workflow_templates.py", "queue_gate.py",
-                "pages/__init__.py")
+                "backend_pool.py", "ui_workflow.py", "pages/__init__.py")
 _AUDIT_DIRS = ("pages/settings",)
 
 
@@ -3050,6 +3050,256 @@ def main() -> int:
     check("清空配置后回到单后端（不探测）",
           plugin.pool.multi is False and plugin.pool.primary().url == "http://127.0.0.1:8188",
           [b.url for b in plugin.pool.backends])
+
+    print("\n=== UI 格式工作流自动转换（v0.12.0）===")
+    from astrbot_plugin_comfyui_smart import ui_workflow as uw
+
+    def ui_base() -> dict:
+        """一份新式界面导出（inputs 里带 widget.name，KSampler 带 control_after_generate）。"""
+        return json.loads(json.dumps({
+            "last_node_id": 9, "last_link_id": 11, "version": 0.4,
+            "nodes": [
+                {"id": 4, "type": "CheckpointLoaderSimple", "mode": 0,
+                 "outputs": [{"name": "MODEL", "links": [1]}, {"name": "CLIP", "links": [4, 5]},
+                             {"name": "VAE", "links": [6]}],
+                 "widgets_values": ["sd_xl_base_1.0.safetensors"]},
+                {"id": 6, "type": "CLIPTextEncode",
+                 "inputs": [{"name": "clip", "type": "CLIP", "link": 4},
+                            {"name": "text", "type": "STRING", "widget": {"name": "text"}}],
+                 "outputs": [{"name": "CONDITIONING", "links": [7]}], "widgets_values": ["a cat"]},
+                {"id": 7, "type": "CLIPTextEncode",
+                 "inputs": [{"name": "clip", "type": "CLIP", "link": 5},
+                            {"name": "text", "type": "STRING", "widget": {"name": "text"}}],
+                 "outputs": [{"name": "CONDITIONING", "links": [8]}], "widgets_values": ["bad hands"]},
+                {"id": 5, "type": "EmptyLatentImage",
+                 "inputs": [{"name": "width", "type": "INT", "widget": {"name": "width"}},
+                            {"name": "height", "type": "INT", "widget": {"name": "height"}},
+                            {"name": "batch_size", "type": "INT", "widget": {"name": "batch_size"}}],
+                 "outputs": [{"name": "LATENT", "links": [9]}], "widgets_values": [1024, 1024, 1]},
+                {"id": 3, "type": "KSampler", "title": "采样器",
+                 "inputs": [{"name": "model", "type": "MODEL", "link": 1},
+                            {"name": "positive", "type": "CONDITIONING", "link": 7},
+                            {"name": "negative", "type": "CONDITIONING", "link": 8},
+                            {"name": "latent_image", "type": "LATENT", "link": 9},
+                            {"name": "seed", "type": "INT", "widget": {"name": "seed"}},
+                            {"name": "control_after_generate", "type": "COMBO",
+                             "widget": {"name": "control_after_generate"}},
+                            {"name": "steps", "type": "INT", "widget": {"name": "steps"}},
+                            {"name": "cfg", "type": "FLOAT", "widget": {"name": "cfg"}},
+                            {"name": "sampler_name", "type": "COMBO",
+                             "widget": {"name": "sampler_name"}},
+                            {"name": "scheduler", "type": "COMBO", "widget": {"name": "scheduler"}},
+                            {"name": "denoise", "type": "FLOAT", "widget": {"name": "denoise"}}],
+                 "outputs": [{"name": "LATENT", "links": [10]}],
+                 "widgets_values": [12345, "randomize", 28, 6.0, "dpmpp_2m", "karras", 1.0]},
+                {"id": 8, "type": "VAEDecode",
+                 "inputs": [{"name": "samples", "type": "LATENT", "link": 10},
+                            {"name": "vae", "type": "VAE", "link": 6}],
+                 "outputs": [{"name": "IMAGE", "links": [11]}]},
+                {"id": 9, "type": "SaveImage",
+                 "inputs": [{"name": "images", "type": "IMAGE", "link": 11},
+                            {"name": "filename_prefix", "type": "STRING",
+                             "widget": {"name": "filename_prefix"}}],
+                 "widgets_values": ["ComfyUI"]},
+            ],
+            "links": [[1, 4, 0, 3, 0, "MODEL"], [4, 4, 1, 6, 0, "CLIP"], [5, 4, 1, 7, 0, "CLIP"],
+                      [6, 4, 2, 8, 1, "VAE"], [7, 6, 0, 3, 1, "CONDITIONING"],
+                      [8, 7, 0, 3, 2, "CONDITIONING"], [9, 5, 0, 3, 3, "LATENT"],
+                      [10, 3, 0, 8, 0, "LATENT"], [11, 8, 0, 9, 0, "IMAGE"]],
+        }))
+
+    check("能认出界面格式（有 nodes 数组）",
+          uw.is_ui_workflow(ui_base()) and not uw.is_ui_workflow({"3": {"class_type": "X"}}))
+
+    api_ui = uw.ui_to_api(ui_base())
+    ksampler = api_ui["3"]["inputs"]
+    check("界面格式转成 API 格式：连线还原成 [节点id, 槽位]",
+          ksampler["model"] == ["4", 0] and ksampler["positive"] == ["6", 0]
+          and ksampler["latent_image"] == ["5", 0], ksampler)
+    check("控件值按名字对齐（control_after_generate 被丢掉、后面的值没有整体错位）",
+          ksampler["seed"] == 12345 and ksampler["steps"] == 28 and ksampler["cfg"] == 6.0
+          and ksampler["sampler_name"] == "dpmpp_2m" and ksampler["scheduler"] == "karras"
+          and ksampler["denoise"] == 1.0, ksampler)
+    check("按钮类控件（control_after_generate）绝不写进 API 输入",
+          all("control" not in key for key in ksampler), sorted(ksampler))
+    check("节点标题被带进 _meta（按标题兜底的注入点仍然有效）",
+          api_ui["3"].get("_meta", {}).get("title") == "采样器", api_ui["3"].get("_meta"))
+    check("尺寸节点与保存节点的控件也映射正确",
+          api_ui["5"]["inputs"] == {"width": 1024, "height": 1024, "batch_size": 1}
+          and api_ui["9"]["inputs"]["filename_prefix"] == "ComfyUI",
+          (api_ui["5"]["inputs"], api_ui["9"]["inputs"]))
+
+    # Reroute：界面里常用来理线，转换时必须穿过
+    reroute = ui_base()
+    reroute["nodes"].append({
+        "id": 20, "type": "Reroute", "mode": 0,
+        "inputs": [{"name": "", "type": "*", "link": 7}],
+        "outputs": [{"name": "", "type": "CONDITIONING", "links": [21]}],
+    })
+    reroute["links"].append([21, 20, 0, 3, 1, "CONDITIONING"])
+    for node in reroute["nodes"]:
+        if node["id"] == 3:
+            node["inputs"][1] = {"name": "positive", "type": "CONDITIONING", "link": 21}
+    api_rr = uw.ui_to_api(reroute)
+    check("Reroute 被穿过（不会在 API 图里留下 Reroute 节点）",
+          "20" not in api_rr and api_rr["3"]["inputs"]["positive"] == ["6", 0],
+          (sorted(api_rr), api_rr["3"]["inputs"]["positive"]))
+
+    # 静音 / 旁路
+    muted = ui_base()
+    for node in muted["nodes"]:
+        if node["id"] == 7:
+            node["mode"] = 2
+    api_muted = uw.ui_to_api(muted)
+    check("被静音的节点不会被转进 API 图", "7" not in api_muted, sorted(api_muted))
+
+    # 原语节点：界面里用它给控件喂一个常量
+    primitive = ui_base()
+    primitive["nodes"].append({
+        "id": 30, "type": "PrimitiveNode", "mode": 0,
+        "outputs": [{"name": "INT", "links": [31]}], "widgets_values": [999],
+    })
+    primitive["links"].append([31, 30, 0, 3, 4, "INT"])
+    for node in primitive["nodes"]:
+        if node["id"] == 3:
+            node["inputs"][4] = {"name": "seed", "type": "INT", "widget": {"name": "seed"},
+                                 "link": 31}
+    api_prim = uw.ui_to_api(primitive)
+    check("PrimitiveNode 的值直接写进下游输入（不产生多余节点）",
+          "30" not in api_prim and api_prim["3"]["inputs"]["seed"] == 999,
+          (sorted(api_prim), api_prim["3"]["inputs"].get("seed")))
+
+    # 老式导出（inputs 里没有 widget 信息）→ 靠 object_info 顺序
+    old_style = ui_base()
+    for node in old_style["nodes"]:
+        node["inputs"] = [i for i in (node.get("inputs") or []) if "widget" not in i]
+        if node.get("type") == "KSampler":
+            node["widgets_values"] = [777, "fixed", 20, 7.0, "euler", "normal", 0.8]
+    object_info = {
+        "KSampler": {
+            "input": {"required": {
+                "model": ["MODEL"], "seed": ["INT", {"default": 0}],
+                "steps": ["INT", {"default": 20}], "cfg": ["FLOAT", {"default": 8.0}],
+                "sampler_name": [["euler", "dpmpp_2m"]], "scheduler": [["normal", "karras"]],
+                "positive": ["CONDITIONING"], "negative": ["CONDITIONING"],
+                "latent_image": ["LATENT"], "denoise": ["FLOAT", {"default": 1.0}],
+            }},
+            "input_order": {"required": ["model", "seed", "steps", "cfg", "sampler_name",
+                                         "scheduler", "positive", "negative", "latent_image",
+                                         "denoise"]},
+        },
+        "EmptyLatentImage": {
+            "input": {"required": {"width": ["INT", {}], "height": ["INT", {}],
+                                   "batch_size": ["INT", {}]}},
+            "input_order": {"required": ["width", "height", "batch_size"]},
+        },
+        "CheckpointLoaderSimple": {
+            "input": {"required": {"ckpt_name": [["a.safetensors"]]}},
+            "input_order": {"required": ["ckpt_name"]},
+        },
+        "CLIPTextEncode": {
+            "input": {"required": {"text": ["STRING", {}], "clip": ["CLIP"]}},
+            "input_order": {"required": ["text", "clip"]},
+        },
+    }
+    api_old = uw.ui_to_api(old_style, object_info=object_info)
+    check("老式导出靠 /object_info 的顺序映射（同样跳过 control_after_generate）",
+          api_old["3"]["inputs"]["seed"] == 777 and api_old["3"]["inputs"]["steps"] == 20
+          and api_old["3"]["inputs"]["denoise"] == 0.8, api_old["3"]["inputs"])
+    force_info = {"SomeNode": {"input": {"required": {
+        "value": ["STRING", {"forceInput": True}], "count": ["INT", {}],
+    }}, "input_order": {"required": ["value", "count"]}}}
+    api_force = uw.ui_to_api(
+        {"nodes": [{"id": 1, "type": "SomeNode", "widgets_values": [5]}], "links": []},
+        object_info=force_info,
+    )
+    check("forceInput 的输入不算控件（否则控件值会整体错位）",
+          api_force["1"]["inputs"] == {"count": 5}, api_force["1"]["inputs"])
+
+    # 没有 object_info 时的内置兜底表
+    api_builtin = uw.ui_to_api(old_style)
+    check("没有 /object_info 时用内置兜底表也能转（KSampler 等常见节点）",
+          api_builtin["3"]["inputs"]["steps"] == 20 and api_builtin["4"]["inputs"]["ckpt_name"]
+          == "sd_xl_base_1.0.safetensors", (api_builtin["3"]["inputs"], api_builtin["4"]["inputs"]))
+
+    # 转不动时明确报错
+    broken = ui_base()
+    for node in broken["nodes"]:
+        if node["id"] == 3:
+            node["widgets_values"] = [1, 2, 3]
+    broken_msg = ""
+    try:
+        uw.ui_to_api(broken)
+    except uw.UIWorkflowError as e:
+        broken_msg = str(e)
+    check("控件数量对不上时明确报错（说清节点与数量）",
+          "控件数量对不上" in broken_msg and "KSampler" in broken_msg, broken_msg)
+    not_ui_msg = ""
+    try:
+        uw.ui_to_api({"3": {"class_type": "KSampler"}})
+    except uw.UIWorkflowError as e:
+        not_ui_msg = str(e)
+    check("不是界面格式时明确拒绝", "不是 ComfyUI 界面格式" in not_ui_msg, not_ui_msg)
+
+    # 走模板引擎：把界面格式丢进模板目录就能用
+    ui_dir = Path(tempfile.mkdtemp(prefix="smart_ui_tpl_"))
+    wrapped = {"name": "ui_sd15", "arch": "sdxl", "loader": "checkpoint",
+               "description": "界面格式自动转换", "graph": ui_base()}
+    (ui_dir / "ui_sd15.json").write_text(json.dumps(wrapped, ensure_ascii=False),
+                                         encoding="utf-8")
+    ui_templates = wt.load_templates(ui_dir)
+    check("界面格式的模板文件能被加载并自动转换",
+          "ui_sd15" in ui_templates, sorted(ui_templates))
+    ui_tpl = ui_templates.get("ui_sd15")
+    built_ui = ui_tpl.build(positive="一只猫", negative="bad", model_name="SDXL/m.safetensors",
+                            width=832, height=1216, steps=30, cfg=7.0, sampler="euler",
+                            scheduler="normal", seed=42)
+    check("转换后的模板照样能注入提示词/尺寸/采样参数",
+          built_ui["6"]["inputs"]["text"] == "一只猫"
+          and built_ui["3"]["inputs"]["steps"] == 30
+          and built_ui["3"]["inputs"]["seed"] == 42,
+          {k: built_ui["3"]["inputs"][k] for k in ("steps", "cfg", "seed", "sampler_name")})
+    check("转换后的模板能通过图结构校验与不可达节点剔除",
+          set(built_ui) == {"4", "6", "7", "5", "3", "8", "9"}, sorted(built_ui))
+
+    # 端到端：真的用界面格式模板出一张图
+    plugin.user_template_dir.mkdir(parents=True, exist_ok=True)
+    (plugin.user_template_dir / "ui_sd15.json").write_text(
+        json.dumps(wrapped, ensure_ascii=False), encoding="utf-8"
+    )
+    plugin._load_templates()
+    check("插件加载用户模板时也会自动转换界面格式",
+          "ui_sd15" in plugin.templates, sorted(plugin.templates))
+    sess_ui = api.aiohttp.ClientSession()
+    sess_ui.route("GET", "/models", api.aiohttp.ClientResponse(200, payload=["checkpoints"]))
+    sess_ui.route("GET", "/models/checkpoints", api.aiohttp.ClientResponse(
+        200, payload=["SDXL/m.safetensors"]))
+    sess_ui.route("POST", "/prompt", api.aiohttp.ClientResponse(200, payload={"prompt_id": "ui-1"}))
+    sess_ui.route("GET", "/queue", api.aiohttp.ClientResponse(
+        200, payload={"queue_running": [], "queue_pending": []}))
+    sess_ui.route("GET", "/history/ui-1", api.aiohttp.ClientResponse(200, payload={"ui-1": {
+        "status": {"status_str": "success", "completed": True},
+        "outputs": {"9": {"images": [{"filename": "ui.png", "type": "output"}]}}}}))
+    sess_ui.route("GET", "/view", api.aiohttp.ClientResponse(200, text="PNG"))
+    plugin.comfy._session = sess_ui
+    plugin.comfy.invalidate_model_cache()
+    plugin.templates["ui_sd15"] = ui_templates["ui_sd15"]
+    plugin.config["llm_settings"] = {"enable_prompt_optimize": False}
+    plugin.config["hires"] = {"enable": False}
+    plugin.config["permission"] = {}
+    plugin.permission.reload({})
+    ui_result = asyncio.run(plugin.generate(user_desc="一只猫", opts={"model": "SDXL"}))
+    submitted_ui = None
+    for method, path, kw in sess_ui.calls:
+        if method == "POST" and path == "/prompt":
+            submitted_ui = kw["json"]["prompt"]
+    check("界面格式模板能一路跑通出图（转换 → 校验 → 注入 → 提交）",
+          ui_result["template"] == "ui_sd15" and len(ui_result["images"]) == 1
+          and submitted_ui is not None
+          and submitted_ui["3"]["class_type"] == "KSampler",
+          (ui_result.get("template"), len(ui_result.get("images") or [])))
+    (plugin.user_template_dir / "ui_sd15.json").unlink()
+    plugin._load_templates()
 
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）
