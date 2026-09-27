@@ -3732,6 +3732,87 @@ def main() -> int:
     check("切回中文后恢复", plugin.t.locale == "zh-CN"
           and plugin.t("ui.nav.server") == "服务器", plugin.t("ui.nav.server"))
 
+    print("\n=== 真机实测发现的两个修复（v0.15.1）===")
+    # 1) 局部重绘默认 denoise 必须整段重画：不能被 i2i.denoise（0.6）顶掉
+    plugin.config["i2i"] = {"enable": True, "denoise": 0.6, "max_side": 1536, "subfolder": "astrbot"}
+    plugin.config["llm_settings"] = {"enable_prompt_optimize": False}
+    plugin.config["hires"] = {"enable": False}
+    plugin.config["permission"] = {}
+    plugin.permission.reload({})
+
+    def inpaint_denoise(opts=None):
+        sess = api.aiohttp.ClientSession()
+        sess.route("GET", "/models", api.aiohttp.ClientResponse(200, payload=["checkpoints"]))
+        sess.route("GET", "/models/checkpoints", api.aiohttp.ClientResponse(
+            200, payload=["SDXL/m.safetensors"]))
+        sess.route("POST", "/upload/image", api.aiohttp.ClientResponse(
+            200, payload={"name": "in.png", "subfolder": "astrbot", "type": "input"}))
+        sess.route("POST", "/prompt", api.aiohttp.ClientResponse(200, payload={"prompt_id": "dn-1"}))
+        sess.route("GET", "/queue", api.aiohttp.ClientResponse(
+            200, payload={"queue_running": [], "queue_pending": []}))
+        sess.route("GET", "/history/dn-1", api.aiohttp.ClientResponse(200, payload={"dn-1": {
+            "status": {"status_str": "success", "completed": True},
+            "outputs": {"11": {"images": [{"filename": "x.png", "type": "output"}]}}}}))
+        sess.route("GET", "/view", api.aiohttp.ClientResponse(200, text="PNG"))
+        plugin.comfy._session = sess
+        plugin.comfy.invalidate_model_cache()
+        asyncio.run(plugin.generate(
+            user_desc="改成红裙子", opts=opts or {}, event=None,
+            source_image=str(png_path), mask_image=str(png_path), force_purpose="inpaint",
+        ))
+        for method, path, kw in sess.calls:
+            if method == "POST" and path == "/prompt":
+                return kw["json"]["prompt"]["9"]["inputs"]["denoise"]
+        return None
+
+    check("局部重绘默认整段重画（denoise=1.0，不再被 i2i.denoise 顶成 0.6）",
+          inpaint_denoise() == 1.0, inpaint_denoise())
+    check("显式给了 --denoise 仍然尊重（想保守重绘也行）",
+          inpaint_denoise({"denoise": "0.7"}) == 0.7, inpaint_denoise({"denoise": "0.7"}))
+    check("图生图仍然沿用配置里的重绘幅度（没被这次改动带跑）",
+          asyncio.run(plugin.generate(
+              user_desc="改成冬天", opts={}, event=None, source_image=str(png_path)
+          )) is not None, True)
+
+    # 2) 没有视频权重时：直接说「缺视频底模」，而不是把 checkpoint 塞进 UNETLoader
+    only_images = {"sd_checkpoint": plugin.templates["sd_checkpoint"],
+                   "img2img_checkpoint": plugin.templates["img2img_checkpoint"]}
+    picked_t2v, _arch = wt.pick_template(
+        only_images, model_name="3Guofeng3_v34.safetensors", model_folder="checkpoints",
+        purpose="t2v",
+    )
+    picked_i2v, _arch2 = wt.pick_template(
+        only_images, model_name="3Guofeng3_v34.safetensors", model_folder="checkpoints",
+        purpose="i2v",
+    )
+    check("视频用途不再把 checkpoint 硬套进「分离权重」模板（否则报错看不懂）",
+          picked_t2v is None and picked_i2v is None, (picked_t2v, picked_i2v))
+
+    def t2v_error():
+        sess = api.aiohttp.ClientSession()
+        sess.route("GET", "/models", api.aiohttp.ClientResponse(200, payload=["checkpoints"]))
+        sess.route("GET", "/models/checkpoints", api.aiohttp.ClientResponse(
+            200, payload=["3Guofeng3_v34.safetensors"]))
+        sess.route("GET", "/queue", api.aiohttp.ClientResponse(
+            200, payload={"queue_running": [], "queue_pending": []}))
+        plugin.comfy._session = sess
+        plugin.comfy.invalidate_model_cache()
+        saved = dict(plugin.templates)
+        plugin.templates.pop("wan_t2v", None)   # 模拟这台机器没有可用的视频模板
+        try:
+            asyncio.run(plugin.generate(user_desc="a cat", opts={}, event=None,
+                                        force_purpose="t2v"))
+            return ""
+        except Exception as e:
+            return str(e)
+        finally:
+            plugin.templates.clear()
+            plugin.templates.update(saved)
+
+    msg = t2v_error()
+    check("没装视频权重时给出可操作的报错（提到 diffusion_models / 视频权重）",
+          "文生视频" in msg and "diffusion_models" in msg, msg[:120])
+
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）
     field_re = _re.compile(

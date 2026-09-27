@@ -1435,6 +1435,12 @@ def pick_template(
         return None, guess_arch(model_name, arch_override)
     pool = [t for t in (by_purpose or templates.values()) if t.loader == want_loader]
     if not pool:
+        if purpose in ("t2v", "i2v"):
+            # 视频模板只有「分离权重（unet）」这一种形态。若模型来自 checkpoints，
+            # 硬套会把 checkpoint 名写进 UNETLoader，报错是「unet_name 取值 xxx 不存在」——
+            # 完全看不出真正的原因（没装视频权重）。这里直接判为「没有可用模板」，
+            # 由调用方给出「去 diffusion_models 放视频权重」的可操作提示。
+            return None, arch
         pool = list(by_purpose or templates.values())
     # 架构兼容：不允许把 Flux 模板用在 SD 模型上（反之亦然）
     compatible = [t for t in pool if is_compatible(t, arch)]

@@ -37,7 +37,7 @@ from .workflow_templates import (
 
 PLUGIN_NAME = "astrbot_plugin_comfyui_smart"
 # 与 metadata.yaml 的 version 保持一致（tests/test_logic.py 会校验二者不漂移）
-PLUGIN_VERSION = "0.15.0"
+PLUGIN_VERSION = "0.15.1"
 PLUGIN_DIR = Path(__file__).resolve().parent
 BUILTIN_TEMPLATE_DIR = PLUGIN_DIR / "workflows"
 
@@ -646,6 +646,9 @@ class ComfyUISmartPlugin(Star):
                     "支持（UNETLoader / CLIPLoader / VAELoader / WanFirstLastFrameToVideo / "
                     "ModelSamplingSD3 / SaveWEBM）与 Wan I2V 权重。用别的视频模型时，"
                     "请把对应的 API 格式工作流放进模板目录并声明 \"purpose\": \"i2v\""
+
+                    "（另一个常见原因是：diffusion_models 里没有视频权重，"
+                    "插件就只能拿到 checkpoints 里的图片底模，套不进「分离权重」模板）"
                 )
             if purpose == "t2v":
                 raise ComfyUIError(
@@ -653,6 +656,9 @@ class ComfyUISmartPlugin(Star):
                     "（UNETLoader / CLIPLoader / VAELoader / EmptyHunyuanLatentVideo / "
                     "ModelSamplingSD3 / SaveWEBM）。如果你的视频模型是别的家族，"
                     "请把对应的 API 格式工作流放进模板目录并声明 \"purpose\": \"t2v\""
+
+                    "（另一个常见原因是：diffusion_models 里没有视频权重，"
+                    "插件就只能拿到 checkpoints 里的图片底模，套不进「分离权重」模板）"
                 )
             if folder == "diffusion_models" and arch != "flux":
                 raise ComfyUIError(
@@ -952,10 +958,16 @@ class ComfyUISmartPlugin(Star):
             )
         if purpose in ("i2i", "inpaint"):
             i2i_conf = self.config.get("i2i", {}) or {}
-            try:
-                denoise = float(i2i_conf.get("denoise", 0.6) or 0.6)
-            except (TypeError, ValueError):
-                denoise = 0.6
+            if purpose == "inpaint":
+                # 局部重绘靠遮罩保住其余像素，默认**整段重画**（denoise=1.0）。
+                # 注意别再回落到 i2i.denoise（那是图生图的幅度）：真机实测过这个坑，
+                # denoise 被顶成 0.6 后遮罩里几乎没变，看起来像「涂抹没生效」。
+                denoise = 1.0
+            else:
+                try:
+                    denoise = float(i2i_conf.get("denoise", 0.6) or 0.6)
+                except (TypeError, ValueError):
+                    denoise = 0.6
             if opts.get("denoise") not in (None, ""):
                 try:
                     denoise = min(1.0, max(0.05, float(opts["denoise"])))
@@ -971,9 +983,6 @@ class ComfyUISmartPlugin(Star):
                     source_size[0], source_size[1], max_side
                 )
             if purpose == "inpaint":
-                # 默认整段重画遮罩区域（靠遮罩保住其余像素，而不是靠低重绘幅度）
-                if denoise is None:
-                    denoise = 1.0
                 inpaint_info = {
                     "mask": mask_ref,
                     "source": source_size or (0, 0),
