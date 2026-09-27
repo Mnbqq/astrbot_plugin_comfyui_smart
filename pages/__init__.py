@@ -68,6 +68,21 @@ def register_pages_routes(plugin) -> bool:
     async def get_stats():
         return json_response(plugin.storage.load_stats())
 
+    async def run_inpaint():
+        """局部重绘：配置页涂好遮罩后调这里跑一次。"""
+        payload = await request.json(default={})
+        if not isinstance(payload, dict):
+            return error_response("请求体必须是 JSON 对象", status_code=400)
+        try:
+            result = await plugin.inpaint(payload)
+        except ValueError as e:
+            # 请求本身不合法（缺图、尺寸不一致、太大）：400，由页面直接展示
+            return error_response(str(e), status_code=400)
+        except Exception as e:
+            logger.warning("[ComfyUI] 局部重绘失败：%s", e)
+            return error_response(f"局部重绘失败：{e}", status_code=502)
+        return json_response(result)
+
     async def clear_stats():
         await plugin.storage.clear_stats()
         return json_response({"cleared": True})
@@ -89,6 +104,7 @@ def register_pages_routes(plugin) -> bool:
         (f"/{PLUGIN_NAME}/templates", get_templates, ["GET"], "读取工作流模板"),
         (f"/{PLUGIN_NAME}/status", get_status, ["GET"], "读取 ComfyUI 状态"),
         (f"/{PLUGIN_NAME}/stats", get_stats, ["GET"], "读取统计"),
+        (f"/{PLUGIN_NAME}/inpaint", run_inpaint, ["POST"], "局部重绘（涂抹遮罩）"),
         (f"/{PLUGIN_NAME}/stats/clear", clear_stats, ["POST"], "清空统计"),
         (f"/{PLUGIN_NAME}/images/<filename>", get_image, ["GET"], "读取生成的图片"),
     )

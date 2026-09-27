@@ -969,3 +969,17 @@ textarea.input-modern {
   padding: 1px 5px;
   font-size: 11.5px;
 }
+
+
+/* 局部重绘：涂抹画布 */
+.inpaint-stage { margin: 12px 0; }
+.inpaint-canvas {
+  max-width: 100%;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #111;
+  cursor: crosshair;
+  touch-action: none;
+}
+.inpaint-hidden { display: none; }
+.row-actions { display: flex; gap: 10px; flex-wrap: wrap; margin: 8px 0 4px; }

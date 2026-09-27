@@ -1,0 +1,82 @@
+{
+  "name": "inpaint_checkpoint",
+  "purpose": "inpaint",
+  "arch": "generic",
+  "loader": "checkpoint",
+  "description": "局部重绘（inpaint）：只重画你涂抹的那块区域。用 LoadImageMask 读白底黑字的遮罩（白=重画），GrowMask 把遮罩往外扩一点让接缝更自然，SetLatentNoiseMask 保证遮罩外一个像素都不动。全部是 ComfyUI 自带节点，不需要额外模型。",
+  "bindings": {
+    "image_loader": { "node": "4" },
+    "mask_loader": { "node": "5" }
+  },
+  "params": {
+    "expand": "7"
+  },
+  "graph": {
+    "1": {
+      "class_type": "CheckpointLoaderSimple",
+      "_meta": { "title": "底模 Checkpoint" },
+      "inputs": { "ckpt_name": "put_your_checkpoint_here.safetensors" }
+    },
+    "2": {
+      "class_type": "CLIPTextEncode",
+      "_meta": { "title": "正面提示词" },
+      "inputs": { "text": "", "clip": ["1", 1] }
+    },
+    "3": {
+      "class_type": "CLIPTextEncode",
+      "_meta": { "title": "负面提示词" },
+      "inputs": { "text": "", "clip": ["1", 1] }
+    },
+    "4": {
+      "class_type": "LoadImage",
+      "_meta": { "title": "输入图片" },
+      "inputs": { "image": "astrbot/placeholder.png" }
+    },
+    "5": {
+      "class_type": "LoadImageMask",
+      "_meta": { "title": "涂抹遮罩（白=重画）" },
+      "inputs": { "image": "astrbot/placeholder_mask.png", "channel": "red" }
+    },
+    "6": {
+      "class_type": "VAEEncode",
+      "_meta": { "title": "编码为潜空间" },
+      "inputs": { "pixels": ["4", 0], "vae": ["1", 2] }
+    },
+    "7": {
+      "class_type": "GrowMask",
+      "_meta": { "title": "遮罩外扩" },
+      "inputs": { "mask": ["5", 0], "expand": 6, "tapered_corners": true }
+    },
+    "8": {
+      "class_type": "SetLatentNoiseMask",
+      "_meta": { "title": "只重画遮罩内（局部重绘）" },
+      "inputs": { "samples": ["6", 0], "mask": ["7", 0] }
+    },
+    "9": {
+      "class_type": "KSampler",
+      "_meta": { "title": "采样器" },
+      "inputs": {
+        "model": ["1", 0],
+        "seed": 0,
+        "steps": 25,
+        "cfg": 7.0,
+        "sampler_name": "dpmpp_2m",
+        "scheduler": "karras",
+        "positive": ["2", 0],
+        "negative": ["3", 0],
+        "latent_image": ["8", 0],
+        "denoise": 1.0
+      }
+    },
+    "10": {
+      "class_type": "VAEDecode",
+      "_meta": { "title": "VAE 解码" },
+      "inputs": { "samples": ["9", 0], "vae": ["1", 2] }
+    },
+    "11": {
+      "class_type": "SaveImage",
+      "_meta": { "title": "保存图片" },
+      "inputs": { "images": ["10", 0], "filename_prefix": "astrbot_smart_inpaint" }
+    }
+  }
+}

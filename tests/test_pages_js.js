@@ -31,13 +31,55 @@ function check(label, ok, extra) {
 }
 
 /* ---------- 最小 DOM 桩 ---------- */
+function makeCanvasContext(canvas) {
+  const ctx = {
+    canvas,
+    calls: [],
+    fillStyle: '',
+    strokeStyle: '',
+    lineWidth: 1,
+    lineCap: '',
+    lineJoin: '',
+    globalAlpha: 1,
+    globalCompositeOperation: 'source-over',
+    clearRect(...a) { ctx.calls.push(['clearRect', ...a]); },
+    fillRect(...a) { ctx.calls.push(['fillRect', ...a]); },
+    drawImage(...a) { ctx.calls.push(['drawImage', ...a]); },
+    beginPath() { ctx.calls.push(['beginPath']); },
+    moveTo(...a) { ctx.calls.push(['moveTo', ...a]); },
+    lineTo(...a) { ctx.calls.push(['lineTo', ...a]); },
+    stroke() { ctx.calls.push(['stroke', ctx.strokeStyle]); },
+    arc(...a) { ctx.calls.push(['arc', ...a]); },
+    fill() { ctx.calls.push(['fill', ctx.fillStyle]); },
+    getImageData(x, y, w, h) { return { data: new Uint8ClampedArray(w * h * 4) }; },
+    putImageData() {},
+  };
+  return ctx;
+}
+
 function makeElement(tag) {
   const el = {
     tagName: tag || 'div',
+    width: 0,
+    height: 0,
+    _handlers: {},
+    _dataUrl: '',
+    _ctx: null,
+    getContext() {
+      if (!this._ctx) this._ctx = makeCanvasContext(this);
+      return this._ctx;
+    },
+    toDataURL() {
+      return this._dataUrl || ('data:image/png;base64,CANVAS' + this.width + 'x' + this.height);
+    },
+    getBoundingClientRect() {
+      return { left: 0, top: 0, width: this.width || 100, height: this.height || 100 };
+    },
     children: [],
     attrs: {},
     _html: '',
     value: '',
+    files: [],
     checked: false,
     hidden: false,
     disabled: false,
@@ -52,8 +94,14 @@ function makeElement(tag) {
       toggle(c, on) { if (on) { this._set.add(c); } else { this._set.delete(c); } },
       contains(c) { return this._set.has(c); },
     },
-    addEventListener() {},
+    addEventListener(type, fn) {
+      this._handlers = this._handlers || {};
+      (this._handlers[type] = this._handlers[type] || []).push(fn);
+    },
     removeEventListener() {},
+    dispatch(type, event) {
+      ((this._handlers || {})[type] || []).forEach((fn) => fn(event || {}));
+    },
     setAttribute(k, v) { this.attrs[k] = String(v); },
     getAttribute(k) { return Object.prototype.hasOwnProperty.call(this.attrs, k) ? this.attrs[k] : null; },
     removeAttribute(k) { delete this.attrs[k]; },
@@ -127,11 +175,39 @@ const bridge = {
     if (endpoint === 'templates') return { templates: [] };
     return {};
   },
-  async apiPost() { return { ok: true }; },
+  async apiPost(endpoint, payload) {
+    bridge.posted.push([endpoint, payload]);
+    if (endpoint === 'inpaint') {
+      return { ok: true, image: 'images/inpaint-1.png', template: 'inpaint_checkpoint',
+               seed: 4242, seconds: 8.5, width: 512, height: 512 };
+    }
+    return { ok: true };
+  },
+  posted: [],
 };
+
+/* 文件与图片桩：inpaintLoadFile 走的是真实代码路径（FileReader + Image） */
+const imageStub = { width: 3000, height: 2000 };
+class FileReaderStub {
+  readAsDataURL() {
+    this.result = 'data:image/png;base64,ORIGINAL';
+    setTimeout(() => { if (this.onload) this.onload(); }, 0);
+  }
+}
+class ImageStub {
+  constructor() {
+    this.naturalWidth = imageStub.width;
+    this.naturalHeight = imageStub.height;
+  }
+  set src(value) { this._src = value; setTimeout(() => { if (this.onload) this.onload(); }, 0); }
+  get src() { return this._src; }
+}
 
 const sandbox = {
   window: { AstrBotPluginPage: bridge, location: { origin: 'http://localhost' }, addEventListener() {} },
+  FileReader: FileReaderStub,
+  Image: ImageStub,
+  Uint8ClampedArray,
   document: documentStub,
   navigator: {},              // 故意不给 clipboard：验证复制会退化为 execCommand
   console,
@@ -192,6 +268,71 @@ vm.runInContext(source, sandbox, { filename: 'app.js' });
         getEl('modal-positive').value === 'old prompt'
         && getEl('modal-negative').value === 'old negative',
         getEl('modal-positive').value);
+
+  console.log('\n=== 局部重绘：涂抹遮罩 ===');
+
+  await vm.runInContext("inpaintLoadFile({ name: 'x.png' })", sandbox);
+  check('加载图片后按最长边上限缩小画布（3000x2000 → 1536x1024）',
+        getEl('inpaint_canvas').width === 1536 && getEl('inpaint_canvas').height === 1024,
+        [getEl('inpaint_canvas').width, getEl('inpaint_canvas').height]);
+  check('原图与遮罩画布尺寸一致（后端会校验）',
+        getEl('inpaint_source').width === getEl('inpaint_mask').width
+        && getEl('inpaint_source').height === getEl('inpaint_mask').height,
+        [getEl('inpaint_source').width, getEl('inpaint_mask').width]);
+  check('还没涂任何东西时不能提交（payload 为 null）',
+        vm.runInContext('inpaintPayload()', sandbox) === null);
+
+  // 指针事件：按下 → 移动 → 抬起
+  const canvasEl = getEl('inpaint_canvas');
+  const maskCtx = getEl('inpaint_mask').getContext('2d');
+  canvasEl.dispatch('pointerdown', { clientX: 10, clientY: 10, preventDefault() {} });
+  canvasEl.dispatch('pointermove', { clientX: 60, clientY: 40 });
+  canvasEl.dispatch('pointerup', {});
+  const strokes = maskCtx.calls.filter((c) => c[0] === 'stroke');
+  check('涂抹会在遮罩上画白线（白=要重画）',
+        strokes.length >= 1 && strokes.every((c) => c[1] === '#fff'), strokes.slice(0, 3));
+  check('抬起后不再继续画（pointerup 生效）',
+        (() => {
+          const before = maskCtx.calls.length;
+          canvasEl.dispatch('pointermove', { clientX: 200, clientY: 200 });
+          return maskCtx.calls.length === before;
+        })());
+  check('展示层画了原图与红色叠层',
+        getEl('inpaint_canvas').getContext('2d').calls.some((c) => c[0] === 'drawImage'),
+        getEl('inpaint_canvas').getContext('2d').calls.length);
+
+  // 表单里的默认值：真实页面来自 HTML 的 value 属性，桩里手动给上
+  getEl('inpaint_denoise').value = '0.8';
+  getEl('inpaint_grow').value = '6';
+  const payload = vm.runInContext('inpaintPayload()', sandbox);
+  check('payload 带上原图与遮罩两张 PNG',
+        !!payload && payload.image.indexOf('data:image/png') === 0
+        && payload.mask.indexOf('data:image/png') === 0, payload && [payload.image.slice(0, 20), payload.mask.slice(0, 20)]);
+  check('payload 带上画笔之外的参数（重绘幅度 / 遮罩外扩）',
+        !!payload && payload.denoise === '0.8' && payload.grow === '6',
+        payload && [payload.denoise, payload.grow]);
+
+  // 橡皮：涂黑 = 不重画
+  vm.runInContext('inpaintState.erase = true', sandbox);
+  canvasEl.dispatch('pointerdown', { clientX: 20, clientY: 20, preventDefault() {} });
+  canvasEl.dispatch('pointerup', {});
+  check('橡皮在遮罩上画黑（黑=保留）',
+        maskCtx.calls.filter((c) => c[0] === 'stroke').slice(-1)[0][1] === '#000',
+        maskCtx.calls.filter((c) => c[0] === 'stroke').slice(-1)[0]);
+  vm.runInContext('inpaintState.erase = false', sandbox);
+
+  await vm.runInContext('inpaintRun()', sandbox);
+  const posted = bridge.posted.filter((item) => item[0] === 'inpaint');
+  check('点了重绘会 POST /inpaint',
+        posted.length === 1 && posted[0][1].mask.indexOf('data:image/png') === 0,
+        posted.length);
+  check('结果区渲染出返回的图片',
+        getEl('inpaint_result').innerHTML.includes('/api/v1/plugins/extensions/')
+        && getEl('inpaint_result').innerHTML.includes('images/inpaint-1.png'),
+        getEl('inpaint_result').innerHTML.slice(0, 120));
+  check('清空遮罩后又不允许提交了',
+        vm.runInContext('inpaintClearMask()', sandbox) === true
+        && vm.runInContext('inpaintPayload()', sandbox) === null);
 
   console.log('\n=== 复制与关闭 ===');
   await vm.runInContext("copyField('modal-positive', '正向提示词')", sandbox);

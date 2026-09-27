@@ -50,9 +50,12 @@ TITLE_HINTS = {
 # 各角色对应的默认输入键（模板清单里省略 input 时按此推断）
 ROLE_DEFAULT_INPUT = {
     "lora_loader": "lora_name",
+    "mask_loader": "image",
+    "image_loader": "image",
 }
 # 这些角色的绑定形态是 (节点id, 输入键)
-KEYED_ROLES = ("positive", "negative", "model_loader", "vae_loader", "lora_loader")
+KEYED_ROLES = ("positive", "negative", "model_loader", "vae_loader", "lora_loader",
+               "mask_loader", "image_loader")
 # 这些角色的绑定形态只有一个节点 id
 NODE_ROLES = ("sampler", "latent", "save", "guidance")
 
@@ -386,6 +389,7 @@ def _derive_bindings(graph: dict) -> dict:
         "save": None,
         "guidance": None,
         "image_loader": None,
+        "mask_loader": None,
         "scaler": None,
     }
 
@@ -414,6 +418,10 @@ def _derive_bindings(graph: dict) -> dict:
             bindings["save"] = node_id
         elif class_type == "FluxGuidance" and bindings["guidance"] is None:
             bindings["guidance"] = node_id
+        elif class_type == "LoadImageMask" and bindings["mask_loader"] is None:
+            # 局部重绘的遮罩：LoadImageMask 也吃一个 image 输入，但它输出的是 MASK，
+            # 所以先认成 mask_loader，别和输入图（LoadImage）抢同一个角色
+            bindings["mask_loader"] = (node_id, "image")
         elif class_type in IMAGE_LOADER_CLASSES and bindings["image_loader"] is None:
             bindings["image_loader"] = (node_id, "image")
         elif class_type in SCALER_CLASSES and bindings["scaler"] is None:
@@ -715,6 +723,7 @@ class WorkflowTemplate:
         guidance: float | None = None,
         filename_prefix: str = "astrbot_smart",
         image_name: str = "",
+        mask_name: str = "",
         params: dict | None = None,
     ) -> dict:
         """按模板生成可直接提交的图。
@@ -738,6 +747,7 @@ class WorkflowTemplate:
             guidance: Flux guidance 值。
             filename_prefix: 输出文件名前缀。
             image_name: 图生图的输入图引用（ComfyUI input 目录下的相对路径）。
+            mask_name: 局部重绘的遮罩图引用（白=要重画，黑=保留；用 LoadImageMask 读取）。
             params: 模板声明的参数（如扩图的 left/top/right/bottom/feathering）。
                 只写**模板 params 段声明过**的键：模板已经声明了「哪个节点上有这个输入」，
                 插件不会凭空往节点上塞字段。
@@ -807,17 +817,33 @@ class WorkflowTemplate:
         if image_name and b["image_loader"]:
             loader_id, loader_key = b["image_loader"]
             graph[loader_id]["inputs"][loader_key] = image_name
+        # 7.6) 局部重绘的遮罩图（LoadImageMask）
+        if mask_name and b["mask_loader"]:
+            mask_id, mask_key = b["mask_loader"]
+            graph[mask_id]["inputs"][mask_key] = mask_name
         # 8) 输出前缀
         if b["save"] and "filename_prefix" in graph[b["save"]]["inputs"]:
             graph[b["save"]]["inputs"]["filename_prefix"] = filename_prefix
-        # 9) 模板声明的参数（扩图/局部重绘这类工作流的左右上下、羽化等）
+        # 9) 模板声明的参数（扩图/局部重绘这类工作流的左右上下、羽化、遮罩外扩等）
         for key, value in (params or {}).items():
             node_id = self.params.get(key)
             if not node_id or value is None:
                 continue
             inputs = graph[node_id]["inputs"]
-            if key in inputs:
+            if key not in inputs:
+                continue
+            # 按模板里原有值的类型写入：写错类型会被 ComfyUI 以 invalid_input_type 拒绝
+            current = inputs[key]
+            if isinstance(value, bool) or isinstance(current, bool):
+                inputs[key] = bool(value)
+            elif isinstance(current, int):
                 inputs[key] = int(value)
+            elif isinstance(current, float):
+                inputs[key] = float(value)
+            elif isinstance(value, str):
+                inputs[key] = value
+            else:
+                inputs[key] = str(value)
         return graph
 
 
@@ -1295,9 +1321,9 @@ def pick_template(
     arch = guess_arch(model_name, arch_override)
     want_loader = "unet" if model_folder == "diffusion_models" else "checkpoint"
 
-    # 先按用途筛：图生图/扩图不能拿到文生图模板（三者节点结构不同）
+    # 先按用途筛：图生图/扩图/局部重绘不能拿到文生图模板（四者节点结构不同）
     by_purpose = [t for t in templates.values() if t.purpose == purpose]
-    if not by_purpose and purpose in ("i2i", "outpaint"):
+    if not by_purpose and purpose in ("i2i", "outpaint", "inpaint"):
         return None, guess_arch(model_name, arch_override)
     pool = [t for t in (by_purpose or templates.values()) if t.loader == want_loader]
     if not pool:

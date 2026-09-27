@@ -76,6 +76,8 @@ const FIELDS = [
 ];
 
 let dirty = false;
+/* 最近一次读到的配置：局部重绘画布按 i2i.max_side 缩放，和聊天里的行为一致 */
+let formConfig = {};
 /* 画廊条目：供详情弹窗使用 */
 let galleryItems = [];
 
@@ -169,6 +171,7 @@ async function loadConfig() {
   try {
     const data = await bridge.apiGet('config');
     const config = (data && data.config) ? data.config : (data || {});
+    formConfig = config || {};
     fillForm(config);
     dirty = false;
     setSaveState('配置已同步', false);
@@ -199,6 +202,283 @@ function esc(value) {
   return String(value == null ? '' : value).replace(/[&<>"']/g, (m) => (
     { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]
   ));
+}
+
+function imageUrl(ref) {
+  return '/api/v1/plugins/extensions/' + PLUGIN_NAME + '/' + String(ref || '');
+}
+
+/* ============================================================
+ * 局部重绘（涂抹遮罩）
+ *
+ * 三个画布分工，避免「橡皮擦不掉红色」这类问题：
+ *   #inpaint_source  原图（按最长边上限等比缩小，尺寸对齐 8）—— 提交时导出为原图
+ *   #inpaint_mask    遮罩（黑底白笔，白=重画）—— 提交时导出为遮罩，channel=red
+ *   #inpaint_canvas  展示层：原图 + 半透明红色叠层（叠层由 mask 现场合成）
+ * 原图与遮罩尺寸必然一致，因为它们来自同一组画布。
+ * ============================================================ */
+const INPAINT_DEFAULT_MAX_SIDE = 1536;
+const inpaintState = {
+  image: null,        // 已加载的 Image 对象（重绘展示层用）
+  loaded: false,
+  drawing: false,
+  erase: false,
+  strokes: 0,
+  last: null,
+  overlay: null,
+};
+
+function inpaintEls() {
+  return {
+    source: document.getElementById('inpaint_source'),
+    canvas: document.getElementById('inpaint_canvas'),
+    mask: document.getElementById('inpaint_mask'),
+    file: document.getElementById('inpaint_file'),
+    brush: document.getElementById('inpaint_brush'),
+    erase: document.getElementById('inpaint_erase'),
+    clear: document.getElementById('inpaint_clear'),
+    run: document.getElementById('inpaint_run'),
+    prompt: document.getElementById('inpaint_prompt'),
+    denoise: document.getElementById('inpaint_denoise'),
+    grow: document.getElementById('inpaint_grow'),
+    result: document.getElementById('inpaint_result'),
+  };
+}
+
+function inpaintTargetSize(width, height) {
+  const maxSide = (formConfig && formConfig.i2i && Number(formConfig.i2i.max_side))
+    || INPAINT_DEFAULT_MAX_SIDE;
+  let w = Math.max(8, Math.round(Number(width) || 0));
+  let h = Math.max(8, Math.round(Number(height) || 0));
+  if (maxSide > 0 && Math.max(w, h) > maxSide) {
+    const ratio = maxSide / Math.max(w, h);
+    w = Math.max(8, Math.round(w * ratio));
+    h = Math.max(8, Math.round(h * ratio));
+  }
+  const align = (v) => Math.max(8, Math.round(v / 8) * 8);
+  return { width: align(w), height: align(h) };
+}
+
+function inpaintOverlay(els) {
+  if (!els.canvas) return null;
+  if (!inpaintState.overlay) {
+    const created = document.createElement('canvas');
+    if (!created || typeof created.getContext !== 'function') return null;
+    inpaintState.overlay = created;
+  }
+  inpaintState.overlay.width = els.canvas.width;
+  inpaintState.overlay.height = els.canvas.height;
+  return inpaintState.overlay;
+}
+
+function inpaintSetImage(dataUrl, width, height, image) {
+  const els = inpaintEls();
+  if (!els.canvas || !els.mask || !els.source) return false;
+  const size = inpaintTargetSize(width, height);
+  [els.source, els.canvas, els.mask].forEach((canvas) => {
+    canvas.width = size.width;
+    canvas.height = size.height;
+  });
+  const sctx = els.source.getContext('2d');
+  sctx.clearRect(0, 0, size.width, size.height);
+  if (image) sctx.drawImage(image, 0, 0, size.width, size.height);
+  const mctx = els.mask.getContext('2d');
+  mctx.fillStyle = '#000';
+  mctx.fillRect(0, 0, size.width, size.height);
+  inpaintState.image = image || null;
+  inpaintState.sourceUrl = dataUrl || '';
+  inpaintState.loaded = true;
+  inpaintState.strokes = 0;
+  inpaintState.last = null;
+  inpaintState.erase = false;
+  inpaintRender();
+  inpaintSyncButtons();
+  return true;
+}
+
+function inpaintRender() {
+  const els = inpaintEls();
+  if (!els.canvas) return;
+  const ctx = els.canvas.getContext('2d');
+  ctx.clearRect(0, 0, els.canvas.width, els.canvas.height);
+  if (inpaintState.image) {
+    ctx.drawImage(inpaintState.image, 0, 0, els.canvas.width, els.canvas.height);
+  }
+  const overlay = inpaintOverlay(els);
+  if (!overlay || !els.mask) return;
+  const octx = overlay.getContext('2d');
+  octx.globalCompositeOperation = 'source-over';
+  octx.clearRect(0, 0, overlay.width, overlay.height);
+  octx.fillStyle = 'rgba(255, 64, 64, 1)';
+  octx.fillRect(0, 0, overlay.width, overlay.height);
+  octx.globalCompositeOperation = 'destination-in';
+  octx.drawImage(els.mask, 0, 0);
+  octx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 0.55;
+  ctx.drawImage(overlay, 0, 0);
+  ctx.globalAlpha = 1;
+}
+
+function inpaintPoint(ev) {
+  const els = inpaintEls();
+  const canvas = els.canvas;
+  const rect = (canvas && typeof canvas.getBoundingClientRect === 'function')
+    ? canvas.getBoundingClientRect()
+    : { left: 0, top: 0, width: canvas ? canvas.width : 1, height: canvas ? canvas.height : 1 };
+  const scaleX = canvas.width / (rect.width || canvas.width || 1);
+  const scaleY = canvas.height / (rect.height || canvas.height || 1);
+  return {
+    x: ((ev.clientX || 0) - (rect.left || 0)) * scaleX,
+    y: ((ev.clientY || 0) - (rect.top || 0)) * scaleY,
+  };
+}
+
+function inpaintPaint(from, to) {
+  const els = inpaintEls();
+  if (!els.mask || !inpaintState.loaded) return false;
+  const size = Number(els.brush && els.brush.value) || 48;
+  const brush = Math.max(2, size);
+  const color = inpaintState.erase ? '#000' : '#fff';
+  const mctx = els.mask.getContext('2d');
+  mctx.strokeStyle = color;
+  mctx.fillStyle = color;
+  mctx.lineWidth = brush;
+  mctx.lineCap = 'round';
+  mctx.lineJoin = 'round';
+  mctx.beginPath();
+  mctx.moveTo(from.x, from.y);
+  mctx.lineTo(to.x, to.y);
+  mctx.stroke();
+  if (from.x === to.x && from.y === to.y) {
+    mctx.beginPath();
+    mctx.arc(to.x, to.y, brush / 2, 0, Math.PI * 2);
+    mctx.fill();
+  }
+  if (!inpaintState.erase) inpaintState.strokes += 1;
+  inpaintRender();
+  inpaintSyncButtons();
+  return true;
+}
+
+function inpaintSyncButtons() {
+  const els = inpaintEls();
+  if (els.erase) els.erase.textContent = inpaintState.erase ? '橡皮（点击切回画笔）' : '画笔（点击切橡皮）';
+  if (els.clear) els.clear.disabled = !inpaintState.loaded;
+  if (els.run) els.run.disabled = !inpaintState.loaded || !inpaintState.strokes;
+}
+
+function inpaintClearMask() {
+  const els = inpaintEls();
+  if (!els.mask) return false;
+  const mctx = els.mask.getContext('2d');
+  mctx.fillStyle = '#000';
+  mctx.fillRect(0, 0, els.mask.width, els.mask.height);
+  inpaintState.strokes = 0;
+  inpaintState.last = null;
+  inpaintRender();
+  inpaintSyncButtons();
+  return true;
+}
+
+function inpaintPayload() {
+  const els = inpaintEls();
+  if (!inpaintState.loaded || !els.source || !els.mask) return null;
+  if (!inpaintState.strokes) return null;   // 一笔都没涂：不发请求，免得白跑一次
+  return {
+    image: els.source.toDataURL('image/png'),
+    mask: els.mask.toDataURL('image/png'),
+    prompt: els.prompt && els.prompt.value ? String(els.prompt.value).trim() : '',
+    denoise: els.denoise ? String(els.denoise.value || '1') : '1',
+    grow: els.grow ? String(els.grow.value || '0') : '0',
+  };
+}
+
+function inpaintLoadFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = String(reader.result || '');
+      const image = new Image();
+      image.onload = () => {
+        resolve(inpaintSetImage(
+          dataUrl,
+          image.naturalWidth || image.width,
+          image.naturalHeight || image.height,
+          image,
+        ));
+      };
+      image.onerror = () => reject(new Error('图片解码失败'));
+      image.src = dataUrl;
+    };
+    reader.onerror = () => reject(new Error('文件读取失败'));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function inpaintRun() {
+  const els = inpaintEls();
+  if (!inpaintState.loaded) { toast('先选一张图片', 'error'); return null; }
+  if (!inpaintState.strokes) { toast('先用画笔涂出要重画的区域', 'error'); return null; }
+  const payload = inpaintPayload();
+  if (!payload) { toast('遮罩是空的', 'error'); return null; }
+  if (els.run) els.run.disabled = true;
+  if (els.result) els.result.innerHTML = '<p class="muted">重绘中…（通常十几秒到一分钟）</p>';
+  try {
+    const data = await bridge.apiPost('inpaint', payload);
+    if (els.result) {
+      els.result.innerHTML = '<p class="muted">完成：' + esc(data.template || '')
+        + ' · seed ' + esc(data.seed) + ' · ' + esc(Math.round(Number(data.seconds) || 0)) + ' 秒</p>'
+        + '<figure class="gallery-item"><img src="' + esc(imageUrl(data.image)) + '" alt="" /></figure>';
+    }
+    toast('局部重绘完成', 'success');
+    return data;
+  } catch (error) {
+    if (els.result) {
+      els.result.innerHTML = '<p class="muted">局部重绘失败：' + esc(error.message) + '</p>';
+    }
+    toast('局部重绘失败：' + error.message, 'error');
+    return null;
+  } finally {
+    if (els.run) els.run.disabled = false;
+    inpaintSyncButtons();
+  }
+}
+
+function initInpaint() {
+  const els = inpaintEls();
+  if (!els.canvas || typeof els.canvas.addEventListener !== 'function') return false;
+  els.canvas.addEventListener('pointerdown', (ev) => {
+    if (!inpaintState.loaded) return;
+    inpaintState.drawing = true;
+    const point = inpaintPoint(ev);
+    inpaintState.last = point;
+    inpaintPaint(point, point);
+    if (typeof ev.preventDefault === 'function') ev.preventDefault();
+  });
+  els.canvas.addEventListener('pointermove', (ev) => {
+    if (!inpaintState.drawing) return;
+    const point = inpaintPoint(ev);
+    inpaintPaint(inpaintState.last || point, point);
+    inpaintState.last = point;
+  });
+  const stop = () => { inpaintState.drawing = false; inpaintState.last = null; };
+  els.canvas.addEventListener('pointerup', stop);
+  els.canvas.addEventListener('pointercancel', stop);
+  if (els.file && typeof els.file.addEventListener === 'function') {
+    els.file.addEventListener('change', () => {
+      const file = els.file.files && els.file.files[0];
+      if (!file) return;
+      inpaintLoadFile(file).catch((error) => toast('图片加载失败：' + error.message, 'error'));
+    });
+  }
+  if (els.erase) els.erase.addEventListener('click', () => {
+    inpaintState.erase = !inpaintState.erase;
+    inpaintSyncButtons();
+  });
+  if (els.clear) els.clear.addEventListener('click', () => inpaintClearMask());
+  if (els.run) els.run.addEventListener('click', () => inpaintRun());
+  inpaintSyncButtons();
+  return true;
 }
 
 async function loadStatus() {
@@ -309,7 +589,7 @@ async function loadStats() {
 
     // 展平出画廊条目，并保留完整记录供弹窗展示
     galleryItems = records.slice(-60).reverse().flatMap((record) => (record.images || []).map((ref) => ({
-      url: '/api/v1/plugins/extensions/' + PLUGIN_NAME + '/' + ref,
+      url: imageUrl(ref),
       ref: ref,
       prompt: record.positive,
       negative: record.negative,
@@ -513,6 +793,7 @@ async function init() {
   bindTabs();
   bindEvents();
   bindModal();
+  initInpaint();
   try {
     await bridge.ready();
   } catch (error) {

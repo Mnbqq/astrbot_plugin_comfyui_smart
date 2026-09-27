@@ -1326,10 +1326,15 @@ def main() -> int:
     check("未再使用已废弃的 @register 装饰器",
           "@register(" not in (ROOT / "main.py").read_text(encoding="utf-8"))
 
+    loaded_builtin = wt.load_templates(ROOT / "workflows")
     for path in sorted((ROOT / "workflows").glob("*.json")):
         data = json.loads(path.read_text(encoding="utf-8"))
         check(f"模板 {path.stem} 内部 name 与文件名一致",
               data.get("name") == path.stem, data.get("name"))
+        # 坏模板会被 load_templates **静默跳过**：新模板写错了会表现为「插件里根本没有它」，
+        # 所以这里逐个确认「真的加载进来了」，而不是只检查文件存在。
+        check(f"模板 {path.stem} 真的被加载（绑定/params/图结构都合法）",
+              path.stem in loaded_builtin, sorted(loaded_builtin))
 
     print("\n=== 负面词归一化去重（针对真实的长负面词）===")
     check("括号写法归一为同一个键",
@@ -2696,6 +2701,146 @@ def main() -> int:
     plugin.templates["outpaint_checkpoint"] = saved_tpl
     check("缺扩图模板时报错并指出该放哪个文件",
           "outpaint_checkpoint.json" in out_op3[-1]["text"], out_op3[-1]["text"])
+
+    print("\n=== 局部重绘 inpaint（v0.10.0）===")
+    tpl_ip = wt.load_templates(ROOT / "workflows")["inpaint_checkpoint"]
+    check("内置局部重绘模板已加载，用途是 inpaint",
+          tpl_ip.purpose == "inpaint", tpl_ip.purpose)
+    check("重绘模板只用 ComfyUI 自带节点",
+          {"LoadImageMask", "GrowMask", "SetLatentNoiseMask"} <= tpl_ip.required_nodes(),
+          sorted(tpl_ip.required_nodes()))
+    check("输入图与遮罩是两个独立角色（节点不同、输入键相同）",
+          tpl_ip.bindings["image_loader"] == ("4", "image")
+          and tpl_ip.bindings["mask_loader"] == ("5", "image"),
+          (tpl_ip.bindings["image_loader"], tpl_ip.bindings["mask_loader"]))
+    check("模板声明了遮罩外扩参数", tpl_ip.params == {"expand": "7"}, tpl_ip.params)
+
+    built_ip = tpl_ip.build(
+        positive="p", negative="n", model_name="SDXL/m.safetensors",
+        width=512, height=512, steps=20, cfg=6.0, sampler="dpmpp_2m",
+        scheduler="karras", seed=7, image_name="astrbot/a.png",
+        mask_name="astrbot/m.png", params={"expand": 8},
+    )
+    check("原图写进 LoadImage", built_ip["4"]["inputs"]["image"] == "astrbot/a.png",
+          built_ip["4"]["inputs"])
+    check("遮罩写进 LoadImageMask", built_ip["5"]["inputs"]["image"] == "astrbot/m.png",
+          built_ip["5"]["inputs"])
+    check("遮罩通道走 red（白底黑字：白=重画）",
+          built_ip["5"]["inputs"]["channel"] == "red", built_ip["5"]["inputs"])
+    check("遮罩外扩按整数写入（不是字符串）",
+          built_ip["7"]["inputs"]["expand"] == 8
+          and isinstance(built_ip["7"]["inputs"]["expand"], int), built_ip["7"]["inputs"])
+    check("布尔参数保持布尔（没被 int() 挤成 1/0）",
+          built_ip["7"]["inputs"]["tapered_corners"] is True, built_ip["7"]["inputs"])
+    check("重绘语义：采样器吃的是「遮罩外扩后的潜空间」",
+          built_ip["9"]["inputs"]["latent_image"] == ["8", 0],
+          built_ip["9"]["inputs"]["latent_image"])
+
+    picked_ip, _ip_arch = wt.pick_template(
+        {"sd_checkpoint": plugin.templates["sd_checkpoint"]},
+        model_name="SDXL/m.safetensors", model_folder="checkpoints", purpose="inpaint",
+    )
+    check("没有重绘模板时明确失败，而不是退回文生图模板", picked_ip is None, picked_ip)
+
+    def inpaint_session(pid="ip-1"):
+        sess = api.aiohttp.ClientSession()
+        sess.route("GET", "/models", api.aiohttp.ClientResponse(200, payload=["checkpoints"]))
+        sess.route("GET", "/models/checkpoints", api.aiohttp.ClientResponse(
+            200, payload=["SDXL/m.safetensors"]))
+        sess.route("POST", "/upload/image", api.aiohttp.ClientResponse(
+            200, payload={"name": "in.png", "subfolder": "astrbot", "type": "input"}))
+        sess.route("POST", "/prompt", api.aiohttp.ClientResponse(
+            200, payload={"prompt_id": pid}))
+        sess.route("GET", "/queue", api.aiohttp.ClientResponse(
+            200, payload={"queue_running": [], "queue_pending": []}))
+        sess.route("GET", f"/history/{pid}", api.aiohttp.ClientResponse(200, payload={pid: {
+            "status": {"status_str": "success", "completed": True},
+            "outputs": {"11": {"images": [{"filename": "ip.png", "type": "output"}]}}}}))
+        sess.route("GET", "/view", api.aiohttp.ClientResponse(200, text="PNG"))
+        plugin.comfy._session = sess
+        plugin.comfy.invalidate_model_cache()
+        return sess
+
+    import base64 as _b64
+
+    def png_data_url(width, height):
+        raw = (b"\x89PNG\r\n\x1a\n" + (13).to_bytes(4, "big") + b"IHDR"
+               + width.to_bytes(4, "big") + height.to_bytes(4, "big")
+               + b"\x08\x02\x00\x00\x00" + b"\x00\x00\x00\x00")
+        return "data:image/png;base64," + _b64.b64encode(raw).decode()
+
+    plugin.config["llm_settings"] = {"enable_prompt_optimize": False}
+    plugin.config["hires"] = {"enable": False}
+    plugin.config["permission"] = {}
+    plugin.permission.reload({})
+    img_data = "data:image/png;base64," + _b64.b64encode(png_path.read_bytes()).decode()
+    mask_data = img_data  # 同一张 640x960 的 PNG 当遮罩：尺寸一致才合法
+
+    sess_ip = inpaint_session()
+    ip_result = asyncio.run(plugin.inpaint({
+        "image": img_data, "mask": mask_data,
+        "prompt": "换成红色的裙子", "denoise": "0.9", "grow": "4",
+    }))
+    submitted_ip = None
+    for method, path, kw in sess_ip.calls:
+        if method == "POST" and path == "/prompt":
+            submitted_ip = kw["json"]["prompt"]
+    check("局部重绘提交的是重绘工作流",
+          submitted_ip is not None
+          and {"LoadImageMask", "GrowMask", "SetLatentNoiseMask"}
+          <= {n["class_type"] for n in submitted_ip.values()},
+          sorted({n["class_type"] for n in (submitted_ip or {}).values()}))
+    check("遮罩引用是上传到 ComfyUI 后的那个文件",
+          (submitted_ip or {}).get("5", {}).get("inputs", {}).get("image", "").startswith("astrbot/"),
+          (submitted_ip or {}).get("5", {}).get("inputs"))
+    check("原图引用是上传到 ComfyUI 后的那个文件",
+          (submitted_ip or {}).get("4", {}).get("inputs", {}).get("image", "").startswith("astrbot/"),
+          (submitted_ip or {}).get("4", {}).get("inputs"))
+    check("遮罩外扩来自页面参数",
+          (submitted_ip or {}).get("7", {}).get("inputs", {}).get("expand") == 4,
+          (submitted_ip or {}).get("7", {}).get("inputs"))
+    check("重绘幅度来自页面参数",
+          (submitted_ip or {}).get("9", {}).get("inputs", {}).get("denoise") == 0.9,
+          (submitted_ip or {}).get("9", {}).get("inputs"))
+    check("页面拿到结果图（能按 ref 取回文件）",
+          ip_result.get("ok") is True
+          and ip_result.get("image", "").startswith("images/")
+          and (plugin.storage.output_dir / Path(ip_result["image"]).name).is_file(),
+          ip_result.get("image"))
+    check("页面传的临时原图/遮罩已清理（不占磁盘）",
+          not [p for p in (plugin.data_dir / "inpaint").glob("*") if p.is_file()],
+          sorted(p.name for p in (plugin.data_dir / "inpaint").glob("*")))
+
+    # 非法请求：缺遮罩 / 尺寸不一致 / 太大
+    def inpaint_error(payload):
+        try:
+            asyncio.run(plugin.inpaint(payload))
+            return ""
+        except ValueError as e:
+            return str(e)
+
+    check("缺遮罩时明确拒绝",
+          "遮罩" in inpaint_error({"image": img_data}), True)
+    check("原图与遮罩尺寸不一致时拒绝（否则会画歪）",
+          "尺寸必须一致" in inpaint_error({"image": img_data, "mask": png_data_url(512, 512)}),
+          inpaint_error({"image": img_data, "mask": png_data_url(512, 512)}))
+    too_big = png_data_url(3000, 3000)
+    check("图片超过像素预算时拒绝并说明上限",
+          "图片太大" in inpaint_error({"image": too_big, "mask": too_big}),
+          inpaint_error({"image": too_big, "mask": too_big}))
+
+    # Pages 路由：页面点「开始局部重绘」走的就是这条
+    inpaint_session(pid="ip-2")
+    pages.request._json = {"image": img_data, "mask": mask_data, "prompt": "x"}
+    route_ip = asyncio.run(handlers[(f"{base}/inpaint", ("POST",))]())
+    check("Pages /inpaint 路由能跑通并把结果回给页面",
+          route_ip.get("ok") is True and str(route_ip.get("image", "")).startswith("images/"),
+          {k: route_ip.get(k) for k in ("ok", "image", "seed")})
+    pages.request._json = {"image": "", "mask": ""}
+    bad_ip = asyncio.run(handlers[(f"{base}/inpaint", ("POST",))]())
+    check("Pages /inpaint 对不合法请求回 400",
+          getattr(bad_ip, "status_code", None) == 400, bad_ip)
+    pages.request._json = {}
 
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）

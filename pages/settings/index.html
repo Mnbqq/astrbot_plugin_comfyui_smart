@@ -22,6 +22,7 @@
         <button class="nav-item" data-target="tab-llm" type="button">LLM</button>
         <button class="nav-item" data-target="tab-draw" type="button">出图</button>
         <button class="nav-item" data-target="tab-vision" type="button">反推</button>
+        <button class="nav-item" data-target="tab-inpaint" type="button">局部重绘</button>
         <button class="nav-item" data-target="tab-perm" type="button">权限</button>
         <button class="nav-item" data-target="tab-agent" type="button">高级</button>
         <button class="nav-item" data-target="tab-status" type="button">状态</button>
@@ -321,6 +322,49 @@
               <input type="number" id="out_image_age" class="input-modern" min="0" />
             </div>
           </div>
+        </article>
+      </section>
+
+      <!-- 局部重绘 -->
+      <section id="tab-inpaint" class="tab-pane" data-title="局部重绘">
+        <article class="card">
+          <div class="card-header">
+            <div><h3>涂抹要重画的区域</h3><p>上传图片 → 用画笔涂掉想改的地方（红色）→ 写一句描述 → 开始重绘。遮罩只在你的浏览器里生成并随请求提交，不会存进聊天记录。</p></div>
+          </div>
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="inpaint_file">选择图片</label>
+              <input type="file" id="inpaint_file" class="input-modern" accept="image/*" />
+            </div>
+            <div class="form-group">
+              <label for="inpaint_brush">画笔大小（像素）</label>
+              <input type="range" id="inpaint_brush" min="4" max="200" step="2" value="48" />
+            </div>
+            <div class="form-group">
+              <label for="inpaint_denoise">重绘幅度</label>
+              <input type="number" id="inpaint_denoise" class="input-modern" step="0.05" min="0.05" max="1" value="1" />
+            </div>
+            <div class="form-group">
+              <label for="inpaint_grow">遮罩外扩（像素）</label>
+              <input type="number" id="inpaint_grow" class="input-modern" min="0" max="64" value="6" />
+            </div>
+          </div>
+          <div class="form-group full-width">
+            <label for="inpaint_prompt">想改成什么</label>
+            <textarea id="inpaint_prompt" class="input-modern" rows="2"
+                      placeholder="例如：换成红色的裙子，保持光影和周围一致"></textarea>
+          </div>
+          <div class="inpaint-stage">
+            <canvas id="inpaint_canvas" class="inpaint-canvas"></canvas>
+            <canvas id="inpaint_source" class="inpaint-hidden"></canvas>
+            <canvas id="inpaint_mask" class="inpaint-hidden"></canvas>
+          </div>
+          <div class="row-actions">
+            <button id="inpaint_erase" class="btn-secondary" type="button">画笔 / 橡皮</button>
+            <button id="inpaint_clear" class="btn-secondary" type="button">清空遮罩</button>
+            <button id="inpaint_run" class="btn-primary" type="button">开始局部重绘</button>
+          </div>
+          <div id="inpaint_result"><p class="muted">还没有结果。上传图片并涂抹后点「开始局部重绘」。</p></div>
         </article>
       </section>
 

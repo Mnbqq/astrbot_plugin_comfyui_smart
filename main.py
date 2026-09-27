@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import random
 import struct
@@ -34,7 +35,7 @@ from .workflow_templates import (
 
 PLUGIN_NAME = "astrbot_plugin_comfyui_smart"
 # 与 metadata.yaml 的 version 保持一致（tests/test_logic.py 会校验二者不漂移）
-PLUGIN_VERSION = "0.9.0"
+PLUGIN_VERSION = "0.10.0"
 PLUGIN_DIR = Path(__file__).resolve().parent
 BUILTIN_TEMPLATE_DIR = PLUGIN_DIR / "workflows"
 
@@ -72,6 +73,8 @@ RATIO_PRESETS = {
 DIM_ALIGN = 8
 # 扩图接缝羽化的默认值（ImagePadForOutpaint 的 feathering）
 DEFAULT_OUTPAINT_FEATHER = 40
+# 配置页局部重绘：单个 data URL 的体积上限（原图 + 遮罩各一份）
+INPAINT_MAX_BYTES = 24 * 1024 * 1024
 DIM_MIN = 64
 DIM_MAX = 4096
 MAX_PIXELS = 2048 * 2048
@@ -545,6 +548,11 @@ class ComfyUISmartPlugin(Star):
                     "没有可用的扩图模板。请确认插件 workflows 目录里有 outpaint_checkpoint.json"
                     "（用到 ComfyUI 自带的 ImagePadForOutpaint 与 SetLatentNoiseMask 节点）"
                 )
+            if purpose == "inpaint":
+                raise ComfyUIError(
+                    "没有可用的局部重绘模板。请确认插件 workflows 目录里有 inpaint_checkpoint.json"
+                    "（用到 ComfyUI 自带的 LoadImageMask / GrowMask / SetLatentNoiseMask 节点）"
+                )
             if folder == "diffusion_models" and arch != "flux":
                 raise ComfyUIError(
                     f"模型 {model} 位于 diffusion_models 目录，但它被识别为 {arch} 架构，"
@@ -690,6 +698,7 @@ class ComfyUISmartPlugin(Star):
         on_progress=None,
         preset: dict | None = None,
         source_image: str = "",
+        mask_image: str = "",
         force_purpose: str = "",
     ) -> dict:
         """完整出图流程：选型 → 建图 → 排队取名额 → 提交 → 等待 → 下载。
@@ -702,8 +711,9 @@ class ComfyUISmartPlugin(Star):
             on_wait: 插件侧排队提示回调（并发已满，还没轮到提交）。
             on_progress: 出图进度回调（WebSocket 推送的第 n / 总步数）。
             preset: 现成的提示词（如反推结果），给了就跳过 LLM 改写。
-            source_image: 图生图的输入图本地路径；给了就走图生图模板。
-            force_purpose: 强制用途（如 outpaint 扩图），空则按有无输入图推断。
+            source_image: 图生图/扩图/局部重绘的输入图本地路径。
+            mask_image: 局部重绘的遮罩图本地路径（白=重画，黑=保留）。
+            force_purpose: 强制用途（outpaint 扩图 / inpaint 局部重绘），空则按有无输入图推断。
 
         Returns:
             {"images": [Path...], "template": str, "model": str, "lora": str,
@@ -764,20 +774,27 @@ class ComfyUISmartPlugin(Star):
         # 图生图 / 扩图：先把输入图上传到 ComfyUI，拿到 LoadImage 能用的引用
         purpose = force_purpose or ("i2i" if source_image else "t2i")
         image_ref = ""
+        mask_ref = ""
         if source_image:
             i2i_sub = str((self.config.get("i2i", {}) or {}).get("subfolder") or "astrbot").strip()
             image_ref = await self.comfy.upload_image(source_image, subfolder=i2i_sub)
+        if mask_image:
+            mask_sub = str(
+                (self.config.get("i2i", {}) or {}).get("subfolder") or "astrbot"
+            ).strip()
+            mask_ref = await self.comfy.upload_image(mask_image, subfolder=mask_sub)
 
         selection = await self._resolve_selection(catalog, opt, opts, purpose=purpose)
         template: WorkflowTemplate = selection["template"]
         sampling = self._resolve_sampling(selection["arch"], opt, opts, draw_conf)
 
-        # 图生图：尺寸按原图比例（受 max_side 限制），重绘幅度可调
+        # 图生图 / 局部重绘：尺寸按原图比例（受 max_side 限制），重绘幅度可调
         # 扩图：尺寸由「原图 + 四周扩展量」决定（节点自己会算，这里只用于汇报与限额）
         denoise = None
         outpaint_info: dict = {}
+        inpaint_info: dict = {}
         template_params: dict = {}
-        if purpose == "i2i":
+        if purpose in ("i2i", "inpaint"):
             i2i_conf = self.config.get("i2i", {}) or {}
             try:
                 denoise = float(i2i_conf.get("denoise", 0.6) or 0.6)
@@ -797,10 +814,26 @@ class ComfyUISmartPlugin(Star):
                 sampling["width"], sampling["height"] = fit_to_limit(
                     source_size[0], source_size[1], max_side
                 )
-            logger.info(
-                "图生图｜输入 %s｜目标 %sx%s｜denoise %s",
-                image_ref, sampling["width"], sampling["height"], denoise,
-            )
+            if purpose == "inpaint":
+                # 默认整段重画遮罩区域（靠遮罩保住其余像素，而不是靠低重绘幅度）
+                if denoise is None:
+                    denoise = 1.0
+                inpaint_info = {
+                    "mask": mask_ref,
+                    "source": source_size or (0, 0),
+                    "grow": int(opts.get("grow") or 0) if str(opts.get("grow") or "").isdigit() else 0,
+                }
+                template_params = {"expand": inpaint_info["grow"]}
+                logger.info(
+                    "局部重绘｜输入 %s｜遮罩 %s｜目标 %sx%s｜denoise %s｜遮罩外扩 %s",
+                    image_ref, mask_ref, sampling["width"], sampling["height"],
+                    denoise, inpaint_info["grow"],
+                )
+            else:
+                logger.info(
+                    "图生图｜输入 %s｜目标 %sx%s｜denoise %s",
+                    image_ref, sampling["width"], sampling["height"], denoise,
+                )
         elif purpose == "outpaint":
             source_size = read_image_size(source_image)
             if not source_size:
@@ -898,6 +931,7 @@ class ComfyUISmartPlugin(Star):
             filename_prefix="astrbot_smart",
             denoise=denoise,
             image_name=image_ref,
+            mask_name=mask_ref,
             params=template_params,
             **sampling,
         )
@@ -911,7 +945,7 @@ class ComfyUISmartPlugin(Star):
         hires_method = str(hires_conf.get("method") or "bislerp")
 
         # 自动开关分文生图/图生图两个，互不影响（扩图属于「改图」，跟随图生图那一个）
-        if purpose in ("i2i", "outpaint"):
+        if purpose in ("i2i", "outpaint", "inpaint"):
             hires_on = bool(hires_conf.get("enable", False)) and bool(
                 hires_conf.get("enable_for_i2i", True)
             )
@@ -1064,6 +1098,7 @@ class ComfyUISmartPlugin(Star):
             "i2i": bool(image_ref),
             "denoise": denoise if denoise is not None else 1.0,
             "outpaint": outpaint_info,
+            "inpaint": inpaint_info,
             "seconds": time.time() - started,
             "queued_seconds": queued_seconds,
             # 有 Hires 时对外报最终尺寸，消息与画廊显示的才是真实产物尺寸
@@ -1319,9 +1354,19 @@ class ComfyUISmartPlugin(Star):
             event: 消息事件，用于取昵称。
             result: generate() 的返回值。
         """
+        await self._record_result(uid, _sender_name(event, uid), result)
+
+    async def _record_result(self, uid: str, name: str, result: dict) -> None:
+        """把一次出图写进统计（昵称由调用方给出，配置页没有消息事件）。
+
+        Args:
+            uid: 触发者 id。
+            name: 展示用昵称。
+            result: generate() 的返回值。
+        """
         await self.storage.record_generation(
             user_id=uid,
-            user_name=_sender_name(event, uid),
+            user_name=name,
             positive=result["positive"],
             negative=result["negative"],
             models={
@@ -1346,6 +1391,121 @@ class ComfyUISmartPlugin(Star):
                 "model": result.get("model", ""),
             },
         )
+
+    # ------------------------------------------------------------------ #
+    # 局部重绘（配置页的涂抹工具调用）
+    # ------------------------------------------------------------------ #
+    _DATA_URL_PREFIX = "data:image/"
+
+    def _save_data_url(self, value, field: str) -> Path:
+        """把配置页传来的 PNG/JPEG data URL 落成一个临时文件。
+
+        Args:
+            value: 形如 `data:image/png;base64,....` 的字符串。
+            field: 字段名（用于文件名与报错）。
+
+        Returns:
+            落盘后的路径。
+
+        Raises:
+            ValueError: 不是合法的 data URL，或图片过大。
+        """
+        text = str(value or "").strip()
+        if not text.startswith(self._DATA_URL_PREFIX) or "base64," not in text:
+            raise ValueError(f"{field} 必须是图片的 data URL（data:image/png;base64,...）")
+        head, _, encoded = text.partition("base64,")
+        ext = ".png" if "png" in head.lower() else (".jpg" if "jp" in head.lower() else ".png")
+        try:
+            raw = base64.b64decode(encoded, validate=False)
+        except Exception as e:
+            raise ValueError(f"{field} 的 base64 解析失败：{e}") from e
+        if not raw:
+            raise ValueError(f"{field} 是空图片")
+        if len(raw) > INPAINT_MAX_BYTES:
+            raise ValueError(
+                f"{field} 太大（{len(raw) // 1024 // 1024} MB），"
+                f"上限 {INPAINT_MAX_BYTES // 1024 // 1024} MB"
+            )
+        target_dir = self.data_dir / "inpaint"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        path = target_dir / f"{int(time.time() * 1000)}_{field}{ext}"
+        path.write_bytes(raw)
+        return path
+
+    async def inpaint(self, payload: dict) -> dict:
+        """局部重绘：按配置页涂抹的遮罩重画指定区域。
+
+        页面会把「原图」与「遮罩」都渲染成同尺寸的 PNG 再发过来
+        （遮罩是白底黑字：白=重画，黑=保留），所以这里只需要校验尺寸一致。
+
+        Args:
+            payload: `{"image": dataURL, "mask": dataURL, "prompt": str,
+                "denoise": float|str, "grow": int|str, "model": str, "seed": int|str}`。
+
+        Returns:
+            `{"ok": True, "image": "images/xxx.png", "seed":..., "seconds":...,
+              "width":..., "height":..., "positive":..., "template":...}`
+
+        Raises:
+            ValueError: 请求不合法（缺图/缺遮罩/尺寸不一致/太大）。
+            ComfyUIError: 出图失败。
+        """
+        if not isinstance(payload, dict):
+            raise ValueError("请求体必须是 JSON 对象")
+        image_path = self._save_data_url(payload.get("image"), "原图")
+        mask_path = self._save_data_url(payload.get("mask"), "遮罩")
+        try:
+            source_size = read_image_size(str(image_path))
+            mask_size = read_image_size(str(mask_path))
+            if not source_size or not mask_size:
+                raise ValueError("读不出图片尺寸，请用 PNG / JPEG 图片")
+            if source_size != mask_size:
+                raise ValueError(
+                    f"原图与遮罩的尺寸必须一致（{source_size[0]}x{source_size[1]} vs "
+                    f"{mask_size[0]}x{mask_size[1]}）"
+                )
+            if source_size[0] * source_size[1] > MAX_PIXELS:
+                raise ValueError(
+                    f"图片太大（{source_size[0]}x{source_size[1]}），"
+                    f"请控制在 {int(MAX_PIXELS ** 0.5)}x{int(MAX_PIXELS ** 0.5)} 以内"
+                )
+
+            opts: dict = {}
+            for key in ("model", "seed", "lora", "steps", "cfg", "sampler", "denoise", "grow"):
+                if payload.get(key) not in (None, ""):
+                    opts[key] = str(payload[key])
+            prompt = str(payload.get("prompt") or "").strip() or (
+                "重画这块区域，与周围的风格、光影和细节自然衔接"
+            )
+            result = await self.generate(
+                user_desc=prompt,
+                opts=opts,
+                event=None,
+                source_image=str(image_path),
+                mask_image=str(mask_path),
+                force_purpose="inpaint",
+            )
+        finally:
+            # 原图与遮罩都已经上传给 ComfyUI 了，本地临时文件不留着占地方
+            for path in (image_path, mask_path):
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+
+        await self._record_result("dashboard", "配置页", result)
+        return {
+            "ok": True,
+            "image": f"images/{result['images'][0].name}" if result.get("images") else "",
+            "positive": result.get("positive", ""),
+            "negative": result.get("negative", ""),
+            "template": result.get("template", ""),
+            "model": result.get("model", ""),
+            "seed": result.get("seed"),
+            "seconds": result.get("seconds"),
+            "width": result.get("width"),
+            "height": result.get("height"),
+        }
 
     async def _collect_images(self, event: AstrMessageEvent) -> list[str]:
         """从当前消息或引用消息里取出图片的本地路径。
