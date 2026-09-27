@@ -17,20 +17,20 @@
         </div>
       </div>
       <nav class="nav-menu">
-        <button class="nav-item active" data-target="tab-server" type="button">服务器</button>
-        <button class="nav-item" data-target="tab-model" type="button">模型</button>
-        <button class="nav-item" data-target="tab-llm" type="button">LLM</button>
-        <button class="nav-item" data-target="tab-draw" type="button">出图</button>
-        <button class="nav-item" data-target="tab-vision" type="button">反推</button>
-        <button class="nav-item" data-target="tab-inpaint" type="button">局部重绘</button>
-        <button class="nav-item" data-target="tab-perm" type="button">权限</button>
-        <button class="nav-item" data-target="tab-agent" type="button">高级</button>
-        <button class="nav-item" data-target="tab-status" type="button">状态</button>
-        <button class="nav-item" data-target="tab-stats" type="button">统计</button>
+        <button class="nav-item active" data-target="tab-server" type="button" data-i18n="ui.nav.server">服务器</button>
+        <button class="nav-item" data-target="tab-model" type="button" data-i18n="ui.nav.model">模型</button>
+        <button class="nav-item" data-target="tab-llm" type="button" data-i18n="ui.nav.llm">LLM</button>
+        <button class="nav-item" data-target="tab-draw" type="button" data-i18n="ui.nav.draw">出图</button>
+        <button class="nav-item" data-target="tab-vision" type="button" data-i18n="ui.nav.vision">反推</button>
+        <button class="nav-item" data-target="tab-inpaint" type="button" data-i18n="ui.nav.inpaint">局部重绘</button>
+        <button class="nav-item" data-target="tab-perm" type="button" data-i18n="ui.nav.perm">权限</button>
+        <button class="nav-item" data-target="tab-agent" type="button" data-i18n="ui.nav.agent">高级</button>
+        <button class="nav-item" data-target="tab-status" type="button" data-i18n="ui.nav.status">状态</button>
+        <button class="nav-item" data-target="tab-stats" type="button" data-i18n="ui.nav.stats">统计</button>
       </nav>
       <div class="save-panel">
         <span class="save-state" id="save-state">配置已同步</span>
-        <button data-action="save-config" class="btn-primary" type="button">保存更改</button>
+        <button data-action="save-config" class="btn-primary" type="button" data-i18n="ui.action.save">保存更改</button>
       </div>
     </div>
   </header>
@@ -46,7 +46,7 @@
       </header>
 
       <!-- 服务器 -->
-      <section id="tab-server" class="tab-pane active" data-title="服务器配置">
+      <section id="tab-server" class="tab-pane active" data-title="服务器配置" data-i18n-title="ui.tab.server">
         <article class="card">
           <div class="card-header">
             <div><h3>ComfyUI 连接</h3><p>AstrBot 所在机器能访问到的 ComfyUI 地址。</p></div>
@@ -118,13 +118,13 @@
       </section>
 
       <!-- 模型 -->
-      <section id="tab-model" class="tab-pane" data-title="模型清单">
+      <section id="tab-model" class="tab-pane" data-title="模型清单" data-i18n-title="ui.tab.model">
         <article class="card">
           <div class="card-header space-between">
             <div><h3>ComfyUI 里的真实模型</h3><p>直接读取 ComfyUI 的模型目录，不依赖手动填写。出图只会使用这里列出的模型。</p></div>
             <div>
-              <button data-action="refresh-models" class="btn-primary" type="button">刷新模型</button>
-              <button data-action="reload-models" class="btn-secondary" type="button">重新读取</button>
+              <button data-action="refresh-models" class="btn-primary" type="button" data-i18n="ui.action.refresh_models">刷新模型</button>
+              <button data-action="reload-models" class="btn-secondary" type="button" data-i18n="ui.action.reload_models">重新读取</button>
             </div>
           </div>
           <div id="models-container"><p class="muted">切换到本页时自动读取。</p></div>
@@ -132,7 +132,7 @@
       </section>
 
       <!-- LLM -->
-      <section id="tab-llm" class="tab-pane" data-title="LLM 设置">
+      <section id="tab-llm" class="tab-pane" data-title="LLM 设置" data-i18n-title="ui.tab.llm">
         <article class="card">
           <div class="card-header">
             <div><h3>提示词优化与选型</h3><p>用 LLM 把中文描述改写成提示词，并从真实模型清单里挑选底模与 LoRA。</p></div>
@@ -163,7 +163,7 @@
       </section>
 
       <!-- 反推专用模型 -->
-      <section id="tab-vision" class="tab-pane" data-title="反推专用模型">
+      <section id="tab-vision" class="tab-pane" data-title="反推专用模型" data-i18n-title="ui.tab.vision">
         <article class="card">
           <div class="card-header">
             <div><h3>反推专用模型</h3><p><code>/反推</code> 必须用<b>支持看图</b>的模型。若当前对话模型不支持看图，AstrBot 会把图片替换成「[Image]」，模型就会一本正经地编内容 —— 这就是「反推结果全错」的成因。</p></div>
@@ -195,7 +195,7 @@
       </section>
 
       <!-- 出图 -->
-      <section id="tab-draw" class="tab-pane" data-title="出图参数">
+      <section id="tab-draw" class="tab-pane" data-title="出图参数" data-i18n-title="ui.tab.draw">
         <article class="card">
           <div class="card-header">
             <div><h3>默认出图参数</h3><p>插件会按底模架构（SD1.5 / SDXL / Pony / Flux）自动适配分辨率、CFG 与采样器。</p></div>
@@ -373,7 +373,7 @@
       </section>
 
       <!-- 局部重绘 -->
-      <section id="tab-inpaint" class="tab-pane" data-title="局部重绘">
+      <section id="tab-inpaint" class="tab-pane" data-title="局部重绘" data-i18n-title="ui.tab.inpaint">
         <article class="card">
           <div class="card-header">
             <div><h3>涂抹要重画的区域</h3><p>上传图片 → 用画笔涂掉想改的地方（红色）→ 写一句描述 → 开始重绘。遮罩只在你的浏览器里生成并随请求提交，不会存进聊天记录。</p></div>
@@ -407,16 +407,16 @@
             <canvas id="inpaint_mask" class="inpaint-hidden"></canvas>
           </div>
           <div class="row-actions">
-            <button id="inpaint_erase" class="btn-secondary" type="button">画笔 / 橡皮</button>
-            <button id="inpaint_clear" class="btn-secondary" type="button">清空遮罩</button>
-            <button id="inpaint_run" class="btn-primary" type="button">开始局部重绘</button>
+            <button id="inpaint_erase" class="btn-secondary" type="button" data-i18n="ui.action.inpaint_brush">画笔 / 橡皮</button>
+            <button id="inpaint_clear" class="btn-secondary" type="button" data-i18n="ui.action.inpaint_clear">清空遮罩</button>
+            <button id="inpaint_run" class="btn-primary" type="button" data-i18n="ui.action.inpaint_run">开始局部重绘</button>
           </div>
           <div id="inpaint_result"><p class="muted">还没有结果。上传图片并涂抹后点「开始局部重绘」。</p></div>
         </article>
       </section>
 
       <!-- 权限 -->
-      <section id="tab-perm" class="tab-pane" data-title="权限与配额">
+      <section id="tab-perm" class="tab-pane" data-title="权限与配额" data-i18n-title="ui.tab.perm">
         <article class="card">
           <div class="card-header">
             <div><h3>权限与配额</h3><p>管理员身份沿用 AstrBot 自带的管理员设置，这里只需维护名单与限额。</p></div>
@@ -447,7 +447,23 @@
       </section>
 
       <!-- 高级 -->
-      <section id="tab-agent" class="tab-pane" data-title="高级">
+      <section id="tab-agent" class="tab-pane" data-title="高级" data-i18n-title="ui.tab.agent">
+        <article class="card">
+          <div class="card-header">
+            <div><h3 data-i18n="ui.general.title">通用</h3><p>插件页语言与聊天文案都跟着这里走。</p></div>
+          </div>
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="general_language" data-i18n="ui.general.language">语言</label>
+              <select id="general_language" class="input-modern">
+                <option value="auto">auto</option>
+                <option value="zh-CN">中文</option>
+                <option value="en-US">English</option>
+              </select>
+            </div>
+          </div>
+        </article>
+
         <article class="card">
           <div class="card-header">
             <div><h3>无指令出图</h3><p>让对话模型在用户说「帮我画一张…」时直接调用绘图能力，无需输入指令。</p></div>
@@ -460,11 +476,11 @@
       </section>
 
       <!-- 状态 -->
-      <section id="tab-status" class="tab-pane" data-title="运行状态">
+      <section id="tab-status" class="tab-pane" data-title="运行状态" data-i18n-title="ui.tab.status">
         <article class="card">
           <div class="card-header space-between">
             <div><h3>ComfyUI 状态</h3><p>连接、设备与队列情况。</p></div>
-            <button data-action="reload-status" class="btn-secondary" type="button">刷新</button>
+            <button data-action="reload-status" class="btn-secondary" type="button" data-i18n="ui.action.reload">刷新</button>
           </div>
           <div id="status-container"><p class="muted">切换到本页时自动读取。</p></div>
         </article>
@@ -475,11 +491,11 @@
       </section>
 
       <!-- 统计 -->
-      <section id="tab-stats" class="tab-pane" data-title="使用统计">
+      <section id="tab-stats" class="tab-pane" data-title="使用统计" data-i18n-title="ui.tab.stats">
         <article class="card">
           <div class="card-header space-between">
             <div><h3>使用统计与画廊</h3><p>出图次数、模型调用与作品回看。</p></div>
-            <button data-action="reload-stats" class="btn-secondary" type="button">刷新</button>
+            <button data-action="reload-stats" class="btn-secondary" type="button" data-i18n="ui.action.reload_stats">刷新</button>
           </div>
           <div id="stats-container"><p class="muted">切换到本页时自动读取。</p></div>
         </article>

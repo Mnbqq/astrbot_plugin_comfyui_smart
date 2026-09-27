@@ -10,24 +10,31 @@ from __future__ import annotations
 
 import time
 
+from .i18n import default_translator
+
 
 class PermissionManager:
     """统一的权限与配额检查。"""
 
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, translate=None):
         """初始化。
 
         Args:
             config: 插件配置里的 permission 段。
+            translate: 可选的翻译函数（键 → 文案），用于多语言。
         """
+        self._t = translate or default_translator().t
         self.reload(config)
 
-    def reload(self, config: dict) -> None:
+    def reload(self, config: dict, translate=None) -> None:
         """按最新配置重建内部状态。
 
         Args:
             config: 插件配置里的 permission 段。
+            translate: 可选的翻译函数；给了就换用它（配置页切语言后要跟上）。
         """
+        if translate is not None:
+            self._t = translate
         conf = config or {}
         self.whitelist = {str(x) for x in (conf.get("whitelist_user_ids") or []) if str(x).strip()}
         self.blacklist = {str(x) for x in (conf.get("blacklist_user_ids") or []) if str(x).strip()}
@@ -53,23 +60,23 @@ class PermissionManager:
         uid = str(user_id)
         # 黑名单优先级最高，管理员也不例外
         if uid in self.blacklist:
-            return False, "🚫 你已被加入黑名单，无法使用"
+            return False, self._t("perm.blacklist")
 
         bypass = self._bypass(is_admin)
         if self.whitelist and uid not in self.whitelist and not bypass:
-            return False, "🚫 你不在白名单中，无法使用"
+            return False, self._t("perm.whitelist")
 
         if not bypass and self.cooldown > 0:
             until = await storage.get_cooldown_until(uid)
             remaining = int(until - time.time())
             if remaining > 0:
-                return False, f"⏱️ 冷却中，请 {remaining} 秒后再试"
+                return False, self._t("perm.cooldown", seconds=remaining)
 
         if not bypass and self.daily_limit > 0:
             today = time.strftime("%Y-%m-%d")
             used = await storage.get_daily_count(uid, today)
             if used >= self.daily_limit:
-                return False, f"📊 今日出图次数已达上限（{self.daily_limit} 次）"
+                return False, self._t("perm.daily_limit", limit=self.daily_limit)
 
         return True, ""
 

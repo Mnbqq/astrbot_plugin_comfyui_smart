@@ -13,6 +13,8 @@ const PLUGIN_NAME = 'astrbot_plugin_comfyui_smart';
 
 /* 字段定义：id -> 配置路径与类型 */
 const FIELDS = [
+  { id: 'general_language', path: ['general', 'language'], kind: 'select',
+    options: ['auto', 'zh-CN', 'en-US'] },
   { id: 'server_base_url', path: ['server', 'base_url'], kind: 'string' },
   { id: 'server_timeout', path: ['server', 'timeout'], kind: 'int' },
   { id: 'server_poll_interval', path: ['server', 'poll_interval'], kind: 'float' },
@@ -212,6 +214,48 @@ function esc(value) {
   return String(value == null ? '' : value).replace(/[&<>"']/g, (m) => (
     { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]
   ));
+}
+
+/* ============================================================
+ * 插件页文案（多语言）
+ *
+ * 后端 GET /i18n 返回 { locale, strings }，前端按属性套用：
+ *   data-i18n="ui.nav.server"        → 替换元素文本
+ *   data-i18n-title="ui.tab.server"  → 替换 data-title（切换标签页时显示在标题栏）
+ * 拿不到文案时保持 HTML 里的默认中文，不会把页面弄空。
+ * ============================================================ */
+let pageStrings = {};
+
+function applyI18n(strings) {
+  if (strings && typeof strings === 'object') {
+    pageStrings = Object.assign({}, pageStrings, strings);
+  }
+  $$('[data-i18n]').forEach((el) => {
+    const key = el.getAttribute('data-i18n');
+    const text = pageStrings[key];
+    if (text) el.textContent = text;
+  });
+  $$('[data-i18n-title]').forEach((el) => {
+    const key = el.getAttribute('data-i18n-title');
+    const text = pageStrings[key];
+    if (text) el.setAttribute('data-title', text);
+  });
+  // 当前标签页的标题也要跟着换
+  const active = document.querySelector('.tab-pane.active');
+  const title = document.getElementById('active-title');
+  if (active && title) {
+    title.textContent = active.getAttribute('data-title') || title.textContent || '';
+  }
+  return pageStrings;
+}
+
+async function loadI18n() {
+  try {
+    const data = await bridge.apiGet('i18n');
+    applyI18n(data && data.strings);
+  } catch (error) {
+    // 文案拿不到不影响使用：HTML 里本来就是中文默认值
+  }
 }
 
 function imageUrl(ref) {
@@ -845,6 +889,7 @@ async function init() {
     // bridge 上下文未就绪不阻塞配置加载
   }
   await loadConfig();
+  await loadI18n();
 }
 
 init();

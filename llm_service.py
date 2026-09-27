@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import re
 
+from .i18n import default_translator
 from .workflow_templates import guess_arch
 
 # 提示词模板：要求只输出 JSON，避免解析歧义
@@ -69,14 +70,17 @@ def _to_data_url(ref: str) -> str:
 class LLMService:
     """LLM 调用与提示词优化。"""
 
-    def __init__(self, context, config: dict):
+    def __init__(self, context, config: dict, translate=None):
         """初始化。
 
         Args:
             context: AstrBot Star Context。
             config: 插件配置。
+            translate: 可选的翻译函数（键 → 文案）；提示词模板也走多语言。
         """
         self.context = context
+        # 翻译函数：拿不到就用插件自带的中文文案（绝不能把键名当提示词发给模型）
+        self._t = translate or default_translator().t
         self.config = config or {}
         self.llm_conf = self.config.get("llm_settings", {}) or {}
         # 反推专用的看图模型配置（结构同 llm_settings）
@@ -379,9 +383,9 @@ class LLMService:
         Raises:
             RuntimeError: LLM 不可用或调用失败。
         """
-        user = "请看这张图，反推出可直接用于 Stable Diffusion 的提示词。"
+        user = self._t("llm.reverse_user", hint="")
         if hint.strip():
-            user += f"\n额外要求：{hint.strip()}"
+            user += self._t("llm.reverse_hint", hint=hint.strip())
 
         # 看图模型的解析顺序：
         #   行内 --provider > 独立的 vision_settings（自定义接口 / AstrBot 提供商）
@@ -401,7 +405,7 @@ class LLMService:
             )
 
         text = await self.generate(
-            REVERSE_SYSTEM,
+            self._t("llm.reverse_system") or REVERSE_SYSTEM,
             user,
             event=event,
             image_urls=image_refs,
@@ -444,15 +448,14 @@ class LLMService:
         """
         defaults = defaults or {}
         catalog_text = self.build_catalog(catalog)
-        user = (
-            f"用户描述：{user_desc}\n\n"
-            f"默认负面提示词：{defaults.get('negative') or '（无）'}\n"
-            "尺寸说明：插件会按所选底模的架构自动决定分辨率，你只需在需要时用 "
-            "width/height 表达**画面比例意图**（例如横构图 1344x768、竖构图 768x1344），"
-            "不确定就都填 0。\n\n"
-            f"可用模型清单：\n{catalog_text}"
+        user = self._t(
+            "llm.optimize_user",
+            desc=user_desc,
+            negative=defaults.get("negative") or "（无）",
+            catalog=catalog_text,
         )
-        text = await self.generate(PROMPT_SYSTEM, user, event=event)
+        system = self._t("llm.optimize_system") or PROMPT_SYSTEM
+        text = await self.generate(system, user, event=event)
         parsed = parse_optimize_result(text)
         parsed["_raw"] = text
         return parsed

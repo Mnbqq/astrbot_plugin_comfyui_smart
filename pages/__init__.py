@@ -65,6 +65,16 @@ def register_pages_routes(plugin) -> bool:
     async def get_status():
         return json_response(await plugin.get_server_status())
 
+    async def get_i18n():
+        """插件页文案：前端按 data-i18n 属性套用（导航、标签页标题、主要按钮）。"""
+        translator = getattr(plugin, "t", None)
+        strings = translator.ui_strings() if translator is not None else {}
+        return json_response({
+            "locale": getattr(translator, "locale", ""),
+            "available": getattr(translator, "available", []),
+            "strings": strings,
+        })
+
     async def get_stats():
         return json_response(plugin.storage.load_stats())
 
@@ -103,6 +113,7 @@ def register_pages_routes(plugin) -> bool:
         (f"/{PLUGIN_NAME}/models/refresh", refresh_models, ["POST"], "重新发现模型"),
         (f"/{PLUGIN_NAME}/templates", get_templates, ["GET"], "读取工作流模板"),
         (f"/{PLUGIN_NAME}/status", get_status, ["GET"], "读取 ComfyUI 状态"),
+        (f"/{PLUGIN_NAME}/i18n", get_i18n, ["GET"], "读取插件页文案（多语言）"),
         (f"/{PLUGIN_NAME}/stats", get_stats, ["GET"], "读取统计"),
         (f"/{PLUGIN_NAME}/inpaint", run_inpaint, ["POST"], "局部重绘（涂抹遮罩）"),
         (f"/{PLUGIN_NAME}/stats/clear", clear_stats, ["POST"], "清空统计"),

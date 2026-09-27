@@ -134,7 +134,13 @@ const documentStub = {
     const m = /^#([\w-]+)$/.exec(sel);
     return m ? getEl(m[1]) : null; // 属性选择器返回 null，app.js 里都有 if 保护
   },
-  querySelectorAll() { return []; },
+  querySelectorAll(sel) {
+    const attr = /^\[([\w-]+)\]$/.exec(sel);
+    if (!attr) return [];
+    return Array.from(registry.values()).filter(
+      (el) => el.getAttribute(attr[1]) !== null,
+    );
+  },
   getElementById(id) { return getEl(id); },
   createElement(tag) { return makeElement(tag); },
   addEventListener() {},
@@ -173,6 +179,14 @@ const bridge = {
     if (endpoint === 'status') return { base_url: 'http://x', online: true, templates: [] };
     if (endpoint === 'models') return { catalog: {} };
     if (endpoint === 'templates') return { templates: [] };
+    if (endpoint === 'i18n') {
+      return { locale: 'en-US', available: ['zh-CN', 'en-US'], strings: {
+        'ui.nav.server': 'Server',
+        'ui.nav.draw': 'Drawing',
+        'ui.tab.server': 'Server settings',
+        'ui.action.save': 'Save config',
+      } };
+    }
     return {};
   },
   async apiPost(endpoint, payload) {
@@ -363,6 +377,37 @@ vm.runInContext(source, sandbox, { filename: 'app.js' });
         String(getEl('modal-image').src).indexOf('images/v.webm') >= 0,
         getEl('modal-image').src);
   statsPayload.records.pop();
+
+  console.log('\n=== 插件页文案（多语言）===');
+
+  const navServer = getEl('nav-server');
+  navServer.setAttribute('data-i18n', 'ui.nav.server');
+  navServer.textContent = '服务器';
+  const navDraw = getEl('nav-draw');
+  navDraw.setAttribute('data-i18n', 'ui.nav.draw');
+  navDraw.textContent = '出图';
+  const navUnknown = getEl('nav-unknown');
+  navUnknown.setAttribute('data-i18n', 'ui.nav.not_translated');
+  navUnknown.textContent = '原始文案';
+  const paneServer = getEl('pane-server');
+  paneServer.setAttribute('data-i18n-title', 'ui.tab.server');
+
+  vm.runInContext("applyI18n({'ui.nav.server': 'Server', 'ui.tab.server': 'Server settings'})", sandbox);
+  check('data-i18n 的元素文本被替换成当前语言',
+        navServer.textContent === 'Server', navServer.textContent);
+  check('data-i18n-title 替换的是 data-title（标签页标题）',
+        paneServer.getAttribute('data-title') === 'Server settings',
+        paneServer.getAttribute('data-title'));
+  check('没翻译到的键保持 HTML 里的默认中文（不会把页面弄空）',
+        navUnknown.textContent === '原始文案', navUnknown.textContent);
+  check('文案是合并应用的：init 拿到的 /i18n 结果不会因为再次调用而丢',
+        navDraw.textContent === 'Drawing', navDraw.textContent);
+
+  await vm.runInContext('loadI18n()', sandbox);
+  check('loadI18n 会把接口返回的文案套上（含按钮）',
+        vm.runInContext("pageStrings['ui.action.save']", sandbox) === 'Save config',
+        vm.runInContext("pageStrings['ui.action.save']", sandbox));
+  check('loadI18n 不会抛错（接口异常时静默保持默认文案）', true);
 
   console.log('\n=== 复制与关闭 ===');
   await vm.runInContext("copyField('modal-positive', '正向提示词')", sandbox);

@@ -17,6 +17,7 @@ from astrbot.api.star import Context, Star, StarTools
 
 from .backend_pool import Backend, BackendPool, is_backend_fault, parse_backend_specs
 from .comfyui_api import ComfyUI, ComfyUIError, media_kind, normalize_base_url
+from .i18n import build_translator
 from .llm_service import LLMService
 from .pages import register_pages_routes
 from .permission import PermissionManager
@@ -36,7 +37,7 @@ from .workflow_templates import (
 
 PLUGIN_NAME = "astrbot_plugin_comfyui_smart"
 # 与 metadata.yaml 的 version 保持一致（tests/test_logic.py 会校验二者不漂移）
-PLUGIN_VERSION = "0.14.0"
+PLUGIN_VERSION = "0.15.0"
 PLUGIN_DIR = Path(__file__).resolve().parent
 BUILTIN_TEMPLATE_DIR = PLUGIN_DIR / "workflows"
 
@@ -206,8 +207,13 @@ class ComfyUISmartPlugin(Star):
             self.data_dir.mkdir(parents=True, exist_ok=True)
         self.storage = Storage(self.data_dir)
 
-        self.permission = PermissionManager(self.config.get("permission", {}) or {})
-        self.llm = LLMService(context, self.config)
+        # 国际化：按官方约定读 .astrbot-plugin/i18n/*.json（配置项 language 可切）
+        self.t = build_translator(PLUGIN_DIR, logger=logger)
+        self._configure_i18n()
+        self.permission = PermissionManager(
+            self.config.get("permission", {}) or {}, translate=self.t
+        )
+        self.llm = LLMService(context, self.config, translate=self.t)
         # 后端池：单后端时等价于原来的单客户端；配了多个则按负载分配
         self._retired_pools: list[BackendPool] = []
         self.pool = self._build_pool()
@@ -296,6 +302,19 @@ class ComfyUISmartPlugin(Star):
         """用户自带模板目录（位于数据目录，插件更新不会覆盖）。"""
         return self.data_dir / "workflows"
 
+    def _configure_i18n(self) -> None:
+        """按配置项 `language` 选定语言（auto=跟随 AstrBot 界面语言，拿不到就用中文）。"""
+        wanted = str((self.config.get("general", {}) or {}).get("language") or "auto")
+        if wanted.strip().lower() == "auto":
+            try:
+                global_conf = self.context.get_config() or {}
+                wanted = str(
+                    global_conf.get("language") or global_conf.get("locale") or ""
+                )
+            except Exception:
+                wanted = ""
+        self.t = build_translator(PLUGIN_DIR, locale=wanted, logger=logger)
+
     def _configure_gate(self) -> None:
         """按最新配置更新出图并发闸门（同时上限 / 单人上限 / 排队等待时长）。"""
         queue_conf = self.config.get("queue", {}) or {}
@@ -307,8 +326,9 @@ class ComfyUISmartPlugin(Star):
 
     def reload_components(self) -> None:
         """按最新配置重建各组件（配置变更后调用）。"""
-        self.permission.reload(self.config.get("permission", {}) or {})
-        self.llm = LLMService(self.context, self.config)
+        self._configure_i18n()
+        self.permission.reload(self.config.get("permission", {}) or {}, translate=self.t)
+        self.llm = LLMService(self.context, self.config, translate=self.t)
         old_client = self.comfy
         old_pool = self.pool
         self.pool = self._build_pool()
@@ -814,9 +834,7 @@ class ComfyUISmartPlugin(Star):
         draw_conf = self.config.get("draw_settings", {}) or {}
         catalog = await self.get_catalog()
         if not catalog:
-            raise ComfyUIError(
-                "没有发现任何模型。请先在配置里填好 ComfyUI 地址，或用 /刷新模型 重新拉取"
-            )
+            raise ComfyUIError(self.t("error.no_models"))
 
         default_negative = str(draw_conf.get("default_negative") or "")
         llm_conf = self.config.get("llm_settings", {}) or {}
@@ -1230,7 +1248,7 @@ class ComfyUISmartPlugin(Star):
             logger.info("出图排队超时：%s", e)
             raise
         if not images:
-            raise ComfyUIError("出图失败：没有取到任何产物")
+            raise ComfyUIError(self.t("error.no_output"))
         videos = [p for p in images if media_kind(p.name) == "video"]
         pictures = [p for p in images if media_kind(p.name) != "video"]
         return {
@@ -1340,24 +1358,19 @@ class ComfyUISmartPlugin(Star):
 
         async def _on_wait(info: dict):
             if info.get("reason") == "user":
-                text = (
-                    f"⏳ 你已有一张在出，本次排队等待"
-                    f"（同时出图上限 {info['max_concurrent']}）…"
-                )
+                text = self.t("queue.waiting_self", max=info["max_concurrent"])
             else:
-                text = (
-                    f"⏳ 前面还有 {info['ahead']} 个任务，排队中"
-                    f"（同时出图上限 {info['max_concurrent']}）…"
+                text = self.t(
+                    "queue.waiting", ahead=info["ahead"], max=info["max_concurrent"]
                 )
             await event.send(event.plain_result(text))
 
         async def _on_queued(status):
-            await event.send(
-                event.plain_result(
-                    f"⏳ 已提交，队列第 {min(status.own_positions.values() or [1])} 位"
-                    f"（前方 {status.tasks_ahead} 个任务）"
-                )
-            )
+            await event.send(event.plain_result(self.t(
+                "queue.queued",
+                position=min(status.own_positions.values() or [1]),
+                ahead=status.tasks_ahead,
+            )))
 
         async def _on_progress(info: dict):
             if not show_progress:
@@ -1371,12 +1384,10 @@ class ComfyUISmartPlugin(Star):
                 return
             state["last_at"] = now
             state["last_percent"] = percent
-            await event.send(
-                event.plain_result(
-                    f"🎨 采样中 {info.get('value', 0)}/{info.get('max', 0)}（{percent}%）"
-                    f"　用 /取消 可以中止这次出图"
-                )
-            )
+            await event.send(event.plain_result(self.t(
+                "queue.progress",
+                value=info.get("value", 0), max=info.get("max", 0), percent=percent,
+            )))
 
         return _on_wait, _on_queued, _on_progress
 
@@ -1406,13 +1417,11 @@ class ComfyUISmartPlugin(Star):
             backend = self._job_backend.get(prompt_id)
             client = backend.client if backend is not None else self.comfy
             outcome = await client.cancel_prompt(prompt_id)
-            results.append(
-                {
-                    "running": "已中断正在执行的任务",
-                    "pending": "已从 ComfyUI 队列里移除",
-                    "not_found": "任务已不在 ComfyUI 队列里（可能刚好跑完）",
-                }.get(outcome, outcome)
-            )
+            results.append(self.t({
+                "running": "cmd.cancel.running",
+                "pending": "cmd.cancel.pending",
+                "not_found": "cmd.cancel.not_found",
+            }.get(outcome, outcome)))
 
         # 还没拿到名额、在插件侧排队的人，也要能取消
         waiting = self.gate.cancel_waiting(
@@ -1420,16 +1429,13 @@ class ComfyUISmartPlugin(Star):
         )
 
         if not results and not waiting:
-            yield event.plain_result(
-                "🤔 你现在没有正在排队或正在出图的任务"
-                + ("" if is_admin else "（管理员可用 /取消 全部 取消所有人的）")
-            )
+            yield event.plain_result(self.t("cmd.cancel.none"))
             return
-        lines = ["🛑 已取消"]
+        lines = [self.t("cmd.cancel.done")]
         for item in results:
             lines.append(f"　· {item}")
         if waiting:
-            lines.append(f"　· 已取消 {waiting} 个在插件侧排队等待的任务")
+            lines.append("　· " + self.t("cmd.cancel.waiting", count=waiting))
         logger.info("用户 %s 取消出图：task=%s waiting=%s", uid, len(results), waiting)
         yield event.plain_result("\n".join(lines))
 
@@ -1451,11 +1457,7 @@ class ComfyUISmartPlugin(Star):
         raw = _extract_command_payload(event, "画图", "绘图", "draw", "生成图片")
         desc, opts = parse_inline_params(raw)
         if not desc:
-            yield event.plain_result(
-                "🎨 用法：/画图 <描述> [参数]\n"
-                "例如：/画图 一个白裙少女站在樱花树下\n"
-                "　　　/画图 16:9 赛博朋克城市 --seed 42 --steps 30"
-            )
+            yield event.plain_result(self.t("cmd.draw.usage"))
             return
 
         # 带了图片就走图生图（可在配置里关掉）
@@ -1465,11 +1467,10 @@ class ComfyUISmartPlugin(Star):
             if bool((self.config.get("i2i", {}) or {}).get("enable", True)):
                 source_image = images[0]
             else:
-                yield event.plain_result("ℹ️ 检测到图片，但图生图已在配置里关闭，本次按文生图处理")
+                yield event.plain_result(self.t("cmd.draw.i2i_disabled"))
 
         yield event.plain_result(
-            "🖼 收到图片，正在按你的描述重绘…" if source_image
-            else "🎨 收到灵感，正在分析并生成…"
+            self.t("cmd.draw.received_image") if source_image else self.t("cmd.draw.received")
         )
 
         on_wait, on_queued, on_progress = self._queue_notifiers(event)
@@ -1486,15 +1487,15 @@ class ComfyUISmartPlugin(Star):
             )
         except (ComfyUIError, TemplateError) as e:
             logger.warning("出图失败：%s", e)
-            yield event.plain_result(f"💥 出图失败：{e}")
+            yield event.plain_result(self.t("error.failed", error=e))
             return
         except RuntimeError as e:
             logger.warning("LLM 调用失败：%s", e)
-            yield event.plain_result(f"💥 {e}")
+            yield event.plain_result(self.t("error.runtime", error=e))
             return
         except Exception as e:  # pragma: no cover - 兜底，避免 handler 抛出
             logger.exception("出图时发生未预期错误")
-            yield event.plain_result(f"💥 出图时发生未预期错误：{e}")
+            yield event.plain_result(self.t("error.unexpected", error=e))
             return
 
         await self.permission.record(uid, is_admin=is_admin, storage=self.storage)
@@ -1745,62 +1746,67 @@ class ComfyUISmartPlugin(Star):
             chain.append(At(qq=uid))
             chain.append(Plain(" "))
         if output_conf.get("show_params", True):
-            detail = (
-                f"🖼 {result['template']}（{result.get('arch', '?')}）· {result['model']}"
-                f" · {result['width']}x{result['height']}"
-                f" · seed {result['seed']} · {result['seconds']:.1f}s"
+            detail = self.t(
+                "result.params",
+                template=result["template"], arch=result.get("arch", "?"),
+                model=result["model"], width=result["width"], height=result["height"],
+                seed=result["seed"], seconds=result["seconds"],
             )
             if result.get("lora"):
-                detail += f"\n🎯 LoRA：{result['lora']}"
+                detail += self.t("result.lora", lora=result["lora"])
             if result.get("llm_note"):
-                detail += f"\nℹ️ {result['llm_note']}"
+                detail += self.t("result.note", note=result["llm_note"])
             if result.get("i2i"):
-                detail += f"\n🖼 图生图：重绘幅度 {result.get('denoise', 0.6)}"
+                detail += self.t("result.i2i", denoise=result.get("denoise", 0.6))
             if result.get("outpaint"):
                 _op = result["outpaint"]
                 _pads = _op.get("pads") or {}
                 _src = _op.get("source") or (0, 0)
-                detail += (
-                    f"\n🪄 扩图：{_src[0]}x{_src[1]} → {_op.get('width')}x{_op.get('height')}"
-                    f"（左右 +{_pads.get('left', 0)}/+{_pads.get('right', 0)}"
-                    f"、上下 +{_pads.get('top', 0)}/+{_pads.get('bottom', 0)}）"
+                detail += self.t(
+                    "result.outpaint",
+                    sw=_src[0], sh=_src[1], width=_op.get("width"), height=_op.get("height"),
+                    left=_pads.get("left", 0), right=_pads.get("right", 0),
+                    top=_pads.get("top", 0), bottom=_pads.get("bottom", 0),
                 )
             if result.get("hires"):
                 _hw = result["hires"].get("width")
                 _hh = result["hires"].get("height")
                 if _hw and _hh:
-                    detail += f"\n🔍 Hires Fix：{_hw}x{_hh}"
+                    detail += self.t("result.hires_fixed", width=_hw, height=_hh)
                 else:
                     # 尺寸由工作流自己决定，只说倍数，避免编一个尺寸出来
-                    detail += f"\n🔍 Hires Fix：×{result['hires'].get('scale', '')}"
+                    detail += self.t("result.hires_scale", scale=result["hires"].get("scale", ""))
             if result.get("hires_note"):
-                detail += f"\n⚠️ {result['hires_note']}"
+                detail += self.t("result.warning", text=result["hires_note"])
             if result.get("prompt_note"):
-                detail += f"\nℹ️ {result['prompt_note']}"
+                detail += self.t("result.note", note=result["prompt_note"])
             if result.get("i2v"):
-                detail += ("\n🖼 图生视频："
-                           + ("首帧 → 尾帧" if result.get("end_frame") else "以首帧为起点"))
+                detail += self.t(
+                    "result.i2v_frames" if result.get("end_frame") else "result.i2v_start"
+                )
             if result.get("backend"):
-                detail += f"\n🖥 后端：{result['backend']}"
+                detail += self.t("result.backend", name=result["backend"])
             if result.get("queued_seconds"):
                 # 排队时间与出图时间分开报，否则「这次怎么这么慢」说不清
-                detail += f"\n⏳ 排队等待 {result['queued_seconds']:.0f}s"
+                detail += self.t("result.queued", seconds=result["queued_seconds"])
             chain.append(Plain(detail + "\n"))
         shown_video = False
         video_conf = self.config.get("video", {}) or {}
         for path in result.get("videos") or []:
-            detail = f"🎬 视频 {result.get('video', {}).get('seconds', '')} 秒"
+            seconds = result.get("video", {}).get("seconds", "")
             if video_conf.get("send_video", True):
                 chain.append(Video.fromFileSystem(str(path)))
                 shown_video = True
+                detail = self.t("result.video", seconds=seconds)
             else:
-                detail += f"（已保存到 {path}）"
+                detail = self.t("result.video_saved", seconds=seconds, path=path)
             chain.append(Plain(detail + "\n"))
         if result.get("videos") and shown_video:
-            chain.append(Plain(
-                f"（{result['video'].get('length')} 帧 / "
-                f"{result['video'].get('fps'):.0f} fps）\n"
-            ))
+            chain.append(Plain(self.t(
+                "result.video_meta",
+                length=result["video"].get("length"),
+                fps=result["video"].get("fps", 0),
+            )))
         for path in result["images"]:
             chain.append(Image.fromFileSystem(str(path)))
         return chain
@@ -1809,14 +1815,14 @@ class ComfyUISmartPlugin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     async def cmd_refresh_models(self, event: AstrMessageEvent):
         """重新发现 ComfyUI 里可用的模型（管理员）。"""
-        yield event.plain_result("🔍 正在读取 ComfyUI 的模型清单…")
+        yield event.plain_result(self.t("cmd.refresh.doing"))
         result = await self.refresh_models()
         if not result["ok"]:
-            yield event.plain_result(f"⚠️ {result['message']}")
+            yield event.plain_result(self.t("cmd.refresh.failed", message=result["message"]))
             return
-        lines = [f"✅ {result['message']}"]
+        lines = [self.t("cmd.refresh.done", message=result["message"])]
         for folder, files in sorted(result["catalog"].items()):
-            lines.append(f"　【{folder}】{len(files)} 个")
+            lines.append(self.t("cmd.refresh.folder", folder=folder, count=len(files)))
         yield event.plain_result("\n".join(lines))
 
     @filter.command("模型列表", alias={"模型"})
@@ -1824,35 +1830,35 @@ class ComfyUISmartPlugin(Star):
         """查看可用的模型清单。"""
         catalog = await self.get_catalog()
         if not catalog:
-            yield event.plain_result("📭 暂无模型数据，请先 /刷新模型 或检查 ComfyUI 地址")
+            yield event.plain_result(self.t("cmd.models.empty"))
             return
-        lines = ["📦 可用模型"]
+        lines = [self.t("cmd.models.title")]
         for folder, files in sorted(catalog.items()):
-            lines.append(f"\n【{folder}】({len(files)} 个)")
+            lines.append(self.t("cmd.models.folder", folder=folder, count=len(files)))
             for name in files[:12]:
                 lines.append(f"　- {name}")
             if len(files) > 12:
-                lines.append(f"　… 共 {len(files)} 个（完整清单见配置页）")
+                lines.append(self.t("cmd.models.more", count=len(files)))
         yield event.plain_result("\n".join(lines))
 
     @filter.command("模板列表", alias={"工作流"})
     async def cmd_template_list(self, event: AstrMessageEvent):
         """查看当前加载的工作流模板。"""
         if not self.templates:
-            yield event.plain_result("⚠️ 没有加载到任何工作流模板，请检查插件 workflows 目录")
+            yield event.plain_result(self.t("cmd.templates.empty"))
             return
-        lines = ["🧩 工作流模板"]
+        lines = [self.t("cmd.templates.title")]
         for name in sorted(self.templates):
             tpl = self.templates[name]
             info = tpl.describe()
-            lines.append(
-                f"　- {name}（架构 {info['arch']}，加载方式 {info['loader']}，{info['nodes']} 节点）"
-            )
-        lines.append(f"\n架构档案：{'、'.join(sorted(ARCH_PROFILES))}")
-        user_dir = self.user_template_dir
-        lines.append(f"自定义模板目录（放 *.json 即可）：{user_dir}")
+            lines.append(self.t(
+                "cmd.templates.item", name=name, arch=info["arch"],
+                loader=info["loader"], nodes=info["nodes"],
+            ))
+        lines.append(self.t("cmd.templates.arch", arches="、".join(sorted(ARCH_PROFILES))))
+        lines.append(self.t("cmd.templates.user_dir", path=self.user_template_dir))
         if self.template_errors:
-            lines.append(f"⚠️ 以下文件加载失败：{'、'.join(self.template_errors)}")
+            lines.append(self.t("cmd.templates.failed", names="、".join(self.template_errors)))
         yield event.plain_result("\n".join(lines))
 
     @filter.command("状态")
@@ -1952,22 +1958,13 @@ class ComfyUISmartPlugin(Star):
 
         images = await self._collect_images(event)
         if not images:
-            yield event.plain_result(
-                "🖼 用法：把图片和 /图生图 一起发，或者回复一张图片再发\n"
-                "　　/图生图 改成冬天，围上红色围巾\n"
-                "　　/图生图 换成赛博朋克风格 --denoise 0.7\n"
-                "　　/图生图 只修细节 --denoise 0.3\n"
-                "重绘幅度 --denoise：0.3 微调、0.5~0.6 改风格、0.8+ 接近重画（默认 0.6）"
-            )
+            yield event.plain_result(self.t("cmd.img2img.usage"))
             return
         if not desc:
-            yield event.plain_result(
-                "🖼 请说明想怎么改，例如：/图生图 改成冬天，围上红色围巾\n"
-                "（如果想保留原图不动只做细节修补，用 --denoise 0.3）"
-            )
+            yield event.plain_result(self.t("cmd.img2img.need_desc"))
             return
 
-        yield event.plain_result("🖼 正在按你的描述重绘…")
+        yield event.plain_result(self.t("cmd.img2img.received"))
 
         on_wait, on_queued, on_progress = self._queue_notifiers(event)
 
@@ -1983,7 +1980,7 @@ class ComfyUISmartPlugin(Star):
             )
         except (ComfyUIError, TemplateError) as e:
             logger.warning("图生图失败：%s", e)
-            yield event.plain_result(f"💥 出图失败：{e}")
+            yield event.plain_result(self.t("error.failed", error=e))
             return
         except RuntimeError as e:
             yield event.plain_result(f"💥 {e}")
@@ -2010,20 +2007,13 @@ class ComfyUISmartPlugin(Star):
 
         images = await self._collect_images(event)
         if not images:
-            yield event.plain_result(
-                "🪄 用法：把图片和 /扩图 一起发，或者回复一张图片再发\n"
-                "　　/扩图 把画面往两边扩成宽幅　（不给参数时四周各扩原图的 25%）\n"
-                "　　/扩图 --left 256 --right 256　只往左右扩\n"
-                "　　/扩图 往下补出脚和地面 --bottom 384 --top 0\n"
-                "参数：--left/--right/--top/--bottom（像素，自动对齐 8 的倍数）、\n"
-                "　　　--feather（接缝羽化，默认 40）、--model 指定底模、--seed 复现"
-            )
+            yield event.plain_result(self.t("cmd.outpaint.usage"))
             return
         if not desc:
             # 不给描述也能用：给一句通用的「往外延伸」，交给 LLM 改写（若开启）
-            desc = "继续向外延伸画面，补全被裁掉的构图，保持一致的风格、光影与细节"
+            desc = self.t("cmd.outpaint.default_prompt")
 
-        yield event.plain_result("🪄 正在把画面往外扩…")
+        yield event.plain_result(self.t("cmd.outpaint.received"))
         on_wait, on_queued, on_progress = self._queue_notifiers(event)
 
         try:
@@ -2039,7 +2029,7 @@ class ComfyUISmartPlugin(Star):
             )
         except (ComfyUIError, TemplateError) as e:
             logger.warning("扩图失败：%s", e)
-            yield event.plain_result(f"💥 扩图失败：{e}")
+            yield event.plain_result(self.t("error.outpaint_failed", error=e))
             return
         except RuntimeError as e:
             yield event.plain_result(f"💥 {e}")
@@ -2066,23 +2056,15 @@ class ComfyUISmartPlugin(Star):
 
         images = await self._collect_images(event)
         if not images:
-            yield event.plain_result(
-                "🎬 用法：把图片和 /图生视频 一起发，或者回复一张图片再发\n"
-                "　　/图生视频 让她的头发飘动起来 --seconds 3\n"
-                "　　/图生视频 从白天过渡到夜晚（发两张图：第一张首帧、第二张尾帧）\n"
-                "　　/图生视频 镜头缓慢推近 --ratio 16:9 --fps 16\n"
-                "参数与 /视频 相同：--seconds 时长、--fps 帧率、--length 帧数\n"
-                "⚠️ 需要 ComfyUI 里装好视频模型（如 Wan 2.x I2V）与节点；缺什么会直接告诉你"
-            )
+            yield event.plain_result(self.t("cmd.i2v.usage"))
             return
         if not desc:
-            desc = "让画面自然地动起来，保持主体与风格一致"
+            desc = self.t("cmd.i2v.default_prompt")
 
         start_image = images[0]
         end_image = images[1] if len(images) > 1 else ""
-        tip = "🎬 收到（首帧 → 尾帧），正在生成视频（比出图慢很多，请耐心等）…" if end_image \
-            else "🎬 收到图片，正在让它动起来（比出图慢很多，请耐心等）…"
-        yield event.plain_result(tip)
+        tip_key = "cmd.i2v.received_frames" if end_image else "cmd.i2v.received"
+        yield event.plain_result(self.t(tip_key))
 
         on_wait, on_queued, on_progress = self._queue_notifiers(event)
         try:
@@ -2099,7 +2081,7 @@ class ComfyUISmartPlugin(Star):
             )
         except (ComfyUIError, TemplateError) as e:
             logger.warning("图生视频失败：%s", e)
-            yield event.plain_result(f"💥 视频生成失败：{e}")
+            yield event.plain_result(self.t("error.video_failed", error=e))
             return
         except RuntimeError as e:
             yield event.plain_result(f"💥 {e}")
@@ -2125,20 +2107,15 @@ class ComfyUISmartPlugin(Star):
         desc, opts = parse_inline_params(raw)
         if not desc:
             video_conf = self.config.get("video", {}) or {}
-            yield event.plain_result(
-                "🎬 用法：/视频 <描述> [参数]\n"
-                "例如：/视频 一只猫在草地上奔跑 --seconds 5 --fps 16\n"
-                "　　　/视频 赛博朋克城市延时 --ratio 16:9 --steps 30\n"
-                f"参数：--seconds（时长，默认 {video_conf.get('default_seconds', 4)} 秒，"
-                f"上限 {video_conf.get('max_seconds', 10)} 秒）、"
-                f"--fps（帧率，默认 {video_conf.get('default_fps', 16)}）、"
-                "--length（直接给帧数，按 4n+1 对齐）\n"
-                "尺寸用 --size/--ratio/--width/--height，其余参数与 /画图 相同\n"
-                "⚠️ 需要 ComfyUI 里已装好视频模型与节点（如 Wan 2.x）；缺什么会直接告诉你"
-            )
+            yield event.plain_result(self.t(
+                "cmd.video.usage",
+                seconds=video_conf.get("default_seconds", 4),
+                max_seconds=video_conf.get("max_seconds", 10),
+                fps=video_conf.get("default_fps", 16),
+            ))
             return
 
-        yield event.plain_result("🎬 收到，正在生成视频（比出图慢很多，请耐心等）…")
+        yield event.plain_result(self.t("cmd.video.received"))
         on_wait, on_queued, on_progress = self._queue_notifiers(event)
 
         try:
@@ -2153,7 +2130,7 @@ class ComfyUISmartPlugin(Star):
             )
         except (ComfyUIError, TemplateError) as e:
             logger.warning("文生视频失败：%s", e)
-            yield event.plain_result(f"💥 视频生成失败：{e}")
+            yield event.plain_result(self.t("error.video_failed", error=e))
             return
         except RuntimeError as e:
             yield event.plain_result(f"💥 {e}")
@@ -2180,20 +2157,15 @@ class ComfyUISmartPlugin(Star):
 
         images = await self._collect_images(event)
         if not images:
-            yield event.plain_result(
-                "🖼 用法：把图片和 /反推 一起发，或者回复一张图片再发 /反推\n"
-                "　　/反推 帮我看看这张图怎么写提示词\n"
-                "　　/反推 --画　反推后直接出图\n"
-                "　　/反推 --provider <provider_id>　指定看图模型（当前会话模型不支持看图时用）\n"
-                "　　/反推 --model juggernaut --画　指定底模出图"
-            )
+            yield event.plain_result(self.t("cmd.reverse.usage"))
             return
 
         pid = str(opts.get("provider") or "").strip()
-        yield event.plain_result(
-            f"🔍 正在用 {self.llm.provider_label(pid) if pid else '当前会话模型'} 分析 "
-            f"{len(images)} 张图片…"
-        )
+        yield event.plain_result(self.t(
+            "cmd.reverse.analyzing",
+            model=self.llm.provider_label(pid) if pid else self.t("cmd.draw.vision_current"),
+            count=len(images),
+        ))
         try:
             result = await self.llm.reverse_prompt(
                 images, hint=hint, event=event, provider_id=pid
@@ -2204,26 +2176,24 @@ class ComfyUISmartPlugin(Star):
             return
 
         if not result.get("positive"):
-            yield event.plain_result(
-                "💥 没能从图里反推出提示词。请确认所用对话模型支持看图，或换一张更清晰的图"
-            )
+            yield event.plain_result(self.t("cmd.reverse.empty"))
             return
 
-        lines = ["🔍 反推结果"]
+        lines = [self.t("cmd.reverse.result")]
         if result.get("model"):
-            lines.append(f"（看图模型：{result['model']}）")
+            lines.append(self.t("cmd.reverse.vision_model", model=result["model"]))
         if result.get("summary"):
-            lines.append(f"画面：{result['summary']}")
-        lines.append(f"\n正向提示词：\n{result['positive']}")
+            lines.append(self.t("cmd.reverse.scene", summary=result["summary"]))
+        lines.append(self.t("cmd.reverse.positive", positive=result["positive"]))
         if result.get("negative"):
-            lines.append(f"\n建议负面词：\n{result['negative']}")
+            lines.append(self.t("cmd.reverse.negative", negative=result["negative"]))
 
         if not opts.get("draw"):
-            lines.append("\n出图：/反推 --画　（或把上面的正向提示词交给 /画图）")
+            lines.append(self.t("cmd.reverse.draw_hint"))
             yield event.plain_result("\n".join(lines))
             return
 
-        yield event.plain_result("\n".join(lines) + "\n\n🎨 正在按反推结果出图…")
+        yield event.plain_result("\n".join(lines) + self.t("cmd.reverse.drawing"))
 
         on_wait, on_queued, on_progress = self._queue_notifiers(event)
 
@@ -2239,7 +2209,7 @@ class ComfyUISmartPlugin(Star):
             )
         except (ComfyUIError, TemplateError) as e:
             logger.warning("按反推结果出图失败：%s", e)
-            yield event.plain_result(f"💥 出图失败：{e}")
+            yield event.plain_result(self.t("error.failed", error=e))
             return
         except RuntimeError as e:
             yield event.plain_result(f"💥 {e}")
@@ -2253,52 +2223,36 @@ class ComfyUISmartPlugin(Star):
     async def cmd_stats(self, event: AstrMessageEvent):
         """查看出图统计。"""
         stats = self.storage.load_stats()
-        lines = ["📊 使用统计"]
+        lines = [self.t("cmd.stats.title")]
         users = stats.get("users") or {}
         if users:
-            lines.append("【用户出图次数】")
+            lines.append(self.t("cmd.stats.users"))
             for uid, info in sorted(
                 users.items(), key=lambda kv: -int(kv[1].get("count", 0))
             )[:10]:
-                lines.append(f"　- {info.get('name', uid)}：{info.get('count', 0)} 次")
+                lines.append(self.t(
+                    "cmd.stats.user_item", name=info.get("name", uid),
+                    count=info.get("count", 0),
+                ))
         usage = stats.get("model_usage") or {}
         for key, label in (("checkpoint", "底模"), ("lora", "LoRA"), ("vae", "VAE")):
             if usage.get(key):
-                lines.append(f"【{label}调用】")
+                lines.append(self.t("cmd.stats.usage", label=label))
                 for name, count in sorted(
                     usage[key].items(), key=lambda kv: -kv[1]
                 )[:5]:
-                    lines.append(f"　- {name}：{count} 次")
+                    lines.append(self.t("cmd.stats.usage_item", name=name, count=count))
         records = stats.get("records") or []
         if records:
-            lines.append(f"【最近出图】共 {len(records)} 条记录，配置页可查看画廊")
+            lines.append(self.t("cmd.stats.records", count=len(records)))
         if len(lines) == 1:
-            lines.append("暂无记录")
+            lines.append(self.t("cmd.stats.empty"))
         yield event.plain_result("\n".join(lines))
 
     @filter.command("帮助", alias={"comfy帮助"})
     async def cmd_help(self, event: AstrMessageEvent):
         """查看帮助。"""
-        yield event.plain_result(
-            "🎨 ComfyUI 智能绘图\n"
-            "━━━━━━━━━━━━━━\n"
-            "/画图 <描述>　用一句中文出图\n"
-            "　行内参数：16:9 / --size 1024x1536 / --seed 42\n"
-            "　　　　　　--steps 30 / --cfg 6 / --lora 名字:0.8\n"
-            "　　　　　　--model 关键词 / --batch 2 / --negative \"...\"\n"
-            "/图生图　　以图为底按描述重绘（别名 /改图，--denoise 控制幅度）\n"
-            "/扩图　　　把画面往外扩，补全构图（--left/--right/--top/--bottom 像素）\n"
-            "/视频　　　按描述生成短视频（--seconds 时长 / --fps 帧率 / --length 帧数）\n"
-            "/图生视频　让一张图动起来（发两张图=首帧→尾帧，别名 /i2v）\n"
-            "/反推　　　看图反推提示词（发图或回复图片，加 --画 直接出图）\n"
-            "/模型列表　查看可用模型\n"
-            "/模板列表　查看工作流模板（可放自定义模板）\n"
-            "/状态　　　查看 ComfyUI 连接与队列\n"
-            "/取消　　　取消自己正在排队或正在出图的任务（管理员：/取消 全部）\n"
-            "/统计　　　查看出图统计\n"
-            "/刷新模型　重新读取模型清单（管理员）\n"
-            "/帮助　　　显示本帮助"
-        )
+        yield event.plain_result(self.t("cmd.help.body"))
 
     # ------------------------------------------------------------------ #
     # 无指令出图（可在配置中开关）

@@ -466,7 +466,7 @@ PLUGIN_SRC_ROOT = Path(__file__).resolve().parent.parent
 # 参与上架规范检查的源码（tests/ 自身不算插件运行时）
 _AUDIT_FILES = ("main.py", "comfyui_api.py", "llm_service.py", "storage.py",
                 "permission.py", "workflow_templates.py", "queue_gate.py",
-                "backend_pool.py", "ui_workflow.py", "pages/__init__.py")
+                "backend_pool.py", "ui_workflow.py", "i18n.py", "pages/__init__.py")
 _AUDIT_DIRS = ("pages/settings",)
 
 
@@ -3601,6 +3601,114 @@ def main() -> int:
     plugin.templates["wan_i2v"] = saved_i2v_tpl
     check("缺图生视频模板时报错并指出该放哪个文件",
           "wan_i2v.json" in out_i2v_missing[-1]["text"], out_i2v_missing[-1]["text"][:80])
+
+    print("\n=== 国际化 i18n（v0.15.0）===")
+    from astrbot_plugin_comfyui_smart import i18n as i18n_mod
+    from astrbot_plugin_comfyui_smart import llm_service as _llm
+    from astrbot_plugin_comfyui_smart import permission as _perm
+
+    catalog = i18n_mod.load_translations(i18n_mod.i18n_dir(ROOT))
+    check("按官方约定读到 .astrbot-plugin/i18n 下的文案",
+          {"zh-CN", "en-US"} <= set(catalog), sorted(catalog))
+    check("每种语言的键完全一致（少一条就是漏翻译）",
+          set(catalog["zh-CN"]) == set(catalog["en-US"]),
+          sorted(set(catalog["zh-CN"]) ^ set(catalog["en-US"]))[:5])
+    check("中英文案确实不同（不是复制粘贴糊弄）",
+          catalog["zh-CN"]["perm.whitelist"] != catalog["en-US"]["perm.whitelist"]
+          and any("\u4e00" <= ch <= "\u9fff" for ch in catalog["zh-CN"]["perm.whitelist"])
+          and not any("\u4e00" <= ch <= "\u9fff" for ch in catalog["en-US"]["perm.whitelist"]),
+          (catalog["zh-CN"]["perm.whitelist"], catalog["en-US"]["perm.whitelist"]))
+
+    # 源码里用到的键必须两个语言都有（这份守卫防止「改了代码忘了加文案」）
+    used_keys: set[str] = set()
+    for rel, text in (
+        ("main.py", _src("main.py")),
+        ("permission.py", _src("permission.py")),
+        ("llm_service.py", _src("llm_service.py")),
+        ("pages/__init__.py", _src("pages/__init__.py")),
+    ):
+        for match in _re.finditer(r'["\']((?:cmd|common|queue|result|error|perm|llm|ui)\.[a-z0-9_.]+)["\']', text):
+            used_keys.add(match.group(1))
+    missing_keys = sorted(k for k in used_keys if k not in catalog["zh-CN"] or k not in catalog["en-US"])
+    check("源码里引用到的文案键在两个语言里都存在",
+          used_keys and not missing_keys, missing_keys or f"{len(used_keys)} 个键全部有文案")
+    check("文案键有分层前缀（cmd./queue./result./error./perm./llm./ui.）",
+          all(k.split(".")[0] in {"cmd", "common", "queue", "result", "error", "perm", "llm", "ui"}
+              for k in used_keys),
+          sorted({k.split(".")[0] for k in used_keys}))
+
+    # LLM 提示词：中文文案必须与代码里的常量一致（防止两边漂移）
+    check("LLM 系统提示词的中文文案与代码常量一致",
+          catalog["zh-CN"]["llm.optimize_system"] == _llm.PROMPT_SYSTEM
+          and catalog["zh-CN"]["llm.reverse_system"] == _llm.REVERSE_SYSTEM,
+          (len(catalog["zh-CN"]["llm.optimize_system"]), len(_llm.PROMPT_SYSTEM)))
+    check("英文提示词也要求只输出 JSON（换语言不能丢格式约束）",
+          "JSON" in catalog["en-US"]["llm.optimize_system"]
+          and "JSON" in catalog["en-US"]["llm.reverse_system"], True)
+
+    # Translator 行为
+    tr_zh = i18n_mod.Translator(catalog, locale="zh-CN")
+    tr_en = i18n_mod.Translator(catalog, locale="en-US")
+    check("按选定语言取文案", tr_en("perm.blacklist") == catalog["en-US"]["perm.blacklist"],
+          tr_en("perm.blacklist"))
+    check("格式化参数生效（带 {n} 的文案）",
+          tr_zh("perm.cooldown", seconds=12) == "⏱️ 冷却中，请 12 秒后再试",
+          tr_zh("perm.cooldown", seconds=12))
+    check("格式化参数缺失时不抛错（原样返回）",
+          "{seconds}" in tr_zh("perm.cooldown"), tr_zh("perm.cooldown"))
+    check("未知键返回键名本身（最坏情况也不会崩）",
+          tr_zh("nope.missing.key") == "nope.missing.key", tr_zh("nope.missing.key"))
+    check("选不到语言时退回默认语言",
+          i18n_mod.Translator(catalog, locale="fr-FR").locale == "zh-CN"
+          and i18n_mod.Translator(catalog, locale="").locale == "zh-CN",
+          i18n_mod.Translator(catalog, locale="fr-FR").locale)
+    check("语言代码容错：zh / EN / en_US 都能认",
+          [i18n_mod.Translator(catalog, locale=x).locale
+           for x in ("zh", "EN", "en_US", "en-us")] == ["zh-CN", "en-US", "en-US", "en-US"],
+          [i18n_mod.Translator(catalog, locale=x).locale for x in ("zh", "EN", "en_us")])
+    check("Translator 可以直接当函数用（传给别的组件）",
+          callable(tr_en) and tr_en("perm.daily_limit", limit=3)
+          == catalog["en-US"]["perm.daily_limit"].format(limit=3), tr_en("perm.daily_limit", limit=3))
+    check("插件页文案只挑 ui. 前缀那部分",
+          set(tr_en.ui_strings()) and all(k.startswith("ui.") for k in tr_en.ui_strings()),
+          sorted(tr_en.ui_strings())[:3])
+
+    # 英文模式下：权限提示与 LLM 提示词都跟着换
+    en_perm = _perm.PermissionManager({"whitelist_user_ids": ["a"]}, translate=tr_en)
+    ok_en, why_en = asyncio.run(en_perm.check("b", is_admin=False, storage=plugin.storage))
+    check("英文模式下权限提示是英文",
+          not ok_en and why_en == catalog["en-US"]["perm.whitelist"], why_en)
+    llm_en = _llm.LLMService(ctx, plugin.config, translate=tr_en)
+    check("英文模式下 LLM 用的是英文系统提示词",
+          llm_en._t("llm.optimize_system") == catalog["en-US"]["llm.optimize_system"]
+          and "prompt engineer" in llm_en._t("llm.optimize_system"),
+          llm_en._t("llm.optimize_system")[:40])
+    check("没注入翻译器时权限/LLM 也不会返回键名（默认中文文案兜底）",
+          "白名单" in _perm.PermissionManager({"whitelist_user_ids": ["a"]})
+          ._t("perm.whitelist")
+          and _llm.LLMService(ctx, plugin.config)._t("llm.optimize_system") != "llm.optimize_system",
+          True)
+
+    # 端到端：把插件切到英文，聊天文案真的变英文
+    plugin.config["general"] = {"language": "en-US"}
+    plugin._configure_i18n()
+    check("切到 en-US 后插件翻译器生效", plugin.t.locale == "en-US", plugin.t.locale)
+    out_en = asyncio.run(drive(plugin.cmd_draw(AstrMessageEvent(message_str="/画图"))))
+    check("英文模式下 /画图 的用法提示是英文",
+          "Usage:" in out_en[0]["text"] and "🎨" in out_en[0]["text"], out_en[0]["text"][:60])
+    out_en_help = asyncio.run(drive(plugin.cmd_help(AstrMessageEvent(message_str="/帮助"))))
+    check("英文模式下 /帮助 整体是英文",
+          "Smart Drawing" in out_en_help[0]["text"] and "用法" not in out_en_help[0]["text"],
+          out_en_help[0]["text"][:60])
+    i18n_resp = asyncio.run(handlers[(f"{base}/i18n", ("GET",))]())
+    check("Pages /i18n 接口返回当前语言与页面文案",
+          i18n_resp.get("locale") == "en-US"
+          and i18n_resp.get("strings", {}).get("ui.nav.server") == "Server",
+          {k: i18n_resp.get(k) for k in ("locale", "available")})
+    plugin.config["general"] = {"language": "zh-CN"}
+    plugin._configure_i18n()
+    check("切回中文后恢复", plugin.t.locale == "zh-CN"
+          and plugin.t("ui.nav.server") == "服务器", plugin.t("ui.nav.server"))
 
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）

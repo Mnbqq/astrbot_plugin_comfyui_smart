@@ -1,4 +1,17 @@
 {
+  "general": {
+    "description": "通用",
+    "type": "object",
+    "items": {
+      "language": {
+        "description": "语言",
+        "type": "string",
+        "options": ["auto", "zh-CN", "en-US"],
+        "hint": "auto=跟随 AstrBot 界面语言（拿不到就用中文）。聊天文案、LLM 提示词与配置页导航会跟着切换。文案文件在 .astrbot-plugin/i18n/ 下，可自行增补。",
+        "default": "auto"
+      }
+    }
+  },
   "server": {
     "description": "ComfyUI 服务",
     "type": "object",
