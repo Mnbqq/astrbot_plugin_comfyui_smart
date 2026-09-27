@@ -34,7 +34,7 @@ from .workflow_templates import (
 
 PLUGIN_NAME = "astrbot_plugin_comfyui_smart"
 # 与 metadata.yaml 的 version 保持一致（tests/test_logic.py 会校验二者不漂移）
-PLUGIN_VERSION = "0.7.0"
+PLUGIN_VERSION = "0.8.0"
 PLUGIN_DIR = Path(__file__).resolve().parent
 BUILTIN_TEMPLATE_DIR = PLUGIN_DIR / "workflows"
 
@@ -203,7 +203,10 @@ class ComfyUISmartPlugin(Star):
         self._cancel = asyncio.Event()
         # 提示词过长提示每次加载只发一次，避免每条出图都刷屏（日志里仍每次都记）
         self._prompt_note_shown = False
-        self._active_jobs: set[str] = set()
+        # 正在进行的任务：prompt_id -> 触发者 id（`/取消` 据此判断「谁的任务」）
+        self._active_jobs: dict[str, str] = {}
+        # 每个在途任务一个取消信号，供 `/取消` 定点打断（与插件卸载的全局信号分开）
+        self._job_cancel: dict[str, asyncio.Event] = {}
 
         # 注册插件 Pages 的后端 API。
         # 注意：必须在 __init__ 里调用——漏掉的话，配置页/模型页/状态页的每个请求
@@ -308,12 +311,16 @@ class ComfyUISmartPlugin(Star):
         woken = self.gate.shutdown("插件正在重载，本次出图已取消，请稍后再发一次")
         if woken:
             logger.info("插件卸载：已取消 %d 个排队中的出图请求", woken)
+        # 在途任务：先置取消信号（等待循环会立刻退出），再打断 ComfyUI 端
+        for job_event in self._job_cancel.values():
+            job_event.set()
         for prompt_id in list(self._active_jobs):
             try:
                 await self.comfy.interrupt(prompt_id)
             except Exception:
                 pass
         self._active_jobs.clear()
+        self._job_cancel.clear()
         await self.comfy.close()
         logger.info("ComfyUI 智能绘图已卸载")
 
@@ -667,6 +674,7 @@ class ComfyUISmartPlugin(Star):
         event: AstrMessageEvent | None = None,
         on_queued=None,
         on_wait=None,
+        on_progress=None,
         preset: dict | None = None,
         source_image: str = "",
     ) -> dict:
@@ -678,6 +686,7 @@ class ComfyUISmartPlugin(Star):
             event: 消息事件，用于 LLM 会话级 provider、统计与「单人并发上限」。
             on_queued: ComfyUI 队列位置提示回调（已提交，等 ComfyUI 轮到）。
             on_wait: 插件侧排队提示回调（并发已满，还没轮到提交）。
+            on_progress: 出图进度回调（WebSocket 推送的第 n / 总步数）。
             preset: 现成的提示词（如反推结果），给了就跳过 LLM 改写。
             source_image: 图生图的输入图本地路径；给了就走图生图模板。
 
@@ -979,16 +988,22 @@ class ComfyUISmartPlugin(Star):
                             f"　　- {item}" for item in problems
                         )
                     raise ComfyUIError(detail) from e
-                self._active_jobs.add(prompt_id)
+                # 登记在途任务：`/取消` 靠这两张表找到「这个人的任务」并定点打断
+                job_cancel = asyncio.Event()
+                self._active_jobs[prompt_id] = uid
+                self._job_cancel[prompt_id] = job_cancel
                 try:
                     images = await self.comfy.wait_for_images(
                         prompt_id,
                         self.storage.output_dir,
                         on_queued=on_queued,
+                        on_progress=on_progress,
                         cancel_event=self._cancel,
+                        user_cancel_event=job_cancel,
                     )
                 finally:
-                    self._active_jobs.discard(prompt_id)
+                    self._active_jobs.pop(prompt_id, None)
+                    self._job_cancel.pop(prompt_id, None)
         except QueueTimeout as e:
             # 排队超时不是「出图失败」而是「没轮上」：记 info 便于区分，再交给指令层告知用户
             logger.info("出图排队超时：%s", e)
@@ -1021,18 +1036,27 @@ class ComfyUISmartPlugin(Star):
         }
 
     def _queue_notifiers(self, event: AstrMessageEvent):
-        """构造两条队列提示回调，供各指令复用。
+        """构造出图过程中的三条提示回调，供各指令复用。
 
-        两条提示含义不同，都需要：
+        三条提示含义不同，都需要：
         - `on_wait`：并发名额已满（或自己已有任务在跑），还没轮到提交；
-        - `on_queued`：已提交给 ComfyUI，等它自己的队列轮到。
+        - `on_queued`：已提交给 ComfyUI，等它自己的队列轮到（位置变化时才再提）；
+        - `on_progress`：ComfyUI 通过 WebSocket 推来的「第 n / 总步数」。
 
         Args:
             event: 消息事件，提示直接发回当前会话。
 
         Returns:
-            (on_wait, on_queued) 两个回调。
+            (on_wait, on_queued, on_progress) 三个回调。
         """
+        output_conf = self.config.get("output", {}) or {}
+        show_progress = bool(output_conf.get("show_progress", True))
+        try:
+            interval = float(output_conf.get("progress_interval", 5) or 5)
+        except (TypeError, ValueError):
+            interval = 5.0
+        # 节流状态：步数事件很密（每步一条），不节流会把聊天刷爆
+        state = {"last_at": 0.0, "last_percent": -1}
 
         async def _on_wait(info: dict):
             if info.get("reason") == "user":
@@ -1055,7 +1079,77 @@ class ComfyUISmartPlugin(Star):
                 )
             )
 
-        return _on_wait, _on_queued
+        async def _on_progress(info: dict):
+            if not show_progress:
+                return
+            percent = int(info.get("percent", 0))
+            now = time.time()
+            # 同一百分比不重复发；未到间隔时间也不发（100% 一定发，收个尾）
+            if percent == state["last_percent"]:
+                return
+            if percent < 100 and now - state["last_at"] < interval:
+                return
+            state["last_at"] = now
+            state["last_percent"] = percent
+            await event.send(
+                event.plain_result(
+                    f"🎨 采样中 {info.get('value', 0)}/{info.get('max', 0)}（{percent}%）"
+                    f"　用 /取消 可以中止这次出图"
+                )
+            )
+
+        return _on_wait, _on_queued, _on_progress
+
+    @filter.command("取消", alias={"停止", "cancel", "stop", "中断"})
+    async def cmd_cancel(self, event: AstrMessageEvent):
+        """取消自己正在排队或正在出图的任务。"""
+        uid = str(event.get_sender_id())
+        is_admin = bool(event.is_admin())
+        raw = _extract_command_payload(event, "取消", "停止", "cancel", "stop", "中断")
+        want_all = bool(is_admin and raw.strip() in ("全部", "所有", "--all", "--全部", "all"))
+
+        running: list[str] = []
+        if want_all:
+            running = list(self._active_jobs)
+        else:
+            # 同一用户可能有多张（把单人上限调大过），只取消最后发起的那个
+            for prompt_id, owner in reversed(list(self._active_jobs.items())):
+                if owner == uid:
+                    running.append(prompt_id)
+                    break
+
+        results: list[str] = []
+        for prompt_id in running:
+            job_event = self._job_cancel.get(prompt_id)
+            if job_event is not None:
+                job_event.set()
+            outcome = await self.comfy.cancel_prompt(prompt_id)
+            results.append(
+                {
+                    "running": "已中断正在执行的任务",
+                    "pending": "已从 ComfyUI 队列里移除",
+                    "not_found": "任务已不在 ComfyUI 队列里（可能刚好跑完）",
+                }.get(outcome, outcome)
+            )
+
+        # 还没拿到名额、在插件侧排队的人，也要能取消
+        waiting = self.gate.cancel_waiting(
+            "" if want_all else uid, "本次出图已被 /取消 取消"
+        )
+
+        if not results and not waiting:
+            yield event.plain_result(
+                "🤔 你现在没有正在排队或正在出图的任务"
+                + ("" if is_admin else "（管理员可用 /取消 全部 取消所有人的）")
+            )
+            return
+        lines = ["🛑 已取消"]
+        for item in results:
+            lines.append(f"　· {item}")
+        if waiting:
+            lines.append(f"　· 已取消 {waiting} 个在插件侧排队等待的任务")
+        logger.info("用户 %s 取消出图：task=%s waiting=%s", uid, len(results), waiting)
+        yield event.plain_result("\n".join(lines))
 
     # ------------------------------------------------------------------ #
     # 指令
@@ -1096,7 +1190,7 @@ class ComfyUISmartPlugin(Star):
             else "🎨 收到灵感，正在分析并生成…"
         )
 
-        on_wait, on_queued = self._queue_notifiers(event)
+        on_wait, on_queued, on_progress = self._queue_notifiers(event)
 
         try:
             result = await self.generate(
@@ -1105,6 +1199,7 @@ class ComfyUISmartPlugin(Star):
                 event=event,
                 on_wait=on_wait,
                 on_queued=on_queued,
+                on_progress=on_progress,
                 source_image=source_image,
             )
         except (ComfyUIError, TemplateError) as e:
@@ -1424,7 +1519,7 @@ class ComfyUISmartPlugin(Star):
 
         yield event.plain_result("🖼 正在按你的描述重绘…")
 
-        on_wait, on_queued = self._queue_notifiers(event)
+        on_wait, on_queued, on_progress = self._queue_notifiers(event)
 
         try:
             result = await self.generate(
@@ -1433,6 +1528,7 @@ class ComfyUISmartPlugin(Star):
                 event=event,
                 on_wait=on_wait,
                 on_queued=on_queued,
+                on_progress=on_progress,
                 source_image=images[0],
             )
         except (ComfyUIError, TemplateError) as e:
@@ -1509,7 +1605,7 @@ class ComfyUISmartPlugin(Star):
 
         yield event.plain_result("\n".join(lines) + "\n\n🎨 正在按反推结果出图…")
 
-        on_wait, on_queued = self._queue_notifiers(event)
+        on_wait, on_queued, on_progress = self._queue_notifiers(event)
 
         try:
             drawn = await self.generate(
@@ -1518,6 +1614,7 @@ class ComfyUISmartPlugin(Star):
                 event=event,
                 on_wait=on_wait,
                 on_queued=on_queued,
+                on_progress=on_progress,
                 preset=result,
             )
         except (ComfyUIError, TemplateError) as e:
@@ -1574,6 +1671,7 @@ class ComfyUISmartPlugin(Star):
             "/模型列表　查看可用模型\n"
             "/模板列表　查看工作流模板（可放自定义模板）\n"
             "/状态　　　查看 ComfyUI 连接与队列\n"
+            "/取消　　　取消自己正在排队或正在出图的任务（管理员：/取消 全部）\n"
             "/统计　　　查看出图统计\n"
             "/刷新模型　重新读取模型清单（管理员）\n"
             "/帮助　　　显示本帮助"

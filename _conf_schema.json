@@ -276,6 +276,18 @@
         "hint": "显示模板名、底模、分辨率、种子与耗时，方便复现。",
         "default": true
       },
+      "show_progress": {
+        "description": "出图过程中发送实时进度",
+        "type": "bool",
+        "hint": "通过 ComfyUI 的 WebSocket 推送显示「第 n / 总步数」。连不上 WebSocket 时自动退回轮询，不影响出图。关掉后只在完成时发结果。",
+        "default": true
+      },
+      "progress_interval": {
+        "description": "进度提示最小间隔（秒）",
+        "type": "int",
+        "hint": "步数事件很密（每步一条），按这个间隔节流，避免刷屏。0 表示不节流。",
+        "default": 5
+      },
       "keep_images": {
         "description": "本地最多保留图片数",
         "type": "int",

@@ -61,6 +61,8 @@ const FIELDS = [
 
   { id: 'out_mention', path: ['output', 'mention_trigger_user'], kind: 'bool' },
   { id: 'out_show_params', path: ['output', 'show_params'], kind: 'bool' },
+  { id: 'out_show_progress', path: ['output', 'show_progress'], kind: 'bool' },
+  { id: 'out_progress_interval', path: ['output', 'progress_interval'], kind: 'int' },
   { id: 'out_keep_images', path: ['output', 'keep_images'], kind: 'int' },
   { id: 'out_image_age', path: ['output', 'image_max_age_days'], kind: 'int' },
 

@@ -301,6 +301,16 @@
             <div><h3>随图片附带参数信息</h3><p>显示模板名、底模、分辨率、种子与耗时，方便复现。</p></div>
             <label class="switch-wrapper"><input type="checkbox" id="out_show_params" class="ios-switch" /></label>
           </div>
+          <div class="setting-row">
+            <div><h3>出图过程中发送实时进度</h3><p>通过 ComfyUI 的 WebSocket 推送显示「第 n / 总步数」；连不上时自动退回轮询，不影响出图。</p></div>
+            <label class="switch-wrapper"><input type="checkbox" id="out_show_progress" class="ios-switch" /></label>
+          </div>
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="out_progress_interval">进度提示最小间隔（秒）</label>
+              <input type="number" id="out_progress_interval" class="input-modern" min="0" />
+            </div>
+          </div>
           <div class="form-grid">
             <div class="form-group">
               <label for="out_keep_images">本地最多保留图片数</label>

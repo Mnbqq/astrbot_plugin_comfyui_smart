@@ -718,13 +718,126 @@ class ComfyUI:
         except ComfyUIError:
             return False
 
+    async def cancel_prompt(self, prompt_id: str) -> str:
+        """尽量取消一个任务，并说明实际做了什么。
+
+        ComfyUI 的两条路要分开走：
+        - 任务**正在执行**：`POST /interrupt`（`/queue` 的 delete 停不掉正在跑的那个）；
+        - 任务**还在排队**：`POST /queue {"delete": [prompt_id]}`。
+
+        上游没有「一步取消」的接口，所以这里先读 `/queue` 判断它在哪一段，
+        再发对应的请求；两段都试过仍没命中时返回 `not_found`，由调用方决定怎么告知用户。
+
+        Args:
+            prompt_id: 目标任务 id。
+
+        Returns:
+            `running` / `pending` / `not_found`。
+        """
+        try:
+            data = await self._request("GET", "/queue")
+        except ComfyUIError:
+            data = {}
+        running = data.get("queue_running") or [] if isinstance(data, dict) else []
+        pending = data.get("queue_pending") or [] if isinstance(data, dict) else []
+        if any(self._queue_item_id(item)[0] == prompt_id for item in running):
+            ok = await self.interrupt(prompt_id)
+            return "running" if ok else "not_found"
+        if any(self._queue_item_id(item)[0] == prompt_id for item in pending):
+            try:
+                await self._request("POST", "/queue", json={"delete": [prompt_id]})
+                return "pending"
+            except ComfyUIError:
+                return "not_found"
+        return "not_found"
+
+    def _ws_url(self) -> str:
+        """把 base_url 换成 WebSocket 地址（进度推送用）。"""
+        base = self.base_url
+        if base.startswith("https://"):
+            base = "wss://" + base[len("https://"):]
+        elif base.startswith("http://"):
+            base = "ws://" + base[len("http://"):]
+        return f"{base}/ws?clientId={self.client_id}"
+
+    async def _watch_progress(self, prompt_id: str, on_progress) -> None:
+        """监听 ComfyUI 的 WebSocket 进度事件，并回调给上层。
+
+        ComfyUI 通过 `/ws` 推送 `progress`（`value`/`max` 就是「第 n 步 / 共 m 步」）
+        与 `executing`。这条通道**只是锦上添花**：连不上（老版本、反向代理没转发
+        WebSocket、被防火墙拦）就安静退出，等待流程仍由轮询兜底，不会因此出图失败。
+
+        Args:
+            prompt_id: 目标任务 id，用于过滤别人的任务。
+            on_progress: 回调，参数形如
+                `{"value": 3, "max": 28, "percent": 11, "node": "5", "prompt_id": ...}`。
+        """
+        session = await self._get_session()
+        try:
+            ws = await session.ws_connect(self._ws_url(), heartbeat=30)
+        except Exception as e:
+            if self.logger is not None:
+                self.logger.debug("ComfyUI 进度推送不可用（继续用轮询）：%s", e)
+            return
+        try:
+            while True:
+                msg = await ws.receive()
+                data = getattr(msg, "data", None)
+                if not isinstance(data, str):
+                    return  # CLOSED / ERROR / 二进制：收工，交给轮询
+                try:
+                    payload = json.loads(data)
+                except ValueError:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                kind = payload.get("type")
+                body = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+                if kind == "progress":
+                    if body.get("prompt_id") not in (None, "", prompt_id):
+                        continue
+                    try:
+                        value = int(body.get("value", 0))
+                        maximum = int(body.get("max", 0))
+                    except (TypeError, ValueError):
+                        continue
+                    if maximum <= 0:
+                        continue
+                    await _safe_callback(
+                        on_progress,
+                        {
+                            "value": value,
+                            "max": maximum,
+                            "percent": min(100, int(value * 100 / maximum)),
+                            "node": str(body.get("node") or ""),
+                            "prompt_id": prompt_id,
+                        },
+                    )
+                elif kind == "executing":
+                    if body.get("prompt_id") not in (None, "", prompt_id):
+                        continue
+                    if body.get("node") in (None, ""):
+                        return  # node 为空 = 这个任务执行结束
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            if self.logger is not None:
+                self.logger.debug("读取 ComfyUI 进度时出错（不影响出图）：%s", e)
+        finally:
+            try:
+                await ws.close()
+            except Exception:
+                pass
+
     async def wait_for_images(
         self,
         prompt_id: str,
         output_dir: Path,
         *,
         on_queued=None,
+        on_progress=None,
         cancel_event: asyncio.Event | None = None,
+        user_cancel_event: asyncio.Event | None = None,
     ) -> list[Path]:
         """等待出图完成并下载图片。
 
@@ -734,84 +847,106 @@ class ComfyUI:
             prompt_id: 任务 id。
             output_dir: 图片保存目录。
             on_queued: 可选的 async 回调，参数为 QueueStatus，用于提示排队位置。
+                排队位置**变化时**会再回调一次（同一位置不重复刷屏）。
+            on_progress: 可选的 async 回调，收到 WebSocket 进度事件时调用（第 n / 总步数）。
             cancel_event: 可选的外部取消信号（插件卸载时置位）。
+            user_cancel_event: 可选的用户取消信号（`/取消` 时置位），与上面区分开，
+                以便给出不同的提示。
 
         Returns:
             下载到本地的图片路径列表。
 
         Raises:
-            ComfyUIError: 超时、执行失败或未产出图片。
+            ComfyUIError: 超时、执行失败、被取消或未产出图片。
         """
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
         deadline = time.time() + self.timeout
-        probed = False
+        compensated = False
         last_queue_notice = 0.0
+        last_position: int | None = None
         last_error = ""
+        watcher: asyncio.Task | None = None
+        if on_progress is not None:
+            # 进度推送与轮询并行：WS 断了不影响等待，轮询依然是唯一的事实来源
+            watcher = asyncio.create_task(self._watch_progress(prompt_id, on_progress))
 
-        while True:
-            if cancel_event is not None and cancel_event.is_set():
-                await self.interrupt(prompt_id)
-                raise ComfyUIError("任务已取消（插件正在卸载或重载）")
-            if time.time() > deadline:
-                await self.interrupt(prompt_id)
-                raise ComfyUIError(
-                    f"出图超时（{self.timeout} 秒）"
-                    + (f"；最后状态：{last_error}" if last_error else "")
-                )
+        try:
+            while True:
+                if user_cancel_event is not None and user_cancel_event.is_set():
+                    await self.cancel_prompt(prompt_id)
+                    raise ComfyUIError("本次出图已被 /取消 取消")
+                if cancel_event is not None and cancel_event.is_set():
+                    await self.interrupt(prompt_id)
+                    raise ComfyUIError("任务已取消（插件正在卸载或重载）")
+                if time.time() > deadline:
+                    await self.interrupt(prompt_id)
+                    raise ComfyUIError(
+                        f"出图超时（{self.timeout} 秒）"
+                        + (f"；最后状态：{last_error}" if last_error else "")
+                    )
 
-            await asyncio.sleep(self.poll_interval)
+                await asyncio.sleep(self.poll_interval)
 
-            # 首次轮询后按队列位置补偿超时，并回报排队情况；之后每 60 秒再回报一次
-            if not probed:
-                probed = True
+                # 排队位置：首次必报，之后位置有变化再报；位置不变则最多 60 秒提一次
                 status = await self.queue_status()
-                if status.own_running == 0 and status.own_pending > 0:
-                    ahead = min(status.tasks_ahead, self.max_tasks_ahead)
-                    if ahead > 0:
-                        deadline += max(120, ahead * 60)
-                    await _safe_callback(on_queued, status)
-                    last_queue_notice = time.time()
-            elif on_queued is not None and time.time() - last_queue_notice > 60:
-                status = await self.queue_status()
-                if status.own_running == 0 and status.own_pending > 0:
-                    await _safe_callback(on_queued, status)
-                    last_queue_notice = time.time()
+                mine = status.own_positions.get(prompt_id)
+                if mine is not None and status.own_running == 0 and status.own_pending > 0:
+                    if not compensated:
+                        # 排队补偿只在第一次看到自己在排队时算一次，避免反复加时间
+                        ahead = min(status.tasks_ahead, self.max_tasks_ahead)
+                        if ahead > 0:
+                            deadline += max(120, ahead * 60)
+                        compensated = True
+                    if mine != last_position or time.time() - last_queue_notice > 60:
+                        last_position = mine
+                        last_queue_notice = time.time()
+                        await _safe_callback(on_queued, status)
 
-            try:
-                history = await self._request("GET", f"/history/{prompt_id}")
-            except ComfyUIError:
-                continue
-            if not isinstance(history, dict) or prompt_id not in history:
-                last_error = "等待 ComfyUI 执行"
-                continue
+                try:
+                    history = await self._request("GET", f"/history/{prompt_id}")
+                except ComfyUIError:
+                    continue
+                if not isinstance(history, dict) or prompt_id not in history:
+                    last_error = "等待 ComfyUI 执行"
+                    continue
 
-            entry = history[prompt_id]
-            if not isinstance(entry, dict):
-                continue
-            status = entry.get("status") or {}
-            status_str = status.get("status_str")
-            if status_str == "error":
-                raise ComfyUIError(_describe_history_error(entry))
-            if status_str == "interrupted":
-                raise ComfyUIError("任务被中断（ComfyUI 端取消或被打断）")
+                entry = history[prompt_id]
+                if not isinstance(entry, dict):
+                    continue
+                status_obj = entry.get("status") or {}
+                status_str = status_obj.get("status_str")
+                if status_str == "error":
+                    raise ComfyUIError(_describe_history_error(entry))
+                if status_str == "interrupted":
+                    raise ComfyUIError("任务被中断（ComfyUI 端取消或被打断）")
 
-            images = _collect_output_images(entry.get("outputs") or {})
-            if images:
-                paths = await self._download_images(images, output_dir)
-                if paths:
-                    return paths
-                last_error = "产物下载失败"
-                continue
-            # 尚未产出图片：可能仍在执行，也可能该工作流没有图片输出节点。
-            # 只有执行已明确结束时才判定失败，否则继续等待，避免误报。
-            if status.get("completed"):
-                raise ComfyUIError(
-                    "任务已结束但没有图片输出。请确认工作流包含 SaveImage 节点，"
-                    "或该工作流输出的是非图片产物。"
-                )
-            last_error = "仍在执行中"
+                images = _collect_output_images(entry.get("outputs") or {})
+                if images:
+                    paths = await self._download_images(images, output_dir)
+                    if paths:
+                        return paths
+                    last_error = "产物下载失败"
+                    continue
+                # 尚未产出图片：可能仍在执行，也可能该工作流没有图片输出节点。
+                # 只有执行已明确结束时才判定失败，否则继续等待，避免误报。
+                if status_obj.get("completed"):
+                    raise ComfyUIError(
+                        "任务已结束但没有图片输出。请确认工作流包含 SaveImage 节点，"
+                        "或该工作流输出的是非图片产物。"
+                    )
+                last_error = "仍在执行中"
+        finally:
+            if watcher is not None:
+                watcher.cancel()
+                try:
+                    await watcher
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    if self.logger is not None:
+                        self.logger.debug("收尾进度监听任务时出错：%s", e)
 
     async def _download_images(self, images: list[dict], output_dir: Path) -> list[Path]:
         """下载图片到本地。

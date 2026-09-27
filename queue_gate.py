@@ -40,6 +40,10 @@ class QueueClosed(RuntimeError):
     """闸门已关闭（插件卸载/重载）：唤醒等待者，避免 handler 永久挂住。"""
 
 
+class QueueCancelled(RuntimeError):
+    """用户在排队期间发了 `/取消`：唤醒这个等待者并告知原因。"""
+
+
 @dataclass(frozen=True)
 class Slot:
     """一次获准执行的名额，`release()` 时凭它归还。"""
@@ -229,6 +233,28 @@ class ConcurrencyGate:
             return
         self._finish(slot.user_id)
         self._pump()
+
+    def cancel_waiting(self, user_id: str = "", reason: str = "") -> int:
+        """取消排队中的请求，返回被取消的数量。
+
+        已经拿到名额（正在出图）的任务不归这里管：那种情况要调 ComfyUI 的
+        `/interrupt`，由插件主模块处理。
+
+        Args:
+            user_id: 目标用户；为空表示取消**所有**排队中的请求（管理员用）。
+            reason: 给用户看的原因。
+        """
+        target = str(user_id or "")
+        cancelled = 0
+        for waiter in list(self._waiters):
+            if (target and waiter.user_id != target) or waiter.future.done():
+                continue
+            self._remove_waiter(waiter)
+            cancelled += 1
+            waiter.future.set_exception(
+                QueueCancelled(reason or "本次出图已被 /取消 取消")
+            )
+        return cancelled
 
     def hold(self, user_id: str, *, on_wait=None, timeout: float | None = None) -> "_Hold":
         """`async with gate.hold(uid) as slot:` 的写法糖，退出时自动归还名额。"""

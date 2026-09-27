@@ -137,6 +137,9 @@ class ClientSession:
         self.closed = False
         self.responses = {}
         self.calls = []
+        self.ws_messages = []
+        self.ws_calls = []
+        self.ws_error = None
         ClientSession.instances.append(self)
 
     def route(self, method, path, response):
@@ -155,8 +158,40 @@ class ClientSession:
     def post(self, url, **kw):
         return self.request("POST", url, **kw)
 
+    async def ws_connect(self, url, **kw):
+        """桩：WebSocket 连接，按预设消息逐条吐给调用方。"""
+        self.ws_calls.append((url, kw))
+        if self.ws_error is not None:
+            raise self.ws_error
+        return _StubWebSocket(self.ws_messages)
+
     async def close(self):
         self.closed = True
+
+
+class _StubWebSocket:
+    """桩：够用的 WebSocket —— receive() 依次返回预设消息，随后返回关闭消息。"""
+
+    def __init__(self, messages):
+        self._messages = list(messages)
+        self.closed = False
+
+    async def receive(self):
+        if self._messages:
+            item = self._messages.pop(0)
+            if isinstance(item, _WSMessage):
+                return item
+            return _WSMessage(data=item)
+        return _WSMessage(data=None, kind="closed")
+
+    async def close(self):
+        self.closed = True
+
+
+class _WSMessage:
+    def __init__(self, data=None, kind="text"):
+        self.data = data
+        self.type = kind
 '''
 
 ASTRBOT_API_STUB = '''
@@ -1274,8 +1309,11 @@ def main() -> int:
     check("metadata 必填字段齐全",
           all(_meta_field(k) for k in ("name", "desc", "version", "author")),
           {k: _meta_field(k)[:24] for k in ("name", "version", "author")})
-    check("metadata.name 与目录名一致（参考插件里踩过这个坑）",
-          _meta_field("name") == ROOT.name, f"{_meta_field('name')} vs {ROOT.name}")
+    # 允许目录名带版本后缀：astrbot_plugin_comfyui_smart_v0.8.0 这种按版本留档、
+    # 供手动测试用的目录，目录名与 metadata.name 必然不同，不能算漂移。
+    dir_name = re.sub(r"_v\d+\.\d+\.\d+$", "", ROOT.name)
+    check("metadata.name 与目录名一致（参考插件里踩过这个坑；允许 _vX.Y.Z 后缀）",
+          _meta_field("name") == dir_name, f"{_meta_field('name')} vs {dir_name}")
     check("metadata.name 与代码里的 PLUGIN_NAME 一致",
           _meta_field("name") == m.PLUGIN_NAME, m.PLUGIN_NAME)
     version = _meta_field("version")
@@ -2238,7 +2276,8 @@ def main() -> int:
     inflight = {"now": 0, "max": 0}
     real_wait = plugin.comfy.wait_for_images
 
-    async def _slow_wait(prompt_id, output_dir, on_queued=None, cancel_event=None):
+    async def _slow_wait(prompt_id, output_dir, on_queued=None, on_progress=None,
+                         cancel_event=None, user_cancel_event=None):
         """桩：把「等待出图」拉长到 0.1s，并记录同时在跑的任务数。"""
         inflight["now"] += 1
         inflight["max"] = max(inflight["max"], inflight["now"])
@@ -2298,6 +2337,214 @@ def main() -> int:
           {"max_concurrent", "per_user_limit", "wait_timeout"}
           <= set((schema_queue.get("queue") or {}).get("items") or {}),
           sorted((schema_queue.get("queue") or {}).get("items") or {}))
+
+    print("\n=== 实时进度（WebSocket）与 /取消（v0.8.0）===")
+
+    async def _idle_queue():
+        return api.QueueStatus()
+
+    async def _ws_progress_flow():
+        """WebSocket 推来的步数事件要能解析出 n/总步数，并过滤掉别人的任务。"""
+        client = api.ComfyUI("http://127.0.0.1:8188", 5, poll_interval=0.01)
+        sess = api.aiohttp.ClientSession()
+        sess.ws_messages = [
+            json.dumps({"type": "progress", "data": {"value": 3, "max": 12, "prompt_id": "p1"}}),
+            # 别人的任务（prompt_id 不匹配）：必须忽略，否则会把别人的进度发给自己
+            json.dumps({"type": "progress", "data": {"value": 9, "max": 12, "prompt_id": "p2"}}),
+            json.dumps({"type": "progress", "data": {"value": 12, "max": 12, "prompt_id": "p1"}}),
+            json.dumps({"type": "executing", "data": {"node": None, "prompt_id": "p1"}}),
+        ]
+        client._session = sess
+        client.queue_status = _idle_queue
+        seen: list[dict] = []
+        calls = {"n": 0}
+
+        async def _request(method, path, **kw):
+            calls["n"] += 1
+            # 先让进度事件跑完再给历史，避免测试里出现竞态
+            if len(seen) < 2 and calls["n"] < 200:
+                return {}
+            return {"p1": {"status": {"status_str": "success", "completed": True},
+                           "outputs": {"7": {"images": [{"filename": "x.png"}]}}}}
+
+        async def _download(images, output_dir):
+            return [Path(output_dir) / "x.png"]
+
+        client._request = _request
+        client._download_images = _download
+        paths = await client.wait_for_images(
+            "p1", Path(plugin.storage.output_dir), on_progress=seen.append
+        )
+        return seen, paths, sess
+
+    seen_progress, ws_paths, ws_sess = asyncio.run(_ws_progress_flow())
+    check("WebSocket 进度被解析成 n/总步数（含百分比）",
+          [(p["value"], p["max"], p["percent"]) for p in seen_progress] == [(3, 12, 25), (12, 12, 100)],
+          seen_progress)
+    check("别人的任务进度被忽略（prompt_id 过滤）",
+          all(p["value"] != 9 for p in seen_progress), seen_progress)
+    check("进度推送不影响等待与下载", len(ws_paths) == 1, ws_paths)
+    check("WebSocket 连接地址是 /ws 且带上 client_id",
+          bool(ws_sess.ws_calls) and "/ws?clientId=" in ws_sess.ws_calls[0][0],
+          ws_sess.ws_calls[:1])
+
+    async def _ws_broken_flow():
+        """连不上 WebSocket（老版本/反代没转发）时必须安静退回轮询。"""
+        client = api.ComfyUI("http://127.0.0.1:8188", 5, poll_interval=0.01)
+        sess = api.aiohttp.ClientSession()
+        sess.ws_error = RuntimeError("WebSocket 不可用")
+        client._session = sess
+        client.queue_status = _idle_queue
+        seen: list[dict] = []
+
+        async def _request(method, path, **kw):
+            return {"p1": {"status": {"status_str": "success", "completed": True},
+                           "outputs": {"7": {"images": [{"filename": "z.png"}]}}}}
+
+        async def _download(images, output_dir):
+            return [Path(output_dir) / "z.png"]
+
+        client._request = _request
+        client._download_images = _download
+        paths = await client.wait_for_images(
+            "p1", Path(plugin.storage.output_dir), on_progress=seen.append
+        )
+        return seen, paths
+
+    broken_seen, broken_paths = asyncio.run(_ws_broken_flow())
+    check("WebSocket 不可用时照样出图（进度只是锦上添花）",
+          len(broken_paths) == 1 and broken_seen == [], (broken_paths, broken_seen))
+
+    # 进度提示的节流：步数事件很密，不节流会把聊天刷爆
+    plugin.config["output"] = {"show_progress": True, "progress_interval": 3600}
+    ev_prog = AstrMessageEvent(message_str="/画图 猫")
+    _, _, on_progress = plugin._queue_notifiers(ev_prog)
+    asyncio.run(on_progress({"value": 1, "max": 10, "percent": 10}))
+    asyncio.run(on_progress({"value": 2, "max": 10, "percent": 20}))
+    asyncio.run(on_progress({"value": 10, "max": 10, "percent": 100}))
+    check("进度提示会节流（中间步数不刷屏），但 100% 一定发",
+          len(ev_prog.sent) == 2 and "100%" in ev_prog.sent[-1]["text"],
+          [s["text"] for s in ev_prog.sent])
+    check("进度提示里能看到 /取消 的提示语",
+          "取消" in ev_prog.sent[0]["text"], ev_prog.sent[0]["text"])
+
+    plugin.config["output"] = {"show_progress": False}
+    ev_prog_off = AstrMessageEvent(message_str="/画图 猫")
+    _, _, on_progress_off = plugin._queue_notifiers(ev_prog_off)
+    asyncio.run(on_progress_off({"value": 5, "max": 10, "percent": 50}))
+    check("关掉进度提示后一条都不发", ev_prog_off.sent == [], ev_prog_off.sent)
+
+    async def _position_flow():
+        """排队位置变化时才再提示；同一位置不重复刷屏。"""
+        client = api.ComfyUI("http://127.0.0.1:8188", 5, poll_interval=0.005)
+        client._session = api.aiohttp.ClientSession()
+        positions = [3, 3, 2, 1]
+        state = {"i": 0}
+        seen: list[dict] = []
+        calls = {"n": 0}
+
+        async def _queue():
+            index = min(state["i"], len(positions) - 1)
+            state["i"] += 1
+            return api.QueueStatus(
+                own_pending=1, total_pending=5, own_positions={"p1": positions[index]}
+            )
+
+        async def _request(method, path, **kw):
+            calls["n"] += 1
+            if calls["n"] < 5:
+                return {}
+            return {"p1": {"status": {"status_str": "success", "completed": True},
+                           "outputs": {"7": {"images": [{"filename": "y.png"}]}}}}
+
+        async def _download(images, output_dir):
+            return [Path(output_dir) / "y.png"]
+
+        client.queue_status = _queue
+        client._request = _request
+        client._download_images = _download
+        await client.wait_for_images(
+            "p1", Path(plugin.storage.output_dir),
+            on_queued=lambda status: seen.append(dict(status.own_positions)),
+        )
+        return seen
+
+    positions_seen = asyncio.run(_position_flow())
+    check("排队位置变化时才再提示（3 → 2 → 1，重复的 3 不刷屏）",
+          positions_seen == [{"p1": 3}, {"p1": 2}, {"p1": 1}], positions_seen)
+
+    print("\n--- /取消 ---")
+    plugin.config["output"] = {}
+    cancel_calls: list[str] = []
+
+    async def _fake_cancel_prompt(prompt_id):
+        cancel_calls.append(prompt_id)
+        return "running" if prompt_id == "run-1" else "pending"
+
+    real_cancel_prompt = plugin.comfy.cancel_prompt
+    plugin.comfy.cancel_prompt = _fake_cancel_prompt
+    plugin._active_jobs.clear()
+    plugin._job_cancel.clear()
+
+    ev_cancel_owner = AstrMessageEvent(sender_id="1001", message_str="/取消")
+    plugin._active_jobs["run-1"] = "1001"
+    job_ev = asyncio.Event()
+    plugin._job_cancel["run-1"] = job_ev
+    out_cancel = asyncio.run(drive(plugin.cmd_cancel(ev_cancel_owner)))
+    check("进行中的任务会被真正取消（信号置位 + 通知 ComfyUI）",
+          cancel_calls == ["run-1"] and job_ev.is_set(), (cancel_calls, job_ev.is_set()))
+    check("/取消 会回报实际做了什么",
+          "已中断正在执行的任务" in out_cancel[0]["text"], out_cancel[0]["text"])
+
+    # 别人的任务不能被我取消
+    cancel_calls.clear()
+    plugin._job_cancel.pop("run-1", None)
+    plugin._active_jobs.pop("run-1", None)  # 它已被取消，handler 收尾时就会从表里摘掉
+    plugin._active_jobs["run-2"] = "2002"
+    ev_other = AstrMessageEvent(sender_id="1009", message_str="/取消")
+    out_other = asyncio.run(drive(plugin.cmd_cancel(ev_other)))
+    check("只能取消自己的任务（别人的任务不受影响）",
+          cancel_calls == [] and "run-2" in plugin._active_jobs, (cancel_calls, out_other[0]["text"]))
+    check("没有任务可取消时明确说明",
+          "没有正在排队或正在出图的任务" in out_other[0]["text"], out_other[0]["text"])
+
+    # 管理员可以 /取消 全部
+    ev_admin = AstrMessageEvent(sender_id="1", message_str="/取消 全部", admin=True)
+    out_admin = asyncio.run(drive(plugin.cmd_cancel(ev_admin)))
+    check("管理员 /取消 全部 能取消所有人的任务",
+          cancel_calls == ["run-2"], cancel_calls)
+    check("管理员取消后同样有回报", "已取消" in out_admin[0]["text"], out_admin[0]["text"])
+
+    # 还在插件侧排队（没拿到名额）的人也要能取消
+    async def _cancel_waiter_flow():
+        plugin._active_jobs.clear()
+        plugin._job_cancel.clear()
+        plugin.gate.configure(max_concurrent=1, per_user_limit=0, wait_timeout=5)
+        holder = await plugin.gate.acquire("blocker")
+        waiter = asyncio.create_task(plugin.gate.acquire("1001"))
+        await asyncio.sleep(0.02)
+        out = [
+            item
+            async for item in plugin.cmd_cancel(
+                AstrMessageEvent(sender_id="1001", message_str="/取消")
+            )
+        ]
+        error = ""
+        try:
+            await waiter
+        except qg.QueueCancelled as e:
+            error = str(e)
+        plugin.gate.release(holder)
+        return out, error
+
+    out_waiter, waiter_error = asyncio.run(_cancel_waiter_flow())
+    check("还在插件侧排队的人也能被 /取消（不必等到排队超时）",
+          "取消" in waiter_error, waiter_error)
+    check("/取消 会说明取消了排队中的任务",
+          "排队" in out_waiter[0]["text"], out_waiter[0]["text"])
+    plugin.comfy.cancel_prompt = real_cancel_prompt
+    plugin._active_jobs.clear()
+    plugin._job_cancel.clear()
 
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）
