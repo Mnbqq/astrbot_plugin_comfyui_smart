@@ -69,9 +69,31 @@ def _install_stubs() -> Path:
 
 
 def _make_importable() -> None:
-    """把插件目录挂到 sys.path 上，使其可作为包导入。"""
-    if str(ROOT.parent) not in sys.path:
-        sys.path.insert(0, str(ROOT.parent))
+    """把**本目录**当成包 `astrbot_plugin_comfyui_smart` 导入。
+
+    版本留档目录叫 `astrbot_plugin_comfyui_smart_v0.15.0`，包名对不上。若只是把父目录
+    塞进 `sys.path`，`import astrbot_plugin_comfyui_smart` 会命中同级的**主仓库**
+    （内容可能完全是另一个版本），于是「在版本目录里跑测试」测的其实是主仓库。
+    这里显式按本目录构造包对象并注册进 `sys.modules`，保证测的一定是这个目录里的代码。
+    """
+    import importlib.util
+
+    name = "astrbot_plugin_comfyui_smart"
+    existing = sys.modules.get(name)
+    if existing is not None:
+        existing_path = list(getattr(existing, "__path__", []) or [])
+        if existing_path and Path(existing_path[0]).resolve() == ROOT:
+            return
+    spec = importlib.util.spec_from_file_location(
+        name, ROOT / "__init__.py", submodule_search_locations=[str(ROOT)]
+    )
+    if spec is None or spec.loader is None:  # pragma: no cover - 兜底
+        if str(ROOT.parent) not in sys.path:
+            sys.path.insert(0, str(ROOT.parent))
+        return
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
 
 
 AIOHTTP_STUB = '''
