@@ -2842,6 +2842,215 @@ def main() -> int:
           getattr(bad_ip, "status_code", None) == 400, bad_ip)
     pages.request._json = {}
 
+    print("\n=== 多后端调度（v0.11.0）===")
+    from astrbot_plugin_comfyui_smart import backend_pool as bp
+
+    check("解析多后端清单：主后端永远第一，支持「地址|名称」并去重",
+          bp.parse_backend_specs(
+              ["http://b:8188|二号线", "http://b:8188", "#注释", "c:8188"],
+              "http://a:8188",
+          ) == [("主", "http://a:8188"), ("二号线", "http://b:8188"), ("后端3", "http://c:8188")],
+          bp.parse_backend_specs(["http://b:8188|二号线"], "http://a:8188"))
+    check("没有主地址时也能只用清单里的后端",
+          bp.parse_backend_specs("http://b:8188", "") == [("后端1", "http://b:8188")],
+          bp.parse_backend_specs("http://b:8188", ""))
+    check("只把「连不上 / 超时」算后端故障（参数错不该拉黑好机器）",
+          bp.is_backend_fault("无法连接 ComfyUI：x")
+          and bp.is_backend_fault("出图超时（180 秒）")
+          and not bp.is_backend_fault("提交失败：value_not_in_list")
+          and not bp.is_backend_fault("本次出图已被 /取消 取消"),
+          [bp.is_backend_fault(t) for t in ("无法连接 ComfyUI：x", "提交失败：x", "出图超时（1 秒）")])
+
+    def make_pool(**kw):
+        """造一个后端池：用假客户端（只有 queue_status / close）。"""
+        class _FakeClient:
+            def __init__(self, load, fail=False):
+                self.load = load
+                self.fail = fail
+                self.closed = False
+                self.calls = 0
+
+            async def queue_status(self, **kw):
+                self.calls += 1
+                if self.fail:
+                    raise RuntimeError("连不上")
+                return api.QueueStatus(
+                    total_running=self.load[0], total_pending=self.load[1]
+                )
+
+            async def close(self):
+                self.closed = True
+
+        clients = {name: _FakeClient(load, fail) for name, load, fail in kw.pop("clients")}
+        backends = [bp.Backend(name=n, url=f"http://{n}:8188", client=c)
+                    for n, c in clients.items()]
+        return bp.BackendPool(backends, **kw), clients
+
+    async def _pick_flow():
+        pool, clients = make_pool(clients=[("a", (1, 3), False), ("b", (0, 0), False)])
+        chosen = await pool.pick()
+        return chosen.name, {n: c.calls for n, c in clients.items()}
+
+    chosen_name, probe_calls = asyncio.run(_pick_flow())
+    check("least_queue：把任务派给负载最低的后端（正在跑的权重更高）",
+          chosen_name == "b", (chosen_name, probe_calls))
+    check("多后端时才探测（每个后端探一次）",
+          probe_calls == {"a": 1, "b": 1}, probe_calls)
+
+    async def _single_flow():
+        pool, clients = make_pool(clients=[("only", (0, 0), False)])
+        chosen = await pool.pick()
+        return chosen.name, clients["only"].calls
+
+    single_name, single_calls = asyncio.run(_single_flow())
+    check("单后端不做任何探测（行为与没有多后端时完全一致）",
+          single_name == "only" and single_calls == 0, (single_name, single_calls))
+
+    async def _weight_flow():
+        pool, _clients = make_pool(clients=[("a", (0, 3), False), ("b", (1, 0), False)])
+        chosen = await pool.pick()
+        return chosen.name
+    check("负载权重：一个正在执行（2）比三个排队（3）更该被跳过",
+          asyncio.run(_weight_flow()) == "b", asyncio.run(_weight_flow()))
+
+    async def _strategy_flow():
+        pool, _ = make_pool(clients=[("a", (0, 0), False), ("b", (0, 0), False)],
+                            strategy="round_robin")
+        first = (await pool.pick()).name
+        second = (await pool.pick()).name
+        pool.configure(strategy="primary")
+        third = (await pool.pick()).name
+        return first, second, third
+    rr = asyncio.run(_strategy_flow())
+    check("round_robin 会轮流派；切到 primary 后固定用主后端",
+          rr[0] != rr[1] and rr[2] == "a", rr)
+
+    async def _bench_flow():
+        pool, _clients = make_pool(clients=[("a", (0, 0), False), ("b", (0, 5), True)])
+        chosen = await pool.pick()          # b 探测失败 → 熔断
+        rows = pool.snapshot()
+        benched = [r for r in rows if r["benched"]]
+        pool.note_success(pool.backends[1])  # 手动恢复
+        return chosen.name, benched, pool.benched(pool.backends[1])
+    bench_name, bench_rows, recovered = asyncio.run(_bench_flow())
+    check("探测失败的后端会被熔断（并记下原因）",
+          bench_name == "a" and bench_rows and bench_rows[0]["name"] == "b"
+          and "探测失败" in bench_rows[0]["last_error"], (bench_name, bench_rows))
+    check("成功后解除熔断", recovered is False, recovered)
+
+    async def _all_benched_flow():
+        pool, _clients = make_pool(clients=[("a", (0, 0), False), ("b", (0, 0), False)])
+        pool.note_failure(pool.backends[0], "手动")
+        pool.note_failure(pool.backends[1], "手动")
+        chosen = await pool.pick()
+        return chosen.name
+    check("全部熔断时回退到主后端（宁可让主后端报真实错误，也不自己造一个）",
+          asyncio.run(_all_benched_flow()) == "a", True)
+
+    async def _snapshot_probe():
+        pool, _ = make_pool(clients=[("a", (0, 0), False), ("b", (1, 2), False)])
+        await pool.pick()
+        return pool.snapshot()
+    snap_rows = asyncio.run(_snapshot_probe())
+    check("快照字段够 `/状态` 与配置页展示",
+          all({"name", "url", "primary", "online", "busy", "benched", "benched_for",
+               "last_error", "ok", "fail"} <= set(row) for row in snap_rows) and len(snap_rows) == 2,
+          snap_rows)
+
+    print("\n=== 多后端接入出图主流程 ===")
+    plugin.config["server"] = {"base_url": "http://a:8188"}
+    plugin.config["backends"] = {
+        "endpoints": ["http://b:8188|二号线"],
+        "strategy": "least_queue",
+        "fail_cooldown": 30,
+    }
+    plugin.reload_components()
+    plugin.config["llm_settings"] = {"enable_prompt_optimize": False}
+    plugin.config["hires"] = {"enable": False}
+    plugin.config["permission"] = {}
+    plugin.permission.reload({})
+
+    def two_backend_sessions(pid_a="back-1", pid_b="back-2"):
+        """主后端排长队、二号线空闲：任务应当派给二号线。"""
+        def build(pid, pending):
+            sess = api.aiohttp.ClientSession()
+            sess.route("GET", "/models", api.aiohttp.ClientResponse(200, payload=["checkpoints"]))
+            sess.route("GET", "/models/checkpoints", api.aiohttp.ClientResponse(
+                200, payload=["SDXL/m.safetensors"]))
+            sess.route("GET", "/queue", api.aiohttp.ClientResponse(200, payload={
+                "queue_running": [["1", "someone-else", {}, {}]] if pending else [],
+                "queue_pending": [["1", f"p{i}", {}, {}] for i in range(pending)],
+            }))
+            sess.route("POST", "/prompt", api.aiohttp.ClientResponse(
+                200, payload={"prompt_id": pid}))
+            sess.route("GET", f"/history/{pid}", api.aiohttp.ClientResponse(200, payload={pid: {
+                "status": {"status_str": "success", "completed": True},
+                "outputs": {"7": {"images": [{"filename": "b.png", "type": "output"}]}}}}))
+            sess.route("GET", "/view", api.aiohttp.ClientResponse(200, text="PNG"))
+            return sess
+
+        primary_sess = build(pid_a, pending=4)
+        second_sess = build(pid_b, pending=0)
+        plugin.pool.backends[0].client._session = primary_sess
+        plugin.pool.backends[1].client._session = second_sess
+        for backend in plugin.pool.backends:
+            backend.client.invalidate_model_cache()
+        return primary_sess, second_sess
+
+    sess_a, sess_b = two_backend_sessions()
+    multi_result = asyncio.run(plugin.generate(user_desc="一只猫", opts={}))
+    submitted_a = [c for c in sess_a.calls if c[0] == "POST" and c[1] == "/prompt"]
+    submitted_b = [c for c in sess_b.calls if c[0] == "POST" and c[1] == "/prompt"]
+    check("任务真的被派给了空闲的那台（而不是主后端）",
+          not submitted_a and len(submitted_b) == 1,
+          {"a": len(submitted_a), "b": len(submitted_b)})
+    check("结果里带上了后端名（出图消息会显示）",
+          multi_result.get("backend") == "二号线", multi_result.get("backend"))
+    check("成功后该后端被标记为可用",
+          plugin.pool.backends[1].ok_count >= 1
+          and not plugin.pool.benched(plugin.pool.backends[1]),
+          plugin.pool.snapshot())
+
+    # 提交失败且属于后端故障 → 熔断
+    async def _fault_flow():
+        plugin.pool.backends[1].client._session = api.aiohttp.ClientSession()  # 全部 404
+        plugin.pool.backends[1].client.invalidate_model_cache()
+        try:
+            await plugin.generate(user_desc="一只猫", opts={})
+        except Exception as e:
+            error = str(e)
+        else:
+            error = ""
+        return error, plugin.pool.snapshot()
+
+    fault_error, fault_rows = asyncio.run(_fault_flow())
+    check("后端故障时熔断它（队列里不再派给它）",
+          plugin.pool.benched(plugin.pool.backends[1]) or "未探测" in fault_error,
+          (fault_error[:40], fault_rows))
+
+    # /状态 与 Pages 状态接口暴露后端
+    plugin.config["backends"] = {"endpoints": ["http://b:8188|二号线"], "strategy": "least_queue"}
+    plugin.reload_components()
+    plugin.pool.backends[0].client._session = api.aiohttp.ClientSession()
+    plugin.pool.backends[1].client._session = api.aiohttp.ClientSession()
+    out_multi = asyncio.run(drive(plugin.cmd_status(AstrMessageEvent(message_str="/状态"))))
+    multi_text = "\n".join(x.get("text", "") for x in out_multi)
+    check("/状态 在多后端时列出每台后端",
+          "二号线" in multi_text and "按负载分配" in multi_text, multi_text[:200])
+    status_multi = asyncio.run(handlers[(f"{base}/status", ("GET",))]())
+    check("Pages 状态接口带后端快照",
+          isinstance(status_multi.get("backends"), list) and len(status_multi["backends"]) == 2,
+          status_multi.get("backends"))
+
+    # 复原成单后端，别影响后续用例
+    plugin.config["backends"] = {}
+    plugin.config["server"] = {"base_url": "127.0.0.1:8188"}
+    plugin.reload_components()
+    plugin.comfy.invalidate_model_cache()
+    check("清空配置后回到单后端（不探测）",
+          plugin.pool.multi is False and plugin.pool.primary().url == "http://127.0.0.1:8188",
+          [b.url for b in plugin.pool.backends])
+
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）
     field_re = _re.compile(

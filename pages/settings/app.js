@@ -18,6 +18,11 @@ const FIELDS = [
   { id: 'server_poll_interval', path: ['server', 'poll_interval'], kind: 'float' },
   { id: 'server_max_tasks_ahead', path: ['server', 'max_tasks_ahead'], kind: 'int' },
 
+  { id: 'backends_endpoints', path: ['backends', 'endpoints'], kind: 'list' },
+  { id: 'backends_strategy', path: ['backends', 'strategy'], kind: 'select',
+    options: ['least_queue', 'round_robin', 'primary'] },
+  { id: 'backends_fail_cooldown', path: ['backends', 'fail_cooldown'], kind: 'int' },
+
   { id: 'queue_max_concurrent', path: ['queue', 'max_concurrent'], kind: 'int' },
   { id: 'queue_per_user_limit', path: ['queue', 'per_user_limit'], kind: 'int' },
   { id: 'queue_wait_timeout', path: ['queue', 'wait_timeout'], kind: 'int' },
@@ -497,10 +502,26 @@ async function loadStatus() {
            + ' · 排队 ' + info.gate.waiting)
         : '—'],
       ['模板', (info.templates || []).length + ' 个'],
+      ['后端', (info.backends && info.backends.length > 1)
+        ? (info.backends.length + ' 个：' + info.backends.map((b) => b.name
+            + (b.benched ? '⛔' : (b.online === false ? '❌' : '✅'))).join(' / '))
+        : '仅主后端'],
     ];
-    box.innerHTML = '<table class="stat-table"><tbody>' + rows.map(
+    let html = '<table class="stat-table"><tbody>' + rows.map(
       (row) => '<tr><td>' + esc(row[0]) + '</td><td>' + esc(row[1]) + '</td></tr>'
     ).join('') + '</tbody></table>';
+    const backends = info.backends || [];
+    if (backends.length > 1) {
+      html += '<table class="stat-table"><thead><tr><th>后端</th><th>地址</th><th>状态</th>'
+        + '<th>队列负载</th></tr></thead><tbody>' + backends.map((b) => {
+          const state = b.benched ? ('⛔ 熔断 ' + Math.round(b.benched_for) + 's')
+            : (b.online === false ? ('❌ ' + (b.last_error || '失败'))
+              : (b.online ? '✅ 正常' : '❔ 未探测'));
+          return '<tr><td>' + esc(b.name) + (b.primary ? '（主）' : '') + '</td><td>'
+            + esc(b.url) + '</td><td>' + esc(state) + '</td><td>' + esc(b.busy) + '</td></tr>';
+        }).join('') + '</tbody></table>';
+    }
+    box.innerHTML = html;
   } catch (error) {
     box.innerHTML = '<p class="muted">状态读取失败：' + esc(error.message) + '</p>';
   }

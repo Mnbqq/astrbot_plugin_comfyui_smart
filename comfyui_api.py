@@ -625,17 +625,29 @@ class ComfyUI:
             return str(item.get("prompt_id", "")), extra.get("client_id")
         return "", None
 
-    async def queue_status(self) -> QueueStatus:
+    async def queue_status(self, *, strict: bool = False) -> QueueStatus:
         """读取队列状态，并标出本插件任务的排位。
+
+        Args:
+            strict: 读不到队列时是否抛错。默认 False —— 出图等待路径上「读不到队列」
+                只该降级（继续等历史），不该让整次出图失败；多后端探测需要 True，
+                否则一台挂掉的机器会以「队列 0」的假象被派上任务。
 
         Returns:
             QueueStatus。
+
+        Raises:
+            ComfyUIError: strict=True 且读取失败。
         """
         try:
             data = await self._request("GET", "/queue")
         except ComfyUIError:
+            if strict:
+                raise
             return QueueStatus()
         if not isinstance(data, dict):
+            if strict:
+                raise ComfyUIError("ComfyUI 的 /queue 返回了非对象内容")
             return QueueStatus()
 
         running = data.get("queue_running") or []

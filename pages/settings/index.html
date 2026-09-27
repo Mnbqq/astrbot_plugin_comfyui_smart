@@ -73,6 +73,31 @@
 
         <article class="card">
           <div class="card-header">
+            <div><h3>多后端调度</h3><p>有多个 ComfyUI 时按「谁闲给谁」自动分配，某台失败会临时熔断并跳过。单后端留空即可。</p></div>
+          </div>
+          <div class="form-grid">
+            <div class="form-group full-width">
+              <label for="backends_endpoints">其他 ComfyUI 地址（每行一个，可写「地址|名称」）</label>
+              <textarea id="backends_endpoints" class="input-modern" rows="3"
+                        placeholder="http://192.168.1.20:8188|二号线"></textarea>
+            </div>
+            <div class="form-group">
+              <label for="backends_strategy">调度策略</label>
+              <select id="backends_strategy" class="input-modern">
+                <option value="least_queue">谁闲给谁（least_queue）</option>
+                <option value="round_robin">轮流派（round_robin）</option>
+                <option value="primary">只用主后端（primary）</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="backends_fail_cooldown">失败熔断时长（秒）</label>
+              <input type="number" id="backends_fail_cooldown" class="input-modern" min="0" />
+            </div>
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="card-header">
             <div><h3>出图队列与并发</h3><p>限制同时出图的数量，超出的先排队并告知位次，避免多人同时出图把显存打满。</p></div>
           </div>
           <div class="form-grid">

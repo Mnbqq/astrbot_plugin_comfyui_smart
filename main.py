@@ -15,6 +15,7 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.message_components import At, Image, Plain, Reply
 from astrbot.api.star import Context, Star, StarTools
 
+from .backend_pool import Backend, BackendPool, is_backend_fault, parse_backend_specs
 from .comfyui_api import ComfyUI, ComfyUIError, normalize_base_url
 from .llm_service import LLMService
 from .pages import register_pages_routes
@@ -35,7 +36,7 @@ from .workflow_templates import (
 
 PLUGIN_NAME = "astrbot_plugin_comfyui_smart"
 # 与 metadata.yaml 的 version 保持一致（tests/test_logic.py 会校验二者不漂移）
-PLUGIN_VERSION = "0.10.0"
+PLUGIN_VERSION = "0.11.0"
 PLUGIN_DIR = Path(__file__).resolve().parent
 BUILTIN_TEMPLATE_DIR = PLUGIN_DIR / "workflows"
 
@@ -203,7 +204,10 @@ class ComfyUISmartPlugin(Star):
 
         self.permission = PermissionManager(self.config.get("permission", {}) or {})
         self.llm = LLMService(context, self.config)
-        self.comfy = self._build_client()
+        # 后端池：单后端时等价于原来的单客户端；配了多个则按负载分配
+        self._retired_pools: list[BackendPool] = []
+        self.pool = self._build_pool()
+        self.comfy = self.pool.primary().client
         # 出图并发闸门：限制同时交给 ComfyUI 的任务数，超出的在插件侧排队
         self.gate = ConcurrencyGate(logger=logger)
         self._configure_gate()
@@ -218,6 +222,8 @@ class ComfyUISmartPlugin(Star):
         self._active_jobs: dict[str, str] = {}
         # 每个在途任务一个取消信号，供 `/取消` 定点打断（与插件卸载的全局信号分开）
         self._job_cancel: dict[str, asyncio.Event] = {}
+        # 每个在途任务落在哪个后端：多后端时取消/中断必须找对那台
+        self._job_backend: dict[str, Backend] = {}
 
         # 注册插件 Pages 的后端 API。
         # 注意：必须在 __init__ 里调用——漏掉的话，配置页/模型页/状态页的每个请求
@@ -236,16 +242,50 @@ class ComfyUISmartPlugin(Star):
     # ------------------------------------------------------------------ #
     # 配置与生命周期
     # ------------------------------------------------------------------ #
-    def _build_client(self) -> ComfyUI:
-        """按当前配置构造 ComfyUI 客户端。"""
+    def _build_client(self, base_url: str = "") -> ComfyUI:
+        """按当前配置构造 ComfyUI 客户端。
+
+        Args:
+            base_url: 显式指定地址（多后端时用）；留空则用 `server.base_url`。
+        """
         server = self.config.get("server", {}) or {}
         return ComfyUI(
-            normalize_base_url(server.get("base_url", "http://127.0.0.1:8188")),
+            normalize_base_url(base_url or server.get("base_url", "http://127.0.0.1:8188")),
             int(server.get("timeout", 180) or 180),
             poll_interval=float(server.get("poll_interval", 1.5) or 1.5),
             max_tasks_ahead=int(server.get("max_tasks_ahead", 10) or 10),
             logger=logger,
         )
+
+    def _build_pool(self) -> BackendPool:
+        """按配置构造后端池：第一个是 `server.base_url`，其余来自 `backends.endpoints`。
+
+        单后端时池里只有一项，`pick()` 不做任何探测 —— 与没有多后端功能时行为一致。
+        """
+        server = self.config.get("server", {}) or {}
+        primary_url = normalize_base_url(server.get("base_url", "http://127.0.0.1:8188"))
+        conf = self.config.get("backends", {}) or {}
+        specs = parse_backend_specs(conf.get("endpoints"), primary_url)
+        if not specs:
+            specs = [("主", primary_url)]
+        backends = [
+            Backend(name=name, url=url, client=self._build_client(url)) for name, url in specs
+        ]
+        return BackendPool(
+            backends,
+            strategy=conf.get("strategy") or "least_queue",
+            fail_cooldown=conf.get("fail_cooldown", 60),
+            logger=logger,
+        )
+
+    async def _flush_retired_pools(self) -> None:
+        """关闭被配置重建换下来的旧后端池（否则每次保存配置都漏一个 session）。"""
+        while self._retired_pools:
+            pool = self._retired_pools.pop()
+            try:
+                await pool.close()
+            except Exception:
+                pass
 
     @property
     def user_template_dir(self) -> Path:
@@ -266,10 +306,14 @@ class ComfyUISmartPlugin(Star):
         self.permission.reload(self.config.get("permission", {}) or {})
         self.llm = LLMService(self.context, self.config)
         old_client = self.comfy
-        self.comfy = self._build_client()
+        old_pool = self.pool
+        self.pool = self._build_pool()
+        self.comfy = self.pool.primary().client
         # 继承旧的模型缓存，避免改配置后要重新全量扫描
         self.comfy._model_cache = getattr(old_client, "_model_cache", {})
         self.comfy._model_cache_at = getattr(old_client, "_model_cache_at", 0.0)
+        # 旧池里的连接由下一次 _flush_retired_pools()/terminate() 收口（这里不能 await）
+        self._retired_pools.append(old_pool)
         self._configure_gate()
         self._load_templates()
 
@@ -293,6 +337,7 @@ class ComfyUISmartPlugin(Star):
     async def initialize(self) -> None:
         """插件激活时调用。"""
         self._load_templates()
+        await self._flush_retired_pools()
         # 插件可能被禁用后再启用（同一实例）：把闸门重新打开，否则所有出图都会被判为「已关闭」
         self.gate.resume()
         self._configure_gate()
@@ -326,13 +371,17 @@ class ComfyUISmartPlugin(Star):
         for job_event in self._job_cancel.values():
             job_event.set()
         for prompt_id in list(self._active_jobs):
+            backend = self._job_backend.get(prompt_id)
+            client = backend.client if backend is not None else self.comfy
             try:
-                await self.comfy.interrupt(prompt_id)
+                await client.interrupt(prompt_id)
             except Exception:
                 pass
         self._active_jobs.clear()
         self._job_cancel.clear()
-        await self.comfy.close()
+        self._job_backend.clear()
+        await self.pool.close()
+        await self._flush_retired_pools()
         logger.info("ComfyUI 智能绘图已卸载")
 
     # ------------------------------------------------------------------ #
@@ -383,6 +432,7 @@ class ComfyUISmartPlugin(Star):
             raise RuntimeError("当前 AstrBot 版本的配置对象不支持保存，请升级 AstrBot")
 
         self.reload_components()
+        await self._flush_retired_pools()
         self._sync_llm_tool()
         logger.info("配置已通过 Pages 更新并落盘")
         return {"saved": True, "keys": sorted(payload.keys())}
@@ -445,6 +495,8 @@ class ComfyUISmartPlugin(Star):
             "templates": [t.describe() for t in self.templates.values()],
             # 插件侧并发闸门：配置页状态栏与 /状态 都读它
             "gate": self.gate.snapshot(),
+            # 多后端：每个后端的在线/队列/熔断情况
+            "backends": self.pool.snapshot(),
         }
         try:
             stats = await self.comfy.ping()
@@ -468,7 +520,12 @@ class ComfyUISmartPlugin(Star):
     # 出图核心
     # ------------------------------------------------------------------ #
     async def _resolve_selection(
-        self, catalog: dict[str, list[str]], opt: dict, opts: dict, purpose: str = "t2i"
+        self,
+        catalog: dict[str, list[str]],
+        opt: dict,
+        opts: dict,
+        purpose: str = "t2i",
+        client: ComfyUI | None = None,
     ) -> dict:
         """校验 LLM（或用户）选定的模型是否真实存在，并挑出模板。
 
@@ -476,7 +533,8 @@ class ComfyUISmartPlugin(Star):
             catalog: 真实模型清单。
             opt: LLM 返回的选型结果。
             opts: 用户行内参数。
-            purpose: t2i（文生图）或 i2i（图生图）。
+            purpose: t2i（文生图）/ i2i（图生图）/ outpaint（扩图）/ inpaint（局部重绘）。
+            client: 本次任务选中的后端客户端；留空用主后端。
 
         Returns:
             {"model":..., "folder":..., "lora":..., "vae":..., "template":..., "arch":...}
@@ -526,7 +584,7 @@ class ComfyUISmartPlugin(Star):
 
         # 能力探测：只挑「你这台 ComfyUI 真的装得出来」的模板，
         # 避免把缺自定义节点的工作流提交过去再被服务端拒绝。
-        available = await self.comfy.node_classes()
+        available = await (client or self.comfy).node_classes()
         arch_override = str(
             (self.config.get("draw_settings") or {}).get("arch_override") or ""
         ).strip().lower()
@@ -771,20 +829,29 @@ class ComfyUISmartPlugin(Star):
         else:
             llm_note = "（提示词优化已关闭，直接使用你的原话）"
 
+        # 多后端：按负载挑一个后端，本次任务的提交/等待/下载都走它。
+        # 单后端时 pick() 直接返回主后端、不做任何探测，行为与以前一致。
+        backend = await self.pool.pick()
+        comfy = backend.client or self.comfy
+        if self.pool.multi:
+            logger.info("本次任务派给后端 %s（%s）", backend.name, backend.url)
+
         # 图生图 / 扩图：先把输入图上传到 ComfyUI，拿到 LoadImage 能用的引用
         purpose = force_purpose or ("i2i" if source_image else "t2i")
         image_ref = ""
         mask_ref = ""
         if source_image:
             i2i_sub = str((self.config.get("i2i", {}) or {}).get("subfolder") or "astrbot").strip()
-            image_ref = await self.comfy.upload_image(source_image, subfolder=i2i_sub)
+            image_ref = await comfy.upload_image(source_image, subfolder=i2i_sub)
         if mask_image:
             mask_sub = str(
                 (self.config.get("i2i", {}) or {}).get("subfolder") or "astrbot"
             ).strip()
-            mask_ref = await self.comfy.upload_image(mask_image, subfolder=mask_sub)
+            mask_ref = await comfy.upload_image(mask_image, subfolder=mask_sub)
 
-        selection = await self._resolve_selection(catalog, opt, opts, purpose=purpose)
+        selection = await self._resolve_selection(
+            catalog, opt, opts, purpose=purpose, client=comfy
+        )
         template: WorkflowTemplate = selection["template"]
         sampling = self._resolve_sampling(selection["arch"], opt, opts, draw_conf)
 
@@ -1023,7 +1090,7 @@ class ComfyUISmartPlugin(Star):
         # （典型是 LoadImage，允许写 "子目录/文件名"），拿 /object_info 的下拉列表去卡
         # 会把合法请求误杀。服务端始终是最终裁判；预检结论在服务端拒绝时一并给出，
         # 正好补上「ComfyUI 只回一句 failed validation、不给节点级原因」的场景。
-        problems = await self.comfy.precheck(graph)
+        problems = await comfy.precheck(graph)
         if problems:
             logger.warning(
                 "提交前预检发现问题（仍会提交，由服务端裁决）：%s", "；".join(problems)
@@ -1041,10 +1108,12 @@ class ComfyUISmartPlugin(Star):
                 if queued_seconds >= 1.0:
                     logger.info("插件侧排队 %.1f 秒后获得出图名额", queued_seconds)
                 try:
-                    prompt_id = await self.comfy.submit(
+                    prompt_id = await comfy.submit(
                         graph, extra_data={"astrbot_plugin": PLUGIN_NAME}
                     )
                 except ComfyUIError as e:
+                    if is_backend_fault(str(e)):
+                        self.pool.note_failure(backend, str(e))
                     # 把「实际提交的图」落盘：服务端偶尔不返回节点级原因，没有这个就只能靠猜
                     path = self._dump_failed_graph(graph, e)
                     logger.warning(
@@ -1059,12 +1128,13 @@ class ComfyUISmartPlugin(Star):
                             f"　　- {item}" for item in problems
                         )
                     raise ComfyUIError(detail) from e
-                # 登记在途任务：`/取消` 靠这两张表找到「这个人的任务」并定点打断
+                # 登记在途任务：`/取消` 靠这几张表找到「这个人的任务」并定点打断
                 job_cancel = asyncio.Event()
                 self._active_jobs[prompt_id] = uid
                 self._job_cancel[prompt_id] = job_cancel
+                self._job_backend[prompt_id] = backend
                 try:
-                    images = await self.comfy.wait_for_images(
+                    images = await comfy.wait_for_images(
                         prompt_id,
                         self.storage.output_dir,
                         on_queued=on_queued,
@@ -1072,9 +1142,17 @@ class ComfyUISmartPlugin(Star):
                         cancel_event=self._cancel,
                         user_cancel_event=job_cancel,
                     )
+                except ComfyUIError as e:
+                    # 被用户 /取消 或插件卸载打断不算后端故障，别把好机器拉黑
+                    if is_backend_fault(str(e)) and not job_cancel.is_set():
+                        self.pool.note_failure(backend, str(e))
+                    raise
+                else:
+                    self.pool.note_success(backend)
                 finally:
                     self._active_jobs.pop(prompt_id, None)
                     self._job_cancel.pop(prompt_id, None)
+                    self._job_backend.pop(prompt_id, None)
         except QueueTimeout as e:
             # 排队超时不是「出图失败」而是「没轮上」：记 info 便于区分，再交给指令层告知用户
             logger.info("出图排队超时：%s", e)
@@ -1099,6 +1177,7 @@ class ComfyUISmartPlugin(Star):
             "denoise": denoise if denoise is not None else 1.0,
             "outpaint": outpaint_info,
             "inpaint": inpaint_info,
+            "backend": backend.name if self.pool.multi else "",
             "seconds": time.time() - started,
             "queued_seconds": queued_seconds,
             # 有 Hires 时对外报最终尺寸，消息与画廊显示的才是真实产物尺寸
@@ -1246,7 +1325,9 @@ class ComfyUISmartPlugin(Star):
             job_event = self._job_cancel.get(prompt_id)
             if job_event is not None:
                 job_event.set()
-            outcome = await self.comfy.cancel_prompt(prompt_id)
+            backend = self._job_backend.get(prompt_id)
+            client = backend.client if backend is not None else self.comfy
+            outcome = await client.cancel_prompt(prompt_id)
             results.append(
                 {
                     "running": "已中断正在执行的任务",
@@ -1618,6 +1699,8 @@ class ComfyUISmartPlugin(Star):
                 detail += f"\n⚠️ {result['hires_note']}"
             if result.get("prompt_note"):
                 detail += f"\nℹ️ {result['prompt_note']}"
+            if result.get("backend"):
+                detail += f"\n🖥 后端：{result['backend']}"
             if result.get("queued_seconds"):
                 # 排队时间与出图时间分开报，否则「这次怎么这么慢」说不清
                 detail += f"\n⏳ 排队等待 {result['queued_seconds']:.0f}s"
@@ -1703,6 +1786,20 @@ class ComfyUISmartPlugin(Star):
             f"　并发：上限 {gate['max_concurrent']}｜进行中 {gate['running']}"
             f"｜排队 {gate['waiting']}{per_user}｜排队等待上限 {wait_limit}"
         )
+        if self.pool.multi:
+            rows = self.pool.snapshot()
+            lines.append(f"　后端（{len(rows)} 个，按负载分配）：")
+            for row in rows:
+                if row["benched"]:
+                    mark = f"⛔ 熔断中（还有 {row['benched_for']:.0f} 秒）"
+                elif row["online"] is False:
+                    mark = "❌ 上次失败"
+                elif row["online"]:
+                    mark = f"✅ 队列 {row['busy']}"
+                else:
+                    mark = "❔ 未探测"
+                tag = "（主）" if row["primary"] else ""
+                lines.append(f"　　- {row['name']}{tag} {row['url']}｜{mark}")
         lines.append(f"　模板：{len(self.templates)} 个")
         hires_conf = self.config.get("hires", {}) or {}
         lines.append(

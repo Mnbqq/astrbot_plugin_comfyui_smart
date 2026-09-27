@@ -53,6 +53,31 @@
       }
     }
   },
+  "backends": {
+    "description": "多后端调度（有多个 ComfyUI 时按负载自动分配）",
+    "type": "object",
+    "items": {
+      "endpoints": {
+        "description": "其他 ComfyUI 地址",
+        "type": "list",
+        "hint": "每行一个，支持「地址|名称」，例如 http://192.168.1.20:8188|二号线。主地址仍用上面的「服务地址」。留空=只用主后端。",
+        "default": []
+      },
+      "strategy": {
+        "description": "调度策略",
+        "type": "string",
+        "options": ["least_queue", "round_robin", "primary"],
+        "hint": "least_queue=谁闲给谁（默认）；round_robin=轮流派；primary=只用主后端。",
+        "default": "least_queue"
+      },
+      "fail_cooldown": {
+        "description": "失败熔断时长（秒）",
+        "type": "int",
+        "hint": "某台提交失败或探测不通后，这段时间内不再派任务给它。0=不熔断。",
+        "default": 60
+      }
+    }
+  },
   "llm_settings": {
     "description": "LLM 设置（用于把中文描述转成提示词并选模型）",
     "type": "object",
