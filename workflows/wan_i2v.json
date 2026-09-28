@@ -3,20 +3,29 @@
   "purpose": "i2v",
   "arch": "generic",
   "loader": "unet",
-  "description": "图生视频（Wan 2.x 原生首尾帧）：以你发的图为起点生成短视频；发两张图（或引用一张再发一张）时，第一张当首帧、第二张当尾帧，画面从首帧过渡到尾帧。用 WanFirstLastFrameToVideo（start_image / end_image 都是可选输入，所以一张图也能跑），帧数与帧率由 /图生视频 的 --seconds/--fps 算好写进来。需要 diffusion_models 里的 Wan I2V 权重、text_encoders 里的 umt5_xxl、vae 里的 wan_2.1_vae。",
+  "description": "图生视频（Wan 2.x 原生首尾帧）：以你发的图为起点生成短视频；发两张图（或引用一张再发一张）时，第一张当首帧、第二张当尾帧，画面从首帧过渡到尾帧。用 WanFirstLastFrameToVideo（start_image / end_image 都是可选输入，所以一张图也能跑），帧数与帧率由 /图生视频 的 --seconds/--fps 算好写进来。需要 diffusion_models 里的 Wan I2V 权重、text_encoders 里的 umt5_xxl、vae 里的 wan_2.1_vae。 输出 mp4（h264）：聊天端兼容性比 webm 好，官方模板也是这么做的。",
   "bindings": {
-    "image_loader": { "node": "4" },
-    "end_image_loader": { "node": "7" }
+    "image_loader": {
+      "node": "4"
+    },
+    "end_image_loader": {
+      "node": "7"
+    },
+    "save": {
+      "node": "14"
+    }
   },
   "params": {
     "length": "5",
-    "fps": "12",
+    "fps": "13",
     "end_image": "5"
   },
   "graph": {
     "1": {
       "class_type": "UNETLoader",
-      "_meta": { "title": "Wan I2V 底模（diffusion_models）" },
+      "_meta": {
+        "title": "Wan I2V 底模（diffusion_models）"
+      },
       "inputs": {
         "unet_name": "wan2.1_i2v_480p_14B_fp8_e4m3fn.safetensors",
         "weight_dtype": "default"
@@ -24,84 +33,184 @@
     },
     "2": {
       "class_type": "CLIPLoader",
-      "_meta": { "title": "文本编码器（umt5）" },
-      "inputs": { "clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors", "type": "wan" }
+      "_meta": {
+        "title": "文本编码器（umt5）"
+      },
+      "inputs": {
+        "clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+        "type": "wan"
+      }
     },
     "3": {
       "class_type": "VAELoader",
-      "_meta": { "title": "VAE" },
-      "inputs": { "vae_name": "wan_2.1_vae.safetensors" }
+      "_meta": {
+        "title": "VAE"
+      },
+      "inputs": {
+        "vae_name": "wan_2.1_vae.safetensors"
+      }
     },
     "4": {
       "class_type": "LoadImage",
-      "_meta": { "title": "首帧图片" },
-      "inputs": { "image": "astrbot/placeholder_start.png" }
+      "_meta": {
+        "title": "首帧图片"
+      },
+      "inputs": {
+        "image": "astrbot/placeholder_start.png"
+      }
     },
     "7": {
       "class_type": "LoadImage",
-      "_meta": { "title": "尾帧图片（可选）" },
-      "inputs": { "image": "astrbot/placeholder_end.png" }
+      "_meta": {
+        "title": "尾帧图片（可选）"
+      },
+      "inputs": {
+        "image": "astrbot/placeholder_end.png"
+      }
     },
     "5": {
       "class_type": "WanFirstLastFrameToVideo",
-      "_meta": { "title": "首尾帧与帧数" },
+      "_meta": {
+        "title": "首尾帧与帧数"
+      },
       "inputs": {
-        "positive": ["6", 0],
-        "negative": ["8", 0],
-        "vae": ["3", 0],
+        "positive": [
+          "6",
+          0
+        ],
+        "negative": [
+          "8",
+          0
+        ],
+        "vae": [
+          "3",
+          0
+        ],
         "width": 832,
         "height": 480,
         "length": 81,
         "batch_size": 1,
-        "start_image": ["4", 0],
-        "end_image": ["7", 0]
+        "start_image": [
+          "4",
+          0
+        ],
+        "end_image": [
+          "7",
+          0
+        ]
       }
     },
     "6": {
       "class_type": "CLIPTextEncode",
-      "_meta": { "title": "正面提示词" },
-      "inputs": { "text": "", "clip": ["2", 0] }
+      "_meta": {
+        "title": "正面提示词"
+      },
+      "inputs": {
+        "text": "",
+        "clip": [
+          "2",
+          0
+        ]
+      }
     },
     "8": {
       "class_type": "CLIPTextEncode",
-      "_meta": { "title": "负面提示词" },
-      "inputs": { "text": "", "clip": ["2", 0] }
+      "_meta": {
+        "title": "负面提示词"
+      },
+      "inputs": {
+        "text": "",
+        "clip": [
+          "2",
+          0
+        ]
+      }
     },
     "9": {
       "class_type": "ModelSamplingSD3",
-      "_meta": { "title": "Wan 采样偏移" },
-      "inputs": { "model": ["1", 0], "shift": 8.0 }
+      "_meta": {
+        "title": "Wan 采样偏移"
+      },
+      "inputs": {
+        "model": [
+          "1",
+          0
+        ],
+        "shift": 8.0
+      }
     },
     "10": {
       "class_type": "KSampler",
-      "_meta": { "title": "采样器" },
+      "_meta": {
+        "title": "采样器"
+      },
       "inputs": {
-        "model": ["9", 0],
+        "model": [
+          "9",
+          0
+        ],
         "seed": 0,
         "steps": 30,
         "cfg": 6.0,
         "sampler_name": "uni_pc",
         "scheduler": "simple",
-        "positive": ["6", 0],
-        "negative": ["8", 0],
-        "latent_image": ["5", 0],
+        "positive": [
+          "6",
+          0
+        ],
+        "negative": [
+          "8",
+          0
+        ],
+        "latent_image": [
+          "5",
+          0
+        ],
         "denoise": 1.0
       }
     },
     "11": {
       "class_type": "VAEDecode",
-      "_meta": { "title": "VAE 解码" },
-      "inputs": { "samples": ["10", 0], "vae": ["3", 0] }
-    },
-    "12": {
-      "class_type": "SaveWEBM",
-      "_meta": { "title": "保存视频（webm）" },
+      "_meta": {
+        "title": "VAE 解码"
+      },
       "inputs": {
-        "images": ["11", 0],
+        "samples": [
+          "10",
+          0
+        ],
+        "vae": [
+          "3",
+          0
+        ]
+      }
+    },
+    "13": {
+      "class_type": "CreateVideo",
+      "_meta": {
+        "title": "合成视频"
+      },
+      "inputs": {
+        "images": [
+          "11",
+          0
+        ],
+        "fps": 16.0
+      }
+    },
+    "14": {
+      "class_type": "SaveVideo",
+      "_meta": {
+        "title": "保存视频（mp4）"
+      },
+      "inputs": {
+        "video": [
+          "13",
+          0
+        ],
         "filename_prefix": "astrbot_i2v",
-        "codec": "vp9",
-        "fps": 16.0,
-        "crf": 32.0
+        "format": "auto",
+        "codec": "auto"
       }
     }
   }

@@ -3,10 +3,10 @@
   "purpose": "t2v",
   "arch": "generic",
   "loader": "unet_gguf",
-  "description": "文生视频（Wan 2.2 TI2V-5B，GGUF 量化）：给 8G 显存/16G 内存的机器用。UnetLoaderGGUF 读 unet_gguf 目录里的 Wan2.2-TI2V-5B GGUF，CLIPLoaderGGUF 读 clip_gguf 目录里的 umt5 GGUF，VAE 用 wan2.2_vae；帧数（length）与帧率（fps）由 /视频 的 --seconds/--fps 算好写进来。需要 ComfyUI-GGUF 自定义节点。",
+  "description": "文生视频（Wan 2.2 TI2V-5B，GGUF 量化）：给 8G 显存/16G 内存的机器用。UnetLoaderGGUF 读 unet_gguf 目录里的 Wan2.2-TI2V-5B GGUF，CLIPLoaderGGUF 读 clip_gguf 目录里的 umt5 GGUF，VAE 用 wan2.2_vae；帧数（length）与帧率（fps）由 /视频 的 --seconds/--fps 算好写进来。需要 ComfyUI-GGUF 自定义节点。 输出 mp4（h264）：聊天端兼容性比 webm 好，官方模板也是这么做的。",
   "params": {
     "length": "6",
-    "fps": "10"
+    "fps": "11"
   },
   "graph": {
     "1": {
@@ -138,21 +138,38 @@
         ]
       }
     },
-    "10": {
-      "class_type": "SaveWEBM",
+    "11": {
+      "class_type": "CreateVideo",
       "_meta": {
-        "title": "保存视频（webm）"
+        "title": "合成视频"
       },
       "inputs": {
         "images": [
           "9",
           0
         ],
-        "filename_prefix": "astrbot_wan22",
-        "codec": "vp9",
-        "fps": 16.0,
-        "crf": 32.0
+        "fps": 16.0
       }
+    },
+    "12": {
+      "class_type": "SaveVideo",
+      "_meta": {
+        "title": "保存视频（mp4）"
+      },
+      "inputs": {
+        "video": [
+          "11",
+          0
+        ],
+        "filename_prefix": "astrbot_wan22",
+        "format": "auto",
+        "codec": "auto"
+      }
+    }
+  },
+  "bindings": {
+    "save": {
+      "node": "12"
     }
   }
 }

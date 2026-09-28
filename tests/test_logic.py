@@ -3375,20 +3375,25 @@ def main() -> int:
 
     tpl_video = wt.load_templates(ROOT / "workflows")["wan_t2v"]
     check("内置文生视频模板已加载，用途是 t2v", tpl_video.purpose == "t2v", tpl_video.purpose)
-    check("视频模板用 Wan 原生节点（含 SaveWEBM 输出锚点）",
+    check("视频模板用 Wan 原生节点（含 CreateVideo + SaveVideo 输出锚点）",
           {"UNETLoader", "CLIPLoader", "VAELoader", "EmptyHunyuanLatentVideo",
-           "ModelSamplingSD3", "SaveWEBM"} <= tpl_video.required_nodes(),
+           "ModelSamplingSD3", "CreateVideo", "SaveVideo"} <= tpl_video.required_nodes(),
           sorted(tpl_video.required_nodes()))
     check("视频输出节点被当成「产物落地」的锚点（否则不可达节点会被误删）",
-          tpl_video.bindings["save"] == "10", tpl_video.bindings["save"])
+          tpl_video.graph[tpl_video.bindings["save"]]["class_type"] == "SaveVideo"
+          and tpl_video.graph[tpl_video.graph[tpl_video.bindings["save"]]["inputs"]["video"][0]]["class_type"]
+          == "CreateVideo",
+          tpl_video.bindings["save"])
     built_video = tpl_video.build(
         positive="一只猫在草地上奔跑", negative="bad", model_name="wan2.1_t2v_1.3B_fp16.safetensors",
         width=832, height=480, steps=30, cfg=6.0, sampler="uni_pc", scheduler="simple", seed=9,
         params={"length": 81, "fps": 16},
     )
     check("帧数与帧率写进模板声明的参数（潜空间 + 保存节点）",
-          built_video["6"]["inputs"]["length"] == 81 and built_video["10"]["inputs"]["fps"] == 16.0,
-          (built_video["6"]["inputs"], built_video["10"]["inputs"]))
+          built_video["6"]["inputs"]["length"] == 81
+          and built_video[built_video["12"]["inputs"]["video"][0]]["inputs"]["fps"] == 16.0,
+          (built_video["6"]["inputs"],
+           built_video[built_video["12"]["inputs"]["video"][0]]["inputs"]))
     check("尺寸注入到视频潜空间节点", built_video["6"]["inputs"]["width"] == 832
           and built_video["6"]["inputs"]["height"] == 480, built_video["6"]["inputs"])
     check("Wan 档案参与采样参数（832x480 / uni_pc / simple / CFG 6）",
@@ -3434,14 +3439,16 @@ def main() -> int:
             submitted_vid = kw["json"]["prompt"]
     check("/视频 提交的是 Wan 文生视频工作流",
           submitted_vid is not None
-          and submitted_vid["10"]["class_type"] == "SaveWEBM"
+          and submitted_vid["12"]["class_type"] == "SaveVideo"
+          and submitted_vid["11"]["class_type"] == "CreateVideo"
           and submitted_vid["6"]["class_type"] == "EmptyHunyuanLatentVideo",
           sorted({n["class_type"] for n in (submitted_vid or {}).values()}))
-    check("--seconds/--fps 落到潜空间帧数与保存帧率上",
+    _vid_fps_node = (submitted_vid or {}).get("12", {}).get("inputs", {}).get("video", [None])[0]
+    check("--seconds/--fps 落到潜空间帧数与 CreateVideo 帧率上",
           (submitted_vid or {}).get("6", {}).get("inputs", {}).get("length") == 81
-          and (submitted_vid or {}).get("10", {}).get("inputs", {}).get("fps") == 16.0,
+          and (submitted_vid or {}).get(_vid_fps_node, {}).get("inputs", {}).get("fps") == 16.0,
           ((submitted_vid or {}).get("6", {}).get("inputs"),
-           (submitted_vid or {}).get("10", {}).get("inputs")))
+           (submitted_vid or {}).get(_vid_fps_node, {}).get("inputs")))
     chain_vid = [x for x in out_vid if x.get("type") == "chain"][-1]["chain"]
     check("视频产物用 AstrBot 的 Video 组件发出（不是硬塞进 Image）",
           any(comp.__class__.__name__ == "Video" for comp in chain_vid),
@@ -3487,13 +3494,15 @@ def main() -> int:
     check("内置图生视频模板已加载，用途是 i2v", tpl_i2v.purpose == "i2v", tpl_i2v.purpose)
     check("i2v 模板用 Wan 首尾帧节点（可选 start/end image）",
           {"WanFirstLastFrameToVideo", "UNETLoader", "CLIPLoader", "VAELoader",
-           "ModelSamplingSD3", "SaveWEBM"} <= tpl_i2v.required_nodes(),
+           "ModelSamplingSD3", "CreateVideo", "SaveVideo"} <= tpl_i2v.required_nodes(),
           sorted(tpl_i2v.required_nodes()))
     check("首帧与尾帧绑定到两个不同的 LoadImage（输入键都叫 image，必须分开）",
           tpl_i2v.bindings["image_loader"] == ("4", "image")
           and tpl_i2v.bindings["end_image_loader"] == ("7", "image"),
           (tpl_i2v.bindings["image_loader"], tpl_i2v.bindings["end_image_loader"]))
 
+    tpl_i2v_save = tpl_i2v.graph[tpl_i2v.bindings["save"]]
+    built_i2v_fps_node = tpl_i2v_save["inputs"]["video"][0]
     i2v_both = tpl_i2v.build(
         positive="p", negative="n", model_name="wan2.1_i2v_480p_14B.safetensors",
         width=832, height=480, steps=30, cfg=6.0, sampler="uni_pc", scheduler="simple",
@@ -3507,8 +3516,9 @@ def main() -> int:
           and i2v_both["5"]["inputs"]["end_image"] == ["7", 0],
           (i2v_both["5"]["inputs"]["start_image"], i2v_both["5"]["inputs"]["end_image"]))
     check("帧数/帧率写进模板声明的参数",
-          i2v_both["5"]["inputs"]["length"] == 81 and i2v_both["12"]["inputs"]["fps"] == 16.0,
-          (i2v_both["5"]["inputs"]["length"], i2v_both["12"]["inputs"]["fps"]))
+          i2v_both["5"]["inputs"]["length"] == 81
+          and i2v_both[built_i2v_fps_node]["inputs"]["fps"] == 16.0,
+          (i2v_both["5"]["inputs"]["length"], i2v_both[built_i2v_fps_node]["inputs"]["fps"]))
 
     i2v_one = tpl_i2v.build(
         positive="p", negative="n", model_name="m", width=832, height=480, steps=30, cfg=6.0,
@@ -3569,7 +3579,7 @@ def main() -> int:
     check("/图生视频 提交的是 Wan 首尾帧工作流",
           submitted_i2v is not None
           and submitted_i2v["5"]["class_type"] == "WanFirstLastFrameToVideo"
-          and submitted_i2v["12"]["class_type"] == "SaveWEBM",
+          and submitted_i2v["14"]["class_type"] == "SaveVideo",
           sorted({n["class_type"] for n in (submitted_i2v or {}).values()}))
     check("单张图时不带尾帧（可选输入已被摘掉、孤儿节点已剪掉）",
           submitted_i2v is not None and "end_image" not in submitted_i2v["5"]["inputs"]
@@ -3852,7 +3862,7 @@ def main() -> int:
           (tpl_gguf_t2v.loader, tpl_gguf_i2v.loader))
     check("GGUF 模板用 GGUF 装载器 + Wan 2.2 潜空间节点",
           {"UnetLoaderGGUF", "CLIPLoaderGGUF", "Wan22ImageToVideoLatent",
-           "ModelSamplingSD3", "SaveWEBM"} <= tpl_gguf_t2v.required_nodes(),
+           "ModelSamplingSD3", "CreateVideo", "SaveVideo"} <= tpl_gguf_t2v.required_nodes(),
           sorted(tpl_gguf_t2v.required_nodes()))
     check("Wan 2.2 TI2V-5B 有独立架构档案（CFG 5.0，不是 2.1 的 6.0）",
           wt.guess_arch("Wan2.2-TI2V-5B-Q4_K_M.gguf") == "wan22"
@@ -3895,6 +3905,7 @@ def main() -> int:
           picked_safe_as_gguf_dir is not None and picked_safe_as_gguf_dir.name == "wan_t2v",
           picked_safe_as_gguf_dir.name if picked_safe_as_gguf_dir else None)
 
+    built_gguf_save = tpl_gguf_t2v.graph[tpl_gguf_t2v.bindings["save"]]
     built_gguf = tpl_gguf_t2v.build(
         positive="a cat running on grass", negative="bad", model_name="Wan2.2-TI2V-5B-Q4_K_M.gguf",
         width=832, height=480, steps=30, cfg=5.0, sampler="uni_pc", scheduler="simple",
@@ -3906,7 +3917,7 @@ def main() -> int:
           and built_gguf["2"]["inputs"]["type"] == "wan"
           and built_gguf["3"]["inputs"]["vae_name"] == "Wan2.2_VAE.safetensors"
           and built_gguf["6"]["inputs"]["length"] == 81
-          and built_gguf["10"]["inputs"]["fps"] == 16.0,
+          and built_gguf[built_gguf_save["inputs"]["video"][0]]["inputs"]["fps"] == 16.0,
           (built_gguf["1"]["inputs"], built_gguf["2"]["inputs"], built_gguf["6"]["inputs"]))
     check("文生视频的 GGUF 模板不带 start_image（纯文生）",
           "start_image" not in built_gguf["6"]["inputs"], built_gguf["6"]["inputs"])
@@ -4046,7 +4057,7 @@ def main() -> int:
     check("/视频 默认提交 81 帧 + 24fps（观感问题的那次是 17 帧 @8fps）",
           submitted_nat is not None
           and submitted_nat["6"]["inputs"]["length"] == 81
-          and submitted_nat["10"]["inputs"]["fps"] == 24.0,
+          and submitted_nat[submitted_nat["12"]["inputs"]["video"][0]]["inputs"]["fps"] == 24.0,
           (submitted_nat or {}).get("6", {}).get("inputs", {}).get("length"))
 
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
