@@ -4107,6 +4107,46 @@ def main() -> int:
           "不在 ComfyUI 的队列/历史里" in err_missing and elapsed_missing < 10,
           f"{err_missing[:60]} 用时 {elapsed_missing:.1f}s")
 
+    # 2b) 关键回归：任务**还在队列里**（历史里当然没有）时绝不能被误判成「丢了」
+    #     —— 真机上正在采样的任务被这么误杀过（22 秒就放弃）
+    async def queued_not_started(method, path, **kw):
+        if path.startswith("/history/"):
+            return {}                                    # 还没进历史，正常
+        return await orig_request(method, path, **kw)
+
+    sess_running = api.aiohttp.ClientSession()
+    sess_running.route("GET", "/queue", api.aiohttp.ClientResponse(200, payload={
+        # 队列项的 client_id 必须和本插件实例一致，才会被算进 own_positions
+        "queue_running": [[1, "run-1", {}, {"client_id": plugin.comfy.client_id}, []]],
+        "queue_pending": []}))
+    plugin.comfy._session = sess_running
+    plugin.comfy._request = queued_not_started
+    api.MISSING_PROMPT_POLLS = 1          # 调到最激进：只要判定逻辑错就会立刻失败
+    api.MISSING_PROMPT_SECONDS = 0.0
+    waited = {"n": 0}
+
+    async def stop_after_a_while(*args, **kwargs):
+        raise api.ComfyUIError("测试主动打断")
+
+    plugin.comfy.poll_interval = 0.05
+    import asyncio as _aio
+    async def run_briefly():
+        task = _aio.create_task(
+            plugin.comfy.wait_for_images("run-1", plugin.storage.output_dir))
+        await _aio.sleep(0.6)                 # 0.6 秒 ≈ 12 轮轮询，足够触发（若逻辑错）
+        if task.done():
+            return str(task.exception() or "")
+        task.cancel()
+        try:
+            await task
+        except _aio.CancelledError:
+            pass
+        return ""
+    err_queued = _aio.run(run_briefly())
+    check("任务还在队列里时不会被误判成「丢了」（真机踩过的误报）",
+          err_queued == "", err_queued[:80])
+    plugin.comfy.poll_interval = 1.0
+
     # 3) 正常路径不受影响：仍能等到产物
     sess_ok = api.aiohttp.ClientSession()
     sess_ok.route("GET", "/history/ok-1", api.aiohttp.ClientResponse(200, payload={"ok-1": {

@@ -941,8 +941,14 @@ class ComfyUI:
                     last_error = "连不上 ComfyUI"
                     continue
                 if not isinstance(history, dict) or prompt_id not in history:
-                    # 服务是通的但查不到这个任务：可能是它被清出队列/历史（例如重启过）。
-                    # 连续多轮都查不到就判定任务丢了，别一直等到超时。
+                    if mine is not None:
+                        # 还在队列里（排队中/执行中）：历史里当然还没有它，这是**正常**状态。
+                        # 真机踩过这个坑：不加这个判断会把正在跑的任务误判成「丢了」，
+                        # 22 秒就放弃等待，而任务其实还在正常采样。
+                        missing_polls = 0
+                        last_error = "等待 ComfyUI 执行"
+                        continue
+                    # 队列里没有、历史里也没有 → 才可能是任务真的丢了（服务重启/队列被清空）
                     missing_polls += 1
                     if missing_polls == 1:
                         missing_since = time.time()
