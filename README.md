@@ -124,7 +124,7 @@
 
 ## 工作流模板
 
-模板是数据，不是代码。内置八个：
+模板是数据，不是代码。内置十个：
 
 | 模板 | 适用 | 说明 |
 |------|------|------|
@@ -134,6 +134,8 @@
 | `inpaint_checkpoint` | 同上 | 局部重绘：`LoadImageMask` 读遮罩 + `GrowMask` 外扩 + `SetLatentNoiseMask` 只重画遮罩内 |
 | `wan_t2v` | Wan 2.x 视频模型 | 文生视频：`UNETLoader` + `CLIPLoader(type=wan)` + `EmptyHunyuanLatentVideo` + `ModelSamplingSD3` + `SaveWEBM` |
 | `wan_i2v` | Wan 2.x I2V 权重 | 图生视频（首尾帧）：`WanFirstLastFrameToVideo`（`start_image` / `end_image` 都是可选输入） |
+| `wan22_t2v_gguf` | Wan 2.2 TI2V-5B **GGUF** | 文生视频（省显存）：`UnetLoaderGGUF` + `CLIPLoaderGGUF(type=wan)` + `Wan22ImageToVideoLatent` |
+| `wan22_i2v_gguf` | 同上 | 图生视频（首帧驱动）：`Wan22ImageToVideoLatent.start_image` 接一张 `LoadImage` |
 | `flux_checkpoint` | 一体化 Flux 单文件底模 | 模型/文本编码器/VAE 打包在一起的版本 |
 | `flux_unet` | 分离权重的 Flux | `diffusion_models` 的 UNET + `text_encoders` 的 CLIP + 独立 VAE |
 
@@ -517,6 +519,26 @@
 平台发不了视频时，把「直接把视频发到聊天」关掉，改为在聊天里给出本地保存路径。
 画廊里的视频条目用 `<video>` 渲染，点开可播放。
 
+### 显存不够？用 GGUF 量化（Wan 2.2 TI2V-5B）
+
+8 GB 显存 / 16 GB 内存的机器跑 fp16 视频权重很吃力。插件内置两个 **GGUF** 模板，
+配合 ComfyUI-GGUF 自定义节点（`UnetLoaderGGUF` / `CLIPLoaderGGUF`）就能跑：
+
+| 文件 | 大小 | 放到 |
+|---|---|---|
+| `Wan2.2-TI2V-5B-Q4_K_M.gguf` | 3.2 GB | `models/unet_gguf/` |
+| `umt5-xxl-encoder-Q4_K_M.gguf` | 3.4 GB | `models/clip_gguf/` |
+| `Wan2.2_VAE.safetensors` | 1.3 GB | `models/vae/` |
+
+- 这套是 **TI2V**（文生 + 图生视频同一个模型）：`/视频` 走 `wan22_t2v_gguf`，
+  `/图生视频` 走 `wan22_i2v_gguf`（把首帧接进 `Wan22ImageToVideoLatent.start_image`）。
+- 采样参数按官方示例：**832x480 / 30 步 / CFG 5.0 / uni_pc + simple**（Wan 2.2 的 CFG 与 2.1 不同，
+  所以插件给 TI2V 单独建了架构档案）。
+- **装载方式不会串**：GGUF 模型只会挑 GGUF 模板，safetensors 模型只挑 safetensors 模板
+  （`UnetLoaderGGUF` 和 `UNETLoader` 是两个不同的节点，混用必然报错）。
+- 视频任务在没指定 `--model` 时会**优先从 `diffusion_models` / `unet_gguf` 里挑**，
+  不会拿 `checkpoints` 里的图片底模去硬套；实在没有视频权重会明确告诉你该放哪里。
+
 ---
 
 ## 图生视频（首尾帧）
@@ -603,7 +625,7 @@
 启动时插件会打印一条横幅，用来确认「跑的到底是哪一版」：
 
 ```
-ComfyUI 智能绘图 v0.15.0 已激活｜模板 8 个｜数据目录 …｜日志走 astrbot.api.logger｜Pages 已注册｜排队补偿上限 10 个任务｜同时出图上限 1
+ComfyUI 智能绘图 v0.15.2 已激活｜模板 10 个｜数据目录 …｜日志走 astrbot.api.logger｜Pages 已注册｜排队补偿上限 10 个任务｜同时出图上限 1
 ```
 
 ---
@@ -630,6 +652,23 @@ Hires 细分开关 + 反推专用模型（v0.6.2）、并发与队列治理（v0
 ---
 
 ## 更新日志
+
+**v0.15.2** — GGUF 量化支持：8G 显存也能跑视频（Wan 2.2 TI2V-5B）
+
+- **新增两个内置 GGUF 模板**：`wan22_t2v_gguf`（文生视频）与 `wan22_i2v_gguf`（首帧驱动图生视频），
+  用 `UnetLoaderGGUF` + `CLIPLoaderGGUF(type=wan)` + `Wan22ImageToVideoLatent` +
+  `ModelSamplingSD3` + `KSampler` + `VAEDecode` + `SaveWEBM`。
+- **目录发现支持 GGUF**：`unet_gguf` / `clip_gguf` 进入模型清单（`/models` 与 object_info 两条路径都补了），
+  非模型目录（`custom_nodes`/`configs`）仍然被排除。
+- **装载方式严格隔离**：新增 `unet_gguf` 装载类型，`pick_template` 用它区分
+  `UnetLoaderGGUF` 与 `UNETLoader`；GGUF 模型不会被 safetensors 模板接走，反之亦然。
+- **Wan 2.2 独立架构档案**：`ti2v`/`wan2.2` 关键字 → `wan22`（832x480、30 步、**CFG 5.0**、uni_pc + simple），
+  与 Wan 2.1 的 CFG 6.0 区分开。
+- **视频任务优先挑视频底模**：没指定 `--model` 时先看 `diffusion_models` / `unet_gguf`，
+  不再回退到第一个 checkpoint；底模不像视频模型时**提前拦住**并指路
+  （真机实测过「拿图片底模套视频模板」→ 报错完全看不懂的坑）。
+- 测试：+18 项断言（目录发现与白名单、装载隔离、TI2V 档案、两个模板的结构与注入、
+  `/视频` 端到端走 GGUF、图片底模被拦），Python 511 / 前端 39 全绿。
 
 **v0.15.1** — 真机实测修两个 bug：局部重绘的默认重绘幅度、视频缺底模的报错
 
@@ -1050,6 +1089,7 @@ WebSocket 进度解析与回退、`/取消`（排队中 / 队列中 / 执行中�
 端到端出图）、文生视频（帧数对齐 4n+1、时长上限、产物类型判定、Video 组件下发）、
 图生视频（首尾帧可选输入的摘除与剪枝、16 倍数尺寸贴合、两张图端到端）、
 国际化（两种语言键完全一致、源码用到的键都有文案、格式化与回退、英文模式端到端）、
+GGUF 量化（目录发现、装载方式隔离、Wan 2.2 TI2V-5B 模板与端到端）、
 以及 mock ComfyUI 下的完整出图流程。
 
 版本留档目录（`astrbot_plugin_comfyui_smart_vX.Y.Z`）里也带着同一套测试：

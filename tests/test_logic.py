@@ -3810,8 +3810,165 @@ def main() -> int:
             plugin.templates.update(saved)
 
     msg = t2v_error()
-    check("没装视频权重时给出可操作的报错（提到 diffusion_models / 视频权重）",
-          "文生视频" in msg and "diffusion_models" in msg, msg[:120])
+    # v0.15.2 起这条护栏更靠前（先判断底模像不像视频模型），措辞随之更新
+    check("没装视频权重时给出可操作的报错（说清要放进 diffusion_models / unet_gguf）",
+          "视频权重" in msg and ("diffusion_models" in msg or "unet_gguf" in msg), msg[:150])
+
+    print("\n=== GGUF 量化 + Wan 2.2 TI2V-5B（v0.15.2）===")
+    # 目录发现：GGUF 的专用目录必须进模型清单（8G 显存靠它跑视频）
+    s_gguf = api.aiohttp.ClientSession()
+    s_gguf.route("GET", "/models", api.aiohttp.ClientResponse(200, payload=[
+        "checkpoints", "diffusion_models", "unet_gguf", "clip_gguf", "vae", "text_encoders",
+        "custom_nodes", "configs",
+    ]))
+    s_gguf.route("GET", "/models/checkpoints", api.aiohttp.ClientResponse(
+        200, payload=["sd15.safetensors"]))
+    s_gguf.route("GET", "/models/diffusion_models", api.aiohttp.ClientResponse(
+        200, payload=["wan2.1_t2v_1.3B_fp16.safetensors"]))
+    s_gguf.route("GET", "/models/unet_gguf", api.aiohttp.ClientResponse(
+        200, payload=["Wan2.2-TI2V-5B-Q4_K_M.gguf"]))
+    s_gguf.route("GET", "/models/clip_gguf", api.aiohttp.ClientResponse(
+        200, payload=["umt5-xxl-encoder-Q4_K_M.gguf"]))
+    s_gguf.route("GET", "/models/vae", api.aiohttp.ClientResponse(
+        200, payload=["Wan2.2_VAE.safetensors"]))
+    s_gguf.route("GET", "/models/text_encoders", api.aiohttp.ClientResponse(200, payload=[]))
+    plugin.comfy._session = s_gguf
+    plugin.comfy.invalidate_model_cache()
+    gguf_catalog = asyncio.run(plugin.get_catalog())
+    check("GGUF 专用目录进入模型清单（unet_gguf / clip_gguf）",
+          gguf_catalog.get("unet_gguf") == ["Wan2.2-TI2V-5B-Q4_K_M.gguf"]
+          and gguf_catalog.get("clip_gguf") == ["umt5-xxl-encoder-Q4_K_M.gguf"],
+          {k: v for k, v in gguf_catalog.items()})
+    check("非模型目录仍被排除（custom_nodes / configs 不进清单）",
+          "custom_nodes" not in gguf_catalog and "configs" not in gguf_catalog,
+          sorted(gguf_catalog))
+
+    tpl_gguf_t2v = plugin.templates["wan22_t2v_gguf"]
+    tpl_gguf_i2v = plugin.templates["wan22_i2v_gguf"]
+    check("内置 GGUF 模板已加载（t2v / i2v 各一个，装载方式 unet_gguf）",
+          tpl_gguf_t2v.loader == "unet_gguf" and tpl_gguf_i2v.loader == "unet_gguf"
+          and tpl_gguf_t2v.purpose == "t2v" and tpl_gguf_i2v.purpose == "i2v",
+          (tpl_gguf_t2v.loader, tpl_gguf_i2v.loader))
+    check("GGUF 模板用 GGUF 装载器 + Wan 2.2 潜空间节点",
+          {"UnetLoaderGGUF", "CLIPLoaderGGUF", "Wan22ImageToVideoLatent",
+           "ModelSamplingSD3", "SaveWEBM"} <= tpl_gguf_t2v.required_nodes(),
+          sorted(tpl_gguf_t2v.required_nodes()))
+    check("Wan 2.2 TI2V-5B 有独立架构档案（CFG 5.0，不是 2.1 的 6.0）",
+          wt.guess_arch("Wan2.2-TI2V-5B-Q4_K_M.gguf") == "wan22"
+          and wt.arch_profile("wan22")["cfg"] == 5.0
+          and wt.arch_profile("wan22")["sampler"] == "uni_pc",
+          (wt.guess_arch("Wan2.2-TI2V-5B-Q4_K_M.gguf"), wt.arch_profile("wan22")["cfg"]))
+
+    # 装载方式隔离：GGUF 模型不能用 safetensors 模板，反过来也一样
+    picked_gguf, _a = wt.pick_template(
+        plugin.templates, model_name="Wan2.2-TI2V-5B-Q4_K_M.gguf",
+        model_folder="unet_gguf", purpose="t2v")
+    picked_safe, _a2 = wt.pick_template(
+        plugin.templates, model_name="wan2.1_t2v_1.3B_fp16.safetensors",
+        model_folder="diffusion_models", purpose="t2v")
+    check("GGUF 模型只挑 GGUF 模板（不会拿 UNETLoader 模板去套）",
+          picked_gguf is not None and picked_gguf.name == "wan22_t2v_gguf",
+          picked_gguf.name if picked_gguf else None)
+    check("safetensors 模型只挑 safetensors 模板（不会拿 GGUF 模板去套）",
+          picked_safe is not None and picked_safe.name == "wan_t2v",
+          picked_safe.name if picked_safe else None)
+
+    built_gguf = tpl_gguf_t2v.build(
+        positive="a cat running on grass", negative="bad", model_name="Wan2.2-TI2V-5B-Q4_K_M.gguf",
+        width=832, height=480, steps=30, cfg=5.0, sampler="uni_pc", scheduler="simple",
+        seed=5, params={"length": 81, "fps": 16},
+    )
+    check("GGUF 模板注入了 unet_name / clip_name / vae_name 与帧数帧率",
+          built_gguf["1"]["inputs"]["unet_name"] == "Wan2.2-TI2V-5B-Q4_K_M.gguf"
+          and built_gguf["2"]["inputs"]["clip_name"] == "umt5-xxl-encoder-Q4_K_M.gguf"
+          and built_gguf["2"]["inputs"]["type"] == "wan"
+          and built_gguf["3"]["inputs"]["vae_name"] == "Wan2.2_VAE.safetensors"
+          and built_gguf["6"]["inputs"]["length"] == 81
+          and built_gguf["10"]["inputs"]["fps"] == 16.0,
+          (built_gguf["1"]["inputs"], built_gguf["2"]["inputs"], built_gguf["6"]["inputs"]))
+    check("文生视频的 GGUF 模板不带 start_image（纯文生）",
+          "start_image" not in built_gguf["6"]["inputs"], built_gguf["6"]["inputs"])
+
+    built_gguf_i2v = tpl_gguf_i2v.build(
+        positive="let it move", negative="bad", model_name="Wan2.2-TI2V-5B-Q4_K_M.gguf",
+        width=512, height=768, steps=30, cfg=5.0, sampler="uni_pc", scheduler="simple",
+        seed=5, image_name="astrbot/start.png", params={"length": 49, "fps": 16},
+    )
+    check("图生视频的 GGUF 模板把首帧接进 start_image，尺寸贴合输入图",
+          built_gguf_i2v["11"]["inputs"]["image"] == "astrbot/start.png"
+          and built_gguf_i2v["6"]["inputs"]["start_image"] == ["11", 0]
+          and (built_gguf_i2v["6"]["inputs"]["width"], built_gguf_i2v["6"]["inputs"]["height"])
+          == (512, 768),
+          (built_gguf_i2v["6"]["inputs"].get("start_image"), built_gguf_i2v["6"]["inputs"]["width"]))
+
+    # 端到端：GGUF 视频真的走通提交（mock ComfyUI）
+    def gguf_session(pid="gguf-1"):
+        sess = api.aiohttp.ClientSession()
+        sess.route("GET", "/models", api.aiohttp.ClientResponse(
+            200, payload=["unet_gguf", "clip_gguf", "vae", "checkpoints"]))
+        sess.route("GET", "/models/unet_gguf", api.aiohttp.ClientResponse(
+            200, payload=["Wan2.2-TI2V-5B-Q4_K_M.gguf"]))
+        sess.route("GET", "/models/clip_gguf", api.aiohttp.ClientResponse(
+            200, payload=["umt5-xxl-encoder-Q4_K_M.gguf"]))
+        sess.route("GET", "/models/vae", api.aiohttp.ClientResponse(
+            200, payload=["Wan2.2_VAE.safetensors"]))
+        sess.route("GET", "/models/checkpoints", api.aiohttp.ClientResponse(
+            200, payload=["sd15.safetensors"]))
+        sess.route("POST", "/upload/image", api.aiohttp.ClientResponse(
+            200, payload={"name": "start.png", "subfolder": "astrbot", "type": "input"}))
+        sess.route("POST", "/prompt", api.aiohttp.ClientResponse(200, payload={"prompt_id": pid}))
+        sess.route("GET", "/queue", api.aiohttp.ClientResponse(
+            200, payload={"queue_running": [], "queue_pending": []}))
+        sess.route("GET", f"/history/{pid}", api.aiohttp.ClientResponse(200, payload={pid: {
+            "status": {"status_str": "success", "completed": True},
+            "outputs": {"10": {"images": [{"filename": "wan22_00001_.webm", "subfolder": "",
+                                           "type": "output"}], "animated": [True]}}}}))
+        sess.route("GET", "/view", api.aiohttp.ClientResponse(200, text="WEBM"))
+        plugin.comfy._session = sess
+        plugin.comfy.invalidate_model_cache()
+        return sess
+
+    plugin.config["video"] = {"default_seconds": 4, "default_fps": 16, "max_seconds": 10,
+                              "send_video": True}
+    sess_gguf = gguf_session(pid="gguf-1")
+    ev_gguf = AstrMessageEvent(sender_id="8008", message_str="/视频 一只猫在草地上奔跑 --seconds 5")
+    out_gguf = asyncio.run(drive(plugin.cmd_video(ev_gguf)))
+    submitted_gguf = None
+    for method, path, kw in sess_gguf.calls:
+        if method == "POST" and path == "/prompt":
+            submitted_gguf = kw["json"]["prompt"]
+    check("没有 safetensors 视频权重时，/视频 自动改用 GGUF 模板真出片",
+          submitted_gguf is not None and submitted_gguf["1"]["class_type"] == "UnetLoaderGGUF"
+          and submitted_gguf["6"]["class_type"] == "Wan22ImageToVideoLatent",
+          sorted({n["class_type"] for n in (submitted_gguf or {}).values()}))
+    check("秒数换算成帧数（5 秒 16fps → 81 帧）",
+          (submitted_gguf or {}).get("6", {}).get("inputs", {}).get("length") == 81,
+          (submitted_gguf or {}).get("6", {}).get("inputs"))
+    check("GGUF 视频结果也用 Video 组件发出",
+          any(comp.__class__.__name__ == "Video"
+              for x in out_gguf if x.get("type") == "chain" for comp in x["chain"]),
+          [x.get("type") for x in out_gguf])
+
+    # 图片底模不能被当成视频底模（真机实测的那个坑）
+    def video_with_image_model():
+        sess = api.aiohttp.ClientSession()
+        sess.route("GET", "/models", api.aiohttp.ClientResponse(200, payload=["checkpoints"]))
+        sess.route("GET", "/models/checkpoints", api.aiohttp.ClientResponse(
+            200, payload=["AbyssOrangeMix2_hard.safetensors"]))
+        sess.route("GET", "/queue", api.aiohttp.ClientResponse(
+            200, payload={"queue_running": [], "queue_pending": []}))
+        plugin.comfy._session = sess
+        plugin.comfy.invalidate_model_cache()
+        try:
+            asyncio.run(plugin.generate(user_desc="a cat", opts={}, event=None,
+                                        force_purpose="t2v"))
+            return ""
+        except Exception as e:
+            return str(e)
+
+    msg_img = video_with_image_model()
+    check("把图片底模当视频底模时提前拦住（不再提交必失败的图）",
+          "不像视频模型" in msg_img and "unet_gguf" in msg_img, msg_img[:140])
 
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）

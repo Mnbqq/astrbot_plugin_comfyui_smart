@@ -37,7 +37,7 @@ from .workflow_templates import (
 
 PLUGIN_NAME = "astrbot_plugin_comfyui_smart"
 # 与 metadata.yaml 的 version 保持一致（tests/test_logic.py 会校验二者不漂移）
-PLUGIN_VERSION = "0.15.1"
+PLUGIN_VERSION = "0.15.2"
 PLUGIN_DIR = Path(__file__).resolve().parent
 BUILTIN_TEMPLATE_DIR = PLUGIN_DIR / "workflows"
 
@@ -569,31 +569,67 @@ class ComfyUISmartPlugin(Star):
             {"model":..., "folder":..., "lora":..., "vae":..., "template":..., "arch":...}
         """
         checkpoints = catalog.get("checkpoints") or []
-        unets = catalog.get("diffusion_models") or []
+        # unet 类底模可能来自两个目录：safetensors 的 diffusion_models 与 GGUF 的 unet_gguf。
+        # 目录决定了候选模板（UNETLoader vs UnetLoaderGGUF），所以必须记住它来自哪里。
+        unet_pools = [
+            ("diffusion_models", catalog.get("diffusion_models") or []),
+            ("unet_gguf", catalog.get("unet_gguf") or []),
+        ]
+        unets = [name for _folder, files in unet_pools for name in files]
+        pools = dict(unet_pools)
+
+        def _pool_of(name: str) -> str:
+            """这个名字属于哪个 unet 目录（用于挑对装载器的模板）。"""
+            for folder_name, files in unet_pools:
+                if name in files:
+                    return folder_name
+            return "diffusion_models"
+
         loras = catalog.get("loras") or []
         vaes = catalog.get("vae") or []
 
         # 模型选择：用户行内参数 > LLM > 第一个可用
+        # （arch_override 先算出来：视频用途要靠它挑「像视频的底模」）
+        arch_override = str(
+            (self.config.get("draw_settings") or {}).get("arch_override") or ""
+        ).strip().lower()
         model = str(opts.get("model") or "").strip()
         folder = "checkpoints"
         pool = checkpoints
         if model:
             matched = _match_model(model, checkpoints)
-            if not matched:
+            if matched:
+                folder, pool = "checkpoints", checkpoints
+            else:
                 matched = _match_model(model, unets)
                 if matched:
-                    folder, pool = "diffusion_models", unets
+                    folder = _pool_of(matched)
+                    pool = pools.get(folder, [])
             model = matched
+        if not model and purpose in ("t2v", "i2v"):
+            # 视频任务：没指定模型时**先看 unet 类目录**（diffusion_models / unet_gguf）。
+            # checkpoints 里几乎不会有视频权重，回退到第一个 checkpoint 只会得到
+            # 「拿图片底模当视频底模」的必然失败（真机实测过）。
+            video_pool = [
+                name for name in unets
+                if guess_arch(name, arch_override) in ("wan", "wan22", "video")
+            ]
+            if video_pool:
+                model = video_pool[0]
+                folder = _pool_of(model)
+                pool = pools.get(folder, [])
         if not model:
             wanted = str(opt.get("checkpoint") or "").strip()
             if wanted and wanted in checkpoints:
                 model = wanted
             elif wanted and wanted in unets:
-                model, folder, pool = wanted, "diffusion_models", unets
+                model, folder = wanted, _pool_of(wanted)
+                pool = pools.get(folder, [])
             elif checkpoints:
                 model = checkpoints[0]
             elif unets:
-                model, folder, pool = unets[0], "diffusion_models", unets
+                model, folder = unets[0], _pool_of(unets[0])
+                pool = pools.get(folder, [])
         if not model:
             raise ComfyUIError(
                 "ComfyUI 里没有发现任何可用的底模（checkpoints / diffusion_models 都是空的）"
@@ -614,9 +650,13 @@ class ComfyUISmartPlugin(Star):
         # 能力探测：只挑「你这台 ComfyUI 真的装得出来」的模板，
         # 避免把缺自定义节点的工作流提交过去再被服务端拒绝。
         available = await (client or self.comfy).node_classes()
-        arch_override = str(
-            (self.config.get("draw_settings") or {}).get("arch_override") or ""
-        ).strip().lower()
+        arch = guess_arch(model, arch_override)
+        if purpose in ("t2v", "i2v") and arch not in ("wan", "wan22", "video"):
+            raise ComfyUIError(
+                f"选中的底模 {model} 不像视频模型（识别为 {arch} 架构），"
+                "视频需要专门的视频权重（如 Wan 2.2 TI2V-5B / Wan 2.1 T2V），"
+                "放进 diffusion_models（safetensors）或 unet_gguf（GGUF）后再试"
+            )
         template, arch = pick_template(
             self.templates,
             model_name=model,

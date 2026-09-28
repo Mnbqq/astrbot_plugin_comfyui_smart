@@ -1,0 +1,176 @@
+{
+  "name": "wan22_i2v_gguf",
+  "purpose": "i2v",
+  "arch": "generic",
+  "loader": "unet_gguf",
+  "description": "图生视频（Wan 2.2 TI2V-5B，GGUF 量化，首帧驱动）：给 8G 显存/16G 内存的机器用。UnetLoaderGGUF 读 unet_gguf 目录里的 Wan2.2-TI2V-5B GGUF，CLIPLoaderGGUF 读 clip_gguf 目录里的 umt5 GGUF，VAE 用 wan2.2_vae；把 LoadImage 接进 Wan22ImageToVideoLatent 的可选输入 start_image，以你发的图为起点生成视频；帧数/帧率同样由参数写入。需要 ComfyUI-GGUF 自定义节点。",
+  "bindings": {
+    "image_loader": {
+      "node": "11"
+    }
+  },
+  "params": {
+    "length": "6",
+    "fps": "10"
+  },
+  "graph": {
+    "1": {
+      "class_type": "UnetLoaderGGUF",
+      "_meta": {
+        "title": "Wan 2.2 TI2V-5B（GGUF）"
+      },
+      "inputs": {
+        "unet_name": "Wan2.2-TI2V-5B-Q4_K_M.gguf"
+      }
+    },
+    "2": {
+      "class_type": "CLIPLoaderGGUF",
+      "_meta": {
+        "title": "文本编码器（umt5 GGUF）"
+      },
+      "inputs": {
+        "clip_name": "umt5-xxl-encoder-Q4_K_M.gguf",
+        "type": "wan"
+      }
+    },
+    "3": {
+      "class_type": "VAELoader",
+      "_meta": {
+        "title": "VAE"
+      },
+      "inputs": {
+        "vae_name": "Wan2.2_VAE.safetensors"
+      }
+    },
+    "4": {
+      "class_type": "CLIPTextEncode",
+      "_meta": {
+        "title": "正面提示词"
+      },
+      "inputs": {
+        "text": "",
+        "clip": [
+          "2",
+          0
+        ]
+      }
+    },
+    "5": {
+      "class_type": "CLIPTextEncode",
+      "_meta": {
+        "title": "负面提示词"
+      },
+      "inputs": {
+        "text": "",
+        "clip": [
+          "2",
+          0
+        ]
+      }
+    },
+    "6": {
+      "class_type": "Wan22ImageToVideoLatent",
+      "_meta": {
+        "title": "尺寸与帧数"
+      },
+      "inputs": {
+        "vae": [
+          "3",
+          0
+        ],
+        "width": 832,
+        "height": 480,
+        "length": 81,
+        "batch_size": 1,
+        "start_image": [
+          "11",
+          0
+        ]
+      }
+    },
+    "7": {
+      "class_type": "ModelSamplingSD3",
+      "_meta": {
+        "title": "Wan 采样偏移"
+      },
+      "inputs": {
+        "model": [
+          "1",
+          0
+        ],
+        "shift": 8.0
+      }
+    },
+    "8": {
+      "class_type": "KSampler",
+      "_meta": {
+        "title": "采样器"
+      },
+      "inputs": {
+        "model": [
+          "7",
+          0
+        ],
+        "seed": 0,
+        "steps": 30,
+        "cfg": 5.0,
+        "sampler_name": "uni_pc",
+        "scheduler": "simple",
+        "positive": [
+          "4",
+          0
+        ],
+        "negative": [
+          "5",
+          0
+        ],
+        "latent_image": [
+          "6",
+          0
+        ],
+        "denoise": 1.0
+      }
+    },
+    "9": {
+      "class_type": "VAEDecode",
+      "_meta": {
+        "title": "VAE 解码"
+      },
+      "inputs": {
+        "samples": [
+          "8",
+          0
+        ],
+        "vae": [
+          "3",
+          0
+        ]
+      }
+    },
+    "10": {
+      "class_type": "SaveWEBM",
+      "_meta": {
+        "title": "保存视频（webm）"
+      },
+      "inputs": {
+        "images": [
+          "9",
+          0
+        ],
+        "filename_prefix": "astrbot_wan22_i2v",
+        "codec": "vp9",
+        "fps": 16.0,
+        "crf": 32.0
+      }
+    },
+    "11": {
+      "class_type": "LoadImage",
+      "_meta": {
+        "title": "首帧图片"
+      },
+      "inputs": {
+        "image": "astrbot/placeholder_start.png"
+      }
+    }
+  }
+}

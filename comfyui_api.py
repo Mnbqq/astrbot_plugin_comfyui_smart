@@ -29,6 +29,8 @@ FOLDER_PROBE: dict[str, tuple[str, str]] = {
     "loras": ("LoraLoader", "lora_name"),
     "vae": ("VAELoader", "vae_name"),
     "text_encoders": ("DualCLIPLoader", "clip_name1"),
+    "unet_gguf": ("UnetLoaderGGUF", "unet_name"),
+    "clip_gguf": ("CLIPLoaderGGUF", "clip_name"),
     "controlnet": ("ControlNetLoader", "control_net_name"),
     "clip_vision": ("CLIPVisionLoader", "clip_name"),
     "upscale_models": ("UpscaleModelLoader", "model_name"),
@@ -37,6 +39,8 @@ FOLDER_PROBE: dict[str, tuple[str, str]] = {
 PRIMARY_MODEL_FOLDERS: tuple[str, ...] = (
     "checkpoints",
     "diffusion_models",
+    # GGUF 量化模型（ComfyUI-GGUF 注册的专用目录）：8G 显存/16G 内存的机器靠它跑视频
+    "unet_gguf",
     "loras",
     "vae",
     "text_encoders",
@@ -82,7 +86,7 @@ EXCLUDED_FOLDERS: frozenset[str] = frozenset(
 )
 # 允许进入清单的目录（白名单，避免 ComfyUI 新增非模型目录时又被算进来）
 MODEL_FOLDERS: frozenset[str] = frozenset(
-    PRIMARY_MODEL_FOLDERS + OTHER_MODEL_FOLDERS + ("unet", "clip", "clip_gguf")
+    PRIMARY_MODEL_FOLDERS + OTHER_MODEL_FOLDERS + ("unet", "clip", "clip_gguf", "text_encoders")
 )
 
 # 旧文件夹名 -> 新名（ComfyUI 的 folder_paths.map_legacy）

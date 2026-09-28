@@ -32,6 +32,7 @@ LATENT_CLASSES = (
     "EmptyMochiLatentVideo",
     "EmptyLTXVLatentVideo",
     "WanImageToVideo",
+    "Wan22ImageToVideoLatent",
     "WanFirstLastFrameToVideo",
 )
 # 输入图节点（图生图）
@@ -579,6 +580,20 @@ ARCH_PROFILES: dict[str, dict] = {
         "quality_tags": "",
         "negative_extra": "",
     },
+    "wan22": {
+        # Wan 2.2 TI2V-5B：官方示例 832x480 / 30 步 / CFG 5.0 / uni_pc + simple
+        "pixels": 832 * 480,
+        "label": "Wan 2.2 TI2V-5B（视频）",
+        "size": (832, 480),
+        "steps": 30,
+        "cfg": 5.0,
+        "sampler": "uni_pc",
+        "scheduler": "simple",
+        "guidance": None,
+        "negative": True,
+        "quality_tags": "",
+        "negative_extra": "",
+    },
     "video": {
         # 其它视频模型（HunyuanVideo / LTX-Video / Mochi...）：给一个保守的中档
         "pixels": 768 * 512,
@@ -603,6 +618,8 @@ DEFAULT_ARCH = "sd15"
 
 # 显式关键词 -> 架构（顺序即优先级，"xl" 这条在后面单独判断）
 _ARCH_HINTS: tuple[tuple[tuple[str, ...], str], ...] = (
+    # Wan 2.2 TI2V-5B：官方示例是 CFG 5.0（与 2.1 的 6.0 不同），必须先于 wan 匹配
+    (("ti2v", "wan2.2", "wan22"), "wan22"),
     # 视频模型：名字里带 wan 的走视频档案（832x480、uni_pc、CFG 6）
     (("wan",), "wan"),
     (("hunyuan", "ltxv", "ltx-video", "mochi", "cogvideo"), "video"),
@@ -1427,7 +1444,11 @@ def pick_template(
         return None, guess_arch(model_name, arch_override)
 
     arch = guess_arch(model_name, arch_override)
-    want_loader = "unet" if model_folder == "diffusion_models" else "checkpoint"
+    # 装载方式决定候选模板：GGUF 有独立的装载器（UnetLoaderGGUF），不能和 safetensors 混用
+    want_loader = {
+        "diffusion_models": "unet",
+        "unet_gguf": "unet_gguf",
+    }.get(model_folder, "checkpoint")
 
     # 先按用途筛：图生图/扩图/局部重绘不能拿到文生图模板（四者节点结构不同）
     by_purpose = [t for t in templates.values() if t.purpose == purpose]
