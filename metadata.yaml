@@ -7,7 +7,7 @@ desc: >-
   分辨率与采样参数。支持图生图、扩图（outpaint）、局部重绘（配置页涂抹遮罩）与看图反推提示词，多个 ComfyUI 时按负载自动分配并熔断故障节点，出图时通过 WebSocket 推送实时进度
   并可用 /取消 中止，支持文生视频与图生视频（含 GGUF 量化，8G 显存可跑），界面与提示词中英双语；多人同时使用时有并发闸门与排队，多个 ComfyUI 时按负载自动分配；界面格式工作流可直接导入。
   支持自定义 API 格式工作流模板、权限与配额控制、出图统计与画廊。
-version: "0.15.7"
+version: "0.15.8"
 author: Mnbqq
 repo: "https://github.com/Mnbqq/astrbot_plugin_comfyui_smart"
 astrbot_version: ">=4.26.0"

@@ -4161,6 +4161,78 @@ def main() -> int:
     check("正常任务不受新逻辑影响（照常拿到产物）",
           len(files) == 1 and files[0].name.endswith("ok.png"), [p.name for p in files])
 
+    print("\n=== VAE 覆盖 + Flux schnell GGUF / Lumina 2（v0.15.8）===")
+    # 1) 指定 VAE 时，编码侧也要接到外部 VAE —— 只改解码侧会出来发灰错色的图
+    img2img_tpl = plugin.templates["img2img_checkpoint"]
+    vae_graph = img2img_tpl.build(
+        positive="p", negative="n", model_name="animagine-xl-4.0.safetensors",
+        vae_name="sdxl_vae.safetensors", image_name="astrbot/in.png",
+        width=1024, height=1024, steps=28, cfg=7.0, sampler="dpmpp_2m",
+        scheduler="karras", seed=1, denoise=0.6,
+    )
+    new_vae_nodes = [nid for nid, n in vae_graph.items()
+                     if n.get("class_type") == "VAELoader"
+                     and n.get("inputs", {}).get("vae_name") == "sdxl_vae.safetensors"]
+    check("指定 VAE 会插入 VAELoader 节点", len(new_vae_nodes) == 1, new_vae_nodes)
+    vae_id = new_vae_nodes[0] if new_vae_nodes else ""
+    wired = {nid: n["class_type"] for nid, n in vae_graph.items()
+             if isinstance(n.get("inputs"), dict) and n["inputs"].get("vae") == [vae_id, 0]}
+    check("VAEDecode 与 VAEEncode 都接到了外部 VAE（图生图不会颜色错乱）",
+          {"VAEDecode", "VAEEncode"} <= set(wired.values()), sorted(wired.values()))
+
+    # 2) Flux schnell GGUF 模板
+    tpl_flux = plugin.templates["flux_schnell_gguf"]
+    check("Flux schnell GGUF 模板已加载（loader=unet_gguf，走 UnetLoaderGGUF）",
+          tpl_flux.loader == "unet_gguf" and tpl_flux.purpose == "t2i"
+          and {"UnetLoaderGGUF", "DualCLIPLoaderGGUF", "EmptySD3LatentImage",
+               "FluxGuidance", "VAELoader"} <= tpl_flux.required_nodes(),
+          sorted(tpl_flux.required_nodes()))
+    check("schnell 的采样档案是 4 步 / CFG 1（不是 dev 的 20 步）",
+          wt.guess_arch("flux1-schnell-Q4_K_S.gguf") == "flux_schnell"
+          and wt.arch_profile("flux_schnell")["steps"] == 4
+          and wt.arch_profile("flux_schnell")["cfg"] == 1.0,
+          wt.arch_profile("flux_schnell"))
+    picked_flux, _fa = wt.pick_template(
+        plugin.templates, model_name="flux1-schnell-Q4_K_S.gguf",
+        model_folder="unet_gguf", purpose="t2i")
+    check("Flux schnell GGUF 权重选中 GGUF 模板（不会落到 sd_checkpoint）",
+          picked_flux is not None and picked_flux.name == "flux_schnell_gguf",
+          picked_flux.name if picked_flux else None)
+
+    # 3) Lumina 2 模板
+    tpl_lumina = plugin.templates["lumina_checkpoint"]
+    check("Lumina 模板已加载（16 通道潜空间 + AuraFlow shift）",
+          tpl_lumina.arch == "lumina2"
+          and {"CheckpointLoaderSimple", "EmptySD3LatentImage", "ModelSamplingAuraFlow"} <= tpl_lumina.required_nodes(),
+          sorted(tpl_lumina.required_nodes()))
+    check("Lumina 档案：1024 / 30 步 / CFG 4 / res_multistep",
+          wt.guess_arch("lumina_2.safetensors") == "lumina2"
+          and wt.arch_profile("lumina2")["steps"] == 30
+          and wt.arch_profile("lumina2")["cfg"] == 4.0
+          and wt.arch_profile("lumina2")["sampler"] == "res_multistep",
+          (wt.arch_profile("lumina2")["steps"], wt.arch_profile("lumina2")["cfg"]))
+    picked_lumina, _la = wt.pick_template(
+        plugin.templates, model_name="lumina_2.safetensors",
+        model_folder="checkpoints", purpose="t2i")
+    check("Lumina 权重选中 Lumina 模板（精确档案优先于 generic 的 sd_checkpoint）",
+          picked_lumina is not None and picked_lumina.name == "lumina_checkpoint",
+          picked_lumina.name if picked_lumina else None)
+    lumina_built = tpl_lumina.build(
+        positive="p", negative="n", model_name="lumina_2.safetensors", width=1024, height=1024,
+        steps=30, cfg=4.0, sampler="res_multistep", scheduler="simple", seed=1, params={})
+    check("Lumina 模板把尺寸/步数注入到正确的节点",
+          lumina_built["4"]["inputs"]["width"] == 1024
+          and lumina_built["6"]["inputs"]["steps"] == 30
+          and lumina_built["5"]["inputs"]["shift"] == 4.0,
+          (lumina_built["4"]["inputs"], lumina_built["6"]["inputs"]["steps"]))
+
+    # 4) Animagine XL 4.0 属于 Pony 系（档案要按 pony 走）
+    check("Animagine XL 4.0 识别为 pony 系（1024 / CFG 7）",
+          wt.guess_arch("animagine-xl-4.0.safetensors") == "pony"
+          and wt.arch_profile("pony")["size"] == (1024, 1024)
+          and wt.arch_profile("pony")["cfg"] == 7.0,
+          wt.guess_arch("animagine-xl-4.0.safetensors"))
+
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）
     field_re = _re.compile(

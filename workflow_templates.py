@@ -580,6 +580,35 @@ ARCH_PROFILES: dict[str, dict] = {
         "quality_tags": "",
         "negative_extra": "",
     },
+    "flux_schnell": {
+        # Flux schnell：官方模板 4 步 / CFG 1 / euler + simple，guidance 1（不吃负面）
+        "pixels": 1024 * 1024,
+        "label": "Flux.1 schnell（4 步）",
+        "size": (1024, 1024),
+        "steps": 4,
+        "cfg": 1.0,
+        "sampler": "euler",
+        "scheduler": "simple",
+        "guidance": 1.0,
+        "negative": False,
+        "quality_tags": "",
+        "negative_extra": "",
+    },
+    "lumina2": {
+        # Lumina-Image-2.0：官方模板 1024x1024 / 30 步 / CFG 4 / res_multistep + simple /
+        # ModelSamplingAuraFlow shift 4（模板里那个节点负责）
+        "pixels": 1024 * 1024,
+        "label": "Lumina-Image-2.0",
+        "size": (1024, 1024),
+        "steps": 30,
+        "cfg": 4.0,
+        "sampler": "res_multistep",
+        "scheduler": "simple",
+        "guidance": None,
+        "negative": True,
+        "quality_tags": "",
+        "negative_extra": "",
+    },
     "wan22": {
         # Wan 2.2 TI2V-5B：官方示例 832x480 / 30 步 / CFG 5.0 / uni_pc + simple
         "pixels": 832 * 480,
@@ -618,6 +647,10 @@ DEFAULT_ARCH = "sd15"
 
 # 显式关键词 -> 架构（顺序即优先级，"xl" 这条在后面单独判断）
 _ARCH_HINTS: tuple[tuple[tuple[str, ...], str], ...] = (
+    # Flux schnell：4 步 / CFG 1，必须先于 flux 匹配（放到同一个 GGUF 模板里由档案决定步数）
+    (("schnell",), "flux_schnell"),
+    # Lumina-Image-2.0 系（含社区微调 all-in-one）：16 通道潜空间 + AuraFlow shift
+    (("lumina",), "lumina2"),
     # Wan 2.2 TI2V-5B：官方示例是 CFG 5.0（与 2.1 的 6.0 不同），必须先于 wan 匹配
     (("ti2v", "wan2.2", "wan22"), "wan22"),
     # 视频模型：名字里带 wan 的走视频档案（832x480、uni_pc、CFG 6）
@@ -1134,8 +1167,11 @@ def _apply_vae(graph: dict, vae_name: str) -> None:
     """把独立 VAE 接进图里。
 
     模板没有 VAELoader 节点时（例如 sd_checkpoint 直接用底模自带 VAE），
-    插入一个 VAELoader 并把所有 VAEDecode 的 vae 输入改接到它。
-    出图偏色发灰时，换成独立 VAE 是最常见的解法，因此这条路径必须真的生效。
+    插入一个 VAELoader，并把**所有**用到 vae 的地方改接到它。
+
+    注意不能只改 VAEDecode：图生图/局部重绘还有 VAEEncode（甚至 VAEEncodeForInpaint），
+    只改解码侧会出现「编码用底模 VAE、解码用外部 VAE」——出来是发灰错色的图。
+    这里按「输入里有名为 vae 的连线」来判定，编码/解码/潜空间节点一并覆盖。
 
     Args:
         graph: 工作流（原地修改）。
@@ -1144,10 +1180,12 @@ def _apply_vae(graph: dict, vae_name: str) -> None:
     new_id = str(max((int(k) for k in graph if k.isdigit()), default=0) + 1)
     graph[new_id] = {"class_type": "VAELoader", "inputs": {"vae_name": vae_name}}
     for node in graph.values():
-        if node.get("class_type") != "VAEDecode":
-            continue
         inputs = node.get("inputs")
-        if isinstance(inputs, dict):
+        if not isinstance(inputs, dict):
+            continue
+        if node.get("class_type") in VAE_LOADER_KEYS:
+            continue                     # 装载器本身，别自指
+        if isinstance(inputs.get("vae"), list):
             inputs["vae"] = [new_id, 0]
 
 

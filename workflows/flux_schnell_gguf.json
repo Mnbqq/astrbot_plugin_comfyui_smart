@@ -1,0 +1,148 @@
+{
+  "name": "flux_schnell_gguf",
+  "purpose": "t2i",
+  "arch": "generic",
+  "loader": "unet_gguf",
+  "description": "Flux.1 schnell（GGUF 量化）：4 步出图，弱机器也能跑 Flux。UnetLoaderGGUF 读 unet_gguf 目录（实测映射到 diffusion_models）里的 Flux GGUF；DualCLIPLoaderGGUF 读 clip_l.safetensors + t5xxl 的 GGUF（text_encoders 目录，该节点支持 .gguf 与 safetensors 混用）；VAE 用 flux 的 ae.safetensors。潜空间是 16 通道，必须用 EmptySD3LatentImage。schnell 的档案是 4 步 / CFG 1（别当成 dev 的 20 步 + guidance 3.5）。",
+  "params": {},
+  "graph": {
+    "1": {
+      "class_type": "UnetLoaderGGUF",
+      "_meta": {
+        "title": "Flux schnell（GGUF）"
+      },
+      "inputs": {
+        "unet_name": "flux1-schnell-Q4_K_S.gguf"
+      }
+    },
+    "2": {
+      "class_type": "DualCLIPLoaderGGUF",
+      "_meta": {
+        "title": "双文本编码器（clip_l + t5 GGUF）"
+      },
+      "inputs": {
+        "clip_name1": "clip_l.safetensors",
+        "clip_name2": "t5-v1_1-xxl-encoder-Q4_K_M.gguf",
+        "type": "flux"
+      }
+    },
+    "3": {
+      "class_type": "VAELoader",
+      "_meta": {
+        "title": "Flux VAE"
+      },
+      "inputs": {
+        "vae_name": "ae.safetensors"
+      }
+    },
+    "4": {
+      "class_type": "CLIPTextEncode",
+      "_meta": {
+        "title": "正面提示词"
+      },
+      "inputs": {
+        "text": "",
+        "clip": [
+          "2",
+          0
+        ]
+      }
+    },
+    "5": {
+      "class_type": "CLIPTextEncode",
+      "_meta": {
+        "title": "负面提示词"
+      },
+      "inputs": {
+        "text": "",
+        "clip": [
+          "2",
+          0
+        ]
+      }
+    },
+    "6": {
+      "class_type": "EmptySD3LatentImage",
+      "_meta": {
+        "title": "尺寸（16 通道潜空间）"
+      },
+      "inputs": {
+        "width": 1024,
+        "height": 1024,
+        "batch_size": 1
+      }
+    },
+    "7": {
+      "class_type": "FluxGuidance",
+      "_meta": {
+        "title": "Flux 引导强度"
+      },
+      "inputs": {
+        "conditioning": [
+          "4",
+          0
+        ],
+        "guidance": 1.0
+      }
+    },
+    "8": {
+      "class_type": "KSampler",
+      "_meta": {
+        "title": "采样器"
+      },
+      "inputs": {
+        "model": [
+          "1",
+          0
+        ],
+        "seed": 0,
+        "steps": 4,
+        "cfg": 1.0,
+        "sampler_name": "euler",
+        "scheduler": "simple",
+        "positive": [
+          "7",
+          0
+        ],
+        "negative": [
+          "5",
+          0
+        ],
+        "latent_image": [
+          "6",
+          0
+        ],
+        "denoise": 1.0
+      }
+    },
+    "9": {
+      "class_type": "VAEDecode",
+      "_meta": {
+        "title": "VAE 解码"
+      },
+      "inputs": {
+        "samples": [
+          "8",
+          0
+        ],
+        "vae": [
+          "3",
+          0
+        ]
+      }
+    },
+    "10": {
+      "class_type": "SaveImage",
+      "_meta": {
+        "title": "保存图片"
+      },
+      "inputs": {
+        "images": [
+          "9",
+          0
+        ],
+        "filename_prefix": "astrbot_flux_schnell"
+      }
+    }
+  }
+}

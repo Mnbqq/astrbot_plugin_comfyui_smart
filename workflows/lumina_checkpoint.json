@@ -1,0 +1,128 @@
+{
+  "name": "lumina_checkpoint",
+  "purpose": "t2i",
+  "arch": "lumina2",
+  "loader": "checkpoint",
+  "description": "Lumina-Image-2.0（2.6B，一体化 checkpoint）：小、快，适合当「快速出图」档。按官方模板：1024x1024、30 步、CFG 4、res_multistep + simple，模型要先过 ModelSamplingAuraFlow(shift 4)。潜空间是 16 通道（EmptySD3LatentImage）。",
+  "params": {},
+  "graph": {
+    "1": {
+      "class_type": "CheckpointLoaderSimple",
+      "_meta": {
+        "title": "Lumina 一体化模型"
+      },
+      "inputs": {
+        "ckpt_name": "lumina_2.safetensors"
+      }
+    },
+    "2": {
+      "class_type": "CLIPTextEncode",
+      "_meta": {
+        "title": "正面提示词"
+      },
+      "inputs": {
+        "text": "",
+        "clip": [
+          "1",
+          1
+        ]
+      }
+    },
+    "3": {
+      "class_type": "CLIPTextEncode",
+      "_meta": {
+        "title": "负面提示词"
+      },
+      "inputs": {
+        "text": "",
+        "clip": [
+          "1",
+          1
+        ]
+      }
+    },
+    "4": {
+      "class_type": "EmptySD3LatentImage",
+      "_meta": {
+        "title": "尺寸（16 通道潜空间）"
+      },
+      "inputs": {
+        "width": 1024,
+        "height": 1024,
+        "batch_size": 1
+      }
+    },
+    "5": {
+      "class_type": "ModelSamplingAuraFlow",
+      "_meta": {
+        "title": "Lumina 采样偏移"
+      },
+      "inputs": {
+        "model": [
+          "1",
+          0
+        ],
+        "shift": 4.0
+      }
+    },
+    "6": {
+      "class_type": "KSampler",
+      "_meta": {
+        "title": "采样器"
+      },
+      "inputs": {
+        "model": [
+          "5",
+          0
+        ],
+        "seed": 0,
+        "steps": 30,
+        "cfg": 4.0,
+        "sampler_name": "res_multistep",
+        "scheduler": "simple",
+        "positive": [
+          "2",
+          0
+        ],
+        "negative": [
+          "3",
+          0
+        ],
+        "latent_image": [
+          "4",
+          0
+        ],
+        "denoise": 1.0
+      }
+    },
+    "7": {
+      "class_type": "VAEDecode",
+      "_meta": {
+        "title": "VAE 解码"
+      },
+      "inputs": {
+        "samples": [
+          "6",
+          0
+        ],
+        "vae": [
+          "1",
+          2
+        ]
+      }
+    },
+    "8": {
+      "class_type": "SaveImage",
+      "_meta": {
+        "title": "保存图片"
+      },
+      "inputs": {
+        "images": [
+          "7",
+          0
+        ],
+        "filename_prefix": "astrbot_lumina"
+      }
+    }
+  }
+}

@@ -124,7 +124,7 @@
 
 ## 工作流模板
 
-模板是数据，不是代码。内置十个：
+模板是数据，不是代码。内置十二个：
 
 | 模板 | 适用 | 说明 |
 |------|------|------|
@@ -136,6 +136,8 @@
 | `wan_i2v` | Wan 2.x I2V 权重 | 图生视频（首尾帧）：`WanFirstLastFrameToVideo`（`start_image` / `end_image` 都是可选输入） |
 | `wan22_t2v_gguf` | Wan 2.2 TI2V-5B **GGUF** | 文生视频（省显存）：`UnetLoaderGGUF` + `CLIPLoaderGGUF(type=wan)` + `Wan22ImageToVideoLatent` |
 | `wan22_i2v_gguf` | 同上 | 图生视频（首帧驱动）：`Wan22ImageToVideoLatent.start_image` 接一张 `LoadImage` |
+| `flux_schnell_gguf` | Flux.1 schnell GGUF | 文生图（4 步）：`UnetLoaderGGUF` + `DualCLIPLoaderGGUF` + `EmptySD3LatentImage` |
+| `lumina_checkpoint` | Lumina-Image-2.0 | 文生图（1024/30 步）：`ModelSamplingAuraFlow(4)` + `EmptySD3LatentImage` + `res_multistep` |
 | `flux_checkpoint` | 一体化 Flux 单文件底模 | 模型/文本编码器/VAE 打包在一起的版本 |
 | `flux_unet` | 分离权重的 Flux | `diffusion_models` 的 UNET + `text_encoders` 的 CLIP + 独立 VAE |
 
@@ -170,6 +172,28 @@
 
    > 为什么需要 `params`：扩图这类工作流的参数（左右上下扩展量、羽化）只有模板知道该写哪个节点，
    > 插件不会凭空往节点上塞字段（塞了会被 ComfyUI 以 `invalid_input_type` 拒绝）。
+
+---
+
+## 推荐模型（按功能，8G 显存 / 16G 内存实测可用）
+
+| 功能 | 推荐模型（文件名） | 大小 | 放哪个目录 | 怎么用 |
+|---|---|---|---|---|
+| 文生图 / 图生图（动漫，主力） | `animagine-xl-4.0.safetensors`（SDXL，Pony 系） | 6.5 GB | `checkpoints/` | `/画图 … --model animagine-xl-4.0.safetensors`（自动 1024x1024 / CFG 7） |
+| 文生图 / 图生图（写实） | `RealVisXL_V5.0_fp16.safetensors` | 6.5 GB | `checkpoints/` | 同上 |
+| 快速现代模型 | `lumina_2.safetensors`（2.6B 一体化） | 9.9 GB | `checkpoints/` | 自动走 `lumina_checkpoint` 模板（1024 / 30 步 / CFG 4） |
+| Flux（提示词理解最强） | `flux1-schnell-Q4_K_S.gguf` + `t5-v1_1-xxl-encoder-Q4_K_M.gguf` + `clip_l.safetensors` + `ae.safetensors` | 6.3+2.7+0.2+0.3 GB | `diffusion_models/`、`text_encoders/`、`vae/` | 自动走 `flux_schnell_gguf`（**4 步**出图） |
+| **文生/图生视频（加速）** | `Wan2_2-TI2V-5B-Turbo-Q4_K_M.gguf` | 3.2 GB | `diffusion_models/` | `/视频 … --model Wan2_2-TI2V-5B-Turbo-Q4_K_M.gguf --steps 4~8` |
+| 视频（质量优先） | `Wan2.2-TI2V-5B-Q4_K_M.gguf`（原版） | 3.2 GB | `diffusion_models/` | 默认；20~30 步 |
+| 换 VAE（修偏色/发灰） | `vae-ft-mse-840000-ema-pruned.safetensors`（SD1.5）/ `sdxl_vae.safetensors`（SDXL） | 各 0.3 GB | `vae/` | `/画图 … --vae sdxl_vae.safetensors` |
+
+> **目录映射的坑**（真机实测）：不同安装的 ComfyUI-GGUF 把 `unet_gguf`/`clip_gguf`
+> 映射到不同目录。这台机器上它们指向 `diffusion_models` / `text_encoders`，
+> 所以 GGUF 文件放这两个目录即可（放同名的 `unet_gguf` 空目录反而读不到）。
+> 拿不准就看 `http://<你的ComfyUI>/experiment/models` 的真实路径。
+>
+> **别下这些**（8G 显存 / 16G 内存跑不动）：Qwen-Image（unet 12 GB + 文本编码器 4.5 GB）、
+> Wan 2.2 14B（fp8 15 GB）、任何 fp16 的 Flux dev（23 GB）。
 
 ---
 
@@ -671,7 +695,7 @@
 启动时插件会打印一条横幅，用来确认「跑的到底是哪一版」：
 
 ```
-ComfyUI 智能绘图 v0.15.7 已激活｜模板 10 个｜数据目录 …｜日志走 astrbot.api.logger｜Pages 已注册｜排队补偿上限 10 个任务｜同时出图上限 1
+ComfyUI 智能绘图 v0.15.8 已激活｜模板 12 个｜数据目录 …｜日志走 astrbot.api.logger｜Pages 已注册｜排队补偿上限 10 个任务｜同时出图上限 1
 ```
 
 ---
@@ -698,6 +722,23 @@ Hires 细分开关 + 反推专用模型（v0.6.2）、并发与队列治理（v0
 ---
 
 ## 更新日志
+
+**v0.15.8** — VAE 覆盖修到位 + Flux schnell GGUF / Lumina 2 模板 + 推荐模型清单
+
+- **修 VAE 覆盖**：原来「指定 VAE」只把 `VAEDecode` 接到新 VAELoader，
+  图生图/局部重绘的 **`VAEEncode` 没接** —— 编码用底模 VAE、解码用外部 VAE，
+  出来就是发灰错色的图。现在按「输入里有 `vae` 连线」统一改接（编码/解码/潜空间节点全覆盖）。
+- **新增 `flux_schnell_gguf`**：Flux.1 schnell 的 GGUF 版（`UnetLoaderGGUF` +
+  `DualCLIPLoaderGGUF`（支持 .gguf 与 safetensors 混用，实测该节点源码有分支处理）+
+  `VAELoader(ae)` + `FluxGuidance` + `EmptySD3LatentImage`）。**4 步 / CFG 1** 出图，
+  8G 显存也能跑 Flux。
+- **新增 `lumina_checkpoint`**：Lumina-Image-2.0（2.6B 一体化）—— 按官方模板
+  **1024x1024 / 30 步 / CFG 4 / res_multistep + simple**，模型先过
+  `ModelSamplingAuraFlow(shift 4)`，走 16 通道潜空间。
+- **新架构档案**：`schnell` → `flux_schnell`（4 步/CFG 1），`lumina` → `lumina2`；
+  模板选择里**精确档案优先于 generic**（实测 Lumina 不会被 sd_checkpoint 抢走）。
+- 测试：+14 项断言（VAE 编码侧改接、两个模板结构与选择、schnell/lumina/pony 档案），
+  Python 540 / 前端 39 / API 面 55 全绿。
 
 **v0.15.7** — 修 v0.15.6 的**误报**：正在跑的任务被判成「丢了」
 
@@ -1212,6 +1253,7 @@ WebSocket 进度解析与回退、`/取消`（排队中 / 队列中 / 执行中�
 图生视频（首尾帧可选输入的摘除与剪枝、16 倍数尺寸贴合、两张图端到端）、
 国际化（两种语言键完全一致、源码用到的键都有文案、格式化与回退、英文模式端到端）、
 GGUF 量化（目录发现、按扩展名识别、装载方式隔离、Wan 2.2 TI2V-5B 模板与端到端）、
+Flux schnell GGUF / Lumina 2 模板与 VAE 覆盖（编码侧也要改接）、
 以及 mock ComfyUI 下的完整出图流程。
 
 版本留档目录（`astrbot_plugin_comfyui_smart_vX.Y.Z`）里也带着同一套测试：
