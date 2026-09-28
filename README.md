@@ -183,7 +183,7 @@
 | 文生图 / 图生图（写实） | `RealVisXL_V5.0_fp16.safetensors` | 6.5 GB | `checkpoints/` | 同上 |
 | 快速现代模型 | `lumina_2.safetensors`（2.6B 一体化） | 9.9 GB | `checkpoints/` | 自动走 `lumina_checkpoint` 模板（1024 / 30 步 / CFG 4） |
 | Flux（提示词理解最强） | `flux1-schnell-Q4_K_S.gguf` + `t5-v1_1-xxl-encoder-Q4_K_M.gguf` + `clip_l.safetensors` + `ae.safetensors` | 6.3+2.7+0.2+0.3 GB | `diffusion_models/`、`text_encoders/`、`vae/` | 自动走 `flux_schnell_gguf`（**4 步**出图） |
-| **文生/图生视频（加速）** | `Wan2_2-TI2V-5B-Turbo-Q4_K_M.gguf` | 3.2 GB | `diffusion_models/` | `/视频 … --model Wan2_2-TI2V-5B-Turbo-Q4_K_M.gguf --steps 4~8` |
+| **文生/图生视频（加速）** | `Wan2_2-TI2V-5B-Turbo-Q4_K_M.gguf` | 3.2 GB | `diffusion_models/` | `/视频 … --model Wan2_2-TI2V-5B-Turbo-Q4_K_M.gguf --steps 4 --cfg 1.0`（实测 81 帧 832x480：**74 秒**，比原版 20 步的 281 秒快 3.8 倍，运动量还更大） |
 | 视频（质量优先） | `Wan2.2-TI2V-5B-Q4_K_M.gguf`（原版） | 3.2 GB | `diffusion_models/` | 默认；20~30 步 |
 | 换 VAE（修偏色/发灰） | `vae-ft-mse-840000-ema-pruned.safetensors`（SD1.5）/ `sdxl_vae.safetensors`（SDXL） | 各 0.3 GB | `vae/` | `/画图 … --vae sdxl_vae.safetensors` |
 
@@ -673,6 +673,7 @@
 | 「排队等待超过 N 秒」 | 这是**插件侧**排队超时（还没轮到提交），不是 ComfyUI 慢。同时间出图的人多时，提高「同时出图上限」（多卡/开了并行）或「排队等待上限」，也可以先 `/状态` 看「并发」那一行的排队人数 |
 | 模板「加载失败」里出现「界面格式…自动转换失败」 | 转换会在报错里说清是哪个节点、什么问题（控件数量对不上最常见）。可以按提示改用开发者模式的 Export (API)，或把该节点换成核心节点后重导 |
 | 多后端里某台老是没被选中 | 看 `/状态` 的「后端」几行：`⛔ 熔断中` 说明它刚失败过（原因在配置页状态栏的明细里），等熔断结束或点保存配置重试；`❔ 未探测` 说明还没被派过任务 |
+| 报 `os error 1455 页面文件太小` 或 ComfyUI 直接崩（`torch_cpu.dll` 访问违例） | Windows **提交内存**不够：加载 6.5 GB 的 SDXL / 大模型时把上限顶满了。两个办法：① **把页面文件调大**（系统属性 → 高级 → 性能 → 虚拟内存，建议初始 16 GB / 最大 64 GB，或放到空闲的 D 盘）——这是根治；② 让插件在换模型前卸载上一套（`server.free_before_switch` 默认已开，v0.15.9） |
 | 出图/出片过程中 ComfyUI 被关掉或机器重启 | v0.15.6 起会**快速报错**（连不上 60 秒 / 任务消失 6 轮即放弃），不再白等到 timeout。真机上遇到过整机重启（Kernel-Power 41），建议先解决供电/散热 |
 | 视频在聊天里显示 0 秒 / 播不出来 | v0.15.5 起默认输出 **mp4（h264）**，就是为了这个。若你自带的模板还写着 `SaveWEBM`，换成 `CreateVideo` + `SaveVideo` 即可 |
 | 视频「像静止图 / 没有动」 | 先看帧数与帧率：Wan 按 24fps、81~121 帧训练，帧数太少或播放帧率太低都会变成慢放/静止。v0.15.4 起默认已是 24fps / 81 帧；行内别写 `--fps 8`、`--seconds 1` 之类 |
@@ -695,7 +696,7 @@
 启动时插件会打印一条横幅，用来确认「跑的到底是哪一版」：
 
 ```
-ComfyUI 智能绘图 v0.15.8 已激活｜模板 12 个｜数据目录 …｜日志走 astrbot.api.logger｜Pages 已注册｜排队补偿上限 10 个任务｜同时出图上限 1
+ComfyUI 智能绘图 v0.15.9 已激活｜模板 12 个｜数据目录 …｜日志走 astrbot.api.logger｜Pages 已注册｜排队补偿上限 10 个任务｜同时出图上限 1
 ```
 
 ---
@@ -722,6 +723,19 @@ Hires 细分开关 + 反推专用模型（v0.6.2）、并发与队列治理（v0
 ---
 
 ## 更新日志
+
+**v0.15.9** — 换大模型前自动卸载 + 记录「os error 1455」这个坑
+
+- **新增 `server.free_before_switch`（默认开）**：切到大模型（SDXL / Flux / Lumina / Wan 视频等，
+  4 GB 以上）之前，先 `POST /free` 让 ComfyUI 卸载上一套模型再提交；同一家族连续出图不会重复卸载，
+  小模型（SD1.5）也不触发，不会白等一次加载。
+- 起因是真机实测：16 GB 内存的机器从 Wan 视频模型切到 SDXL（6.5 GB）时，
+  ComfyUI 报 **`os error 1455 页面文件太小，无法完成操作`**，随后在 `torch_cpu.dll` 里
+  **访问违例（0xc0000005）直接崩溃** —— 提交内存被顶满。自动卸载能显著降低峰值。
+- 排错表新增这一条，并给出「把页面文件调大」的根治办法（那台机器 C 盘 87 GB、D 盘 817 GB 空闲，
+  页面文件却只有 6.7 GB/峰值 9.6 GB）。
+- 测试：+4 项断言（首次用大模型会卸载、同家族不重复、小模型不触发、开关可关），
+  Python 544 / 前端 39 / API 面 55 全绿。
 
 **v0.15.8** — VAE 覆盖修到位 + Flux schnell GGUF / Lumina 2 模板 + 推荐模型清单
 

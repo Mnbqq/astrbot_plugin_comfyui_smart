@@ -37,7 +37,13 @@ from .workflow_templates import (
 
 PLUGIN_NAME = "astrbot_plugin_comfyui_smart"
 # 与 metadata.yaml 的 version 保持一致（tests/test_logic.py 会校验二者不漂移）
-PLUGIN_VERSION = "0.15.8"
+PLUGIN_VERSION = "0.15.9"
+
+# 这些架构的模型动辄 4~20 GB，切换时最容易把提交内存顶满（真机 os error 1455 崩溃）
+BIG_MEMORY_ARCHES = frozenset({
+    "sdxl", "pony", "illustrious", "flux", "flux_schnell", "lumina2",
+    "wan", "wan22", "video",
+})
 PLUGIN_DIR = Path(__file__).resolve().parent
 BUILTIN_TEMPLATE_DIR = PLUGIN_DIR / "workflows"
 
@@ -213,6 +219,8 @@ class ComfyUISmartPlugin(Star):
         self.permission = PermissionManager(
             self.config.get("permission", {}) or {}, translate=self.t
         )
+        # 上一次用过的大模型家族（换家族前会先 /free，避免内存顶爆）
+        self._last_big_arch = ""
         self.llm = LLMService(context, self.config, translate=self.t)
         # 后端池：单后端时等价于原来的单客户端；配了多个则按负载分配
         self._retired_pools: list[BackendPool] = []
@@ -657,6 +665,19 @@ class ComfyUISmartPlugin(Star):
                 "视频需要专门的视频权重（如 Wan 2.2 TI2V-5B / Wan 2.1 T2V），"
                 "放进 diffusion_models（safetensors）或 unet_gguf（GGUF）后再试"
             )
+
+        # 换「大模型家族」前先请 ComfyUI 卸载上一套（真机踩过 os error 1455 崩溃）。
+        # 只对大模型触发，且同一家族连续出图不会重复卸载，避免白等一次加载。
+        if arch in BIG_MEMORY_ARCHES and arch != self._last_big_arch:
+            server_conf = self.config.get("server", {}) or {}
+            if bool(server_conf.get("free_before_switch", True)):
+                freed = await (client or self.comfy).free_memory()
+                if freed:
+                    logger.info("切换到 %s，已请 ComfyUI 卸载上一套模型释放内存", arch)
+                    self._last_big_arch = arch
+        elif arch in BIG_MEMORY_ARCHES:
+            self._last_big_arch = arch
+
         template, arch = pick_template(
             self.templates,
             model_name=model,

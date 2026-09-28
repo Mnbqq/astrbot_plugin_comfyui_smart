@@ -4233,6 +4233,71 @@ def main() -> int:
           and wt.arch_profile("pony")["cfg"] == 7.0,
           wt.guess_arch("animagine-xl-4.0.safetensors"))
 
+    print("\n=== 换大模型前先卸载（v0.15.9，真机 os error 1455 崩溃）===")
+    # 真机实测：16G 内存的机器从 Wan 视频切到 6.5GB 的 SDXL 时，提交内存被顶满，
+    # ComfyUI 报 os error 1455 并在 torch_cpu.dll 里崩掉。换家族前先 /free 能显著降峰。
+    def free_session(model_a, model_b):
+        """先跑 A 架构，再跑 B 架构，记录 /free 调用次数。"""
+        sess = api.aiohttp.ClientSession()
+        sess.route("GET", "/models", api.aiohttp.ClientResponse(
+            200, payload=["checkpoints", "unet_gguf"]))
+        sess.route("GET", "/models/checkpoints", api.aiohttp.ClientResponse(
+            200, payload=[model_a, model_b]))
+        sess.route("GET", "/models/unet_gguf", api.aiohttp.ClientResponse(
+            200, payload=["Wan2_2-TI2V-5B-Turbo-Q4_K_M.gguf"]))
+        sess.route("GET", "/queue", api.aiohttp.ClientResponse(
+            200, payload={"queue_running": [], "queue_pending": []}))
+        sess.route("POST", "/prompt", api.aiohttp.ClientResponse(200, payload={"prompt_id": "fs-1"}))
+        sess.route("POST", "/free", api.aiohttp.ClientResponse(200, payload={}))
+        sess.route("GET", "/history/fs-1", api.aiohttp.ClientResponse(200, payload={"fs-1": {
+            "status": {"status_str": "success", "completed": True},
+            "outputs": {"7": {"images": [{"filename": "x.png", "type": "output"}]}}}}))
+        sess.route("GET", "/view", api.aiohttp.ClientResponse(200, text="PNG"))
+        plugin.comfy._session = sess
+        plugin.comfy.invalidate_model_cache()
+        plugin.config["permission"] = {}
+        plugin.permission.reload({})
+        return sess
+
+    def count_free(sess):
+        return sum(1 for method, path, _kw in sess.calls if method == "POST" and path == "/free")
+
+    plugin._last_big_arch = ""
+    s_fs = free_session("animagine-xl-4.0.safetensors", "animagine-xl-4.0.safetensors")
+    asyncio.run(plugin.generate(user_desc="第一次", opts={"model": "animagine-xl-4.0.safetensors",
+                                                         "size": "1024x1024", "steps": "4"},
+                                event=None))
+    first_free = count_free(s_fs)
+    asyncio.run(plugin.generate(user_desc="同家族第二次",
+                                opts={"model": "animagine-xl-4.0.safetensors",
+                                      "size": "1024x1024", "steps": "4"}, event=None))
+    same_family_free = count_free(s_fs) - first_free
+    check("首次使用大模型会先 /free 卸载（内存吃紧的机器靠这个保命）", first_free == 1, first_free)
+    check("同家族连续出图不重复卸载（不白等一次加载）", same_family_free == 0, same_family_free)
+
+    plugin._last_big_arch = ""
+    s_switch = free_session("animagine-xl-4.0.safetensors", "anything-v5-PrtRE.safetensors")
+    asyncio.run(plugin.generate(user_desc="大模型", opts={"model": "animagine-xl-4.0.safetensors",
+                                                         "size": "1024x1024", "steps": "4"},
+                                event=None))
+    before = count_free(s_switch)
+    plugin.config["draw_settings"] = {"free_before_switch_unused": True}
+    asyncio.run(plugin.generate(user_desc="切到小模型",
+                                opts={"model": "anything-v5-PrtRE.safetensors",
+                                      "size": "512x512", "steps": "4"}, event=None))
+    check("小模型不触发卸载（SD1.5 那点体积不值得等一次加载）",
+          count_free(s_switch) == before, count_free(s_switch))
+
+    # 关掉开关就不卸载
+    plugin._last_big_arch = ""
+    plugin.config["server"] = {"free_before_switch": False}
+    s_off = free_session("animagine-xl-4.0.safetensors", "animagine-xl-4.0.safetensors")
+    asyncio.run(plugin.generate(user_desc="关掉开关",
+                                opts={"model": "animagine-xl-4.0.safetensors",
+                                      "size": "1024x1024", "steps": "4"}, event=None))
+    check("配置关掉后不再调用 /free", count_free(s_off) == 0, count_free(s_off))
+    plugin.config["server"] = {}
+
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）
     field_re = _re.compile(

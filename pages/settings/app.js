@@ -15,6 +15,7 @@ const PLUGIN_NAME = 'astrbot_plugin_comfyui_smart';
 const FIELDS = [
   { id: 'general_language', path: ['general', 'language'], kind: 'select',
     options: ['auto', 'zh-CN', 'en-US'] },
+  { id: 'server_free_before_switch', path: ['server', 'free_before_switch'], kind: 'bool' },
   { id: 'server_base_url', path: ['server', 'base_url'], kind: 'string' },
   { id: 'server_timeout', path: ['server', 'timeout'], kind: 'int' },
   { id: 'server_poll_interval', path: ['server', 'poll_interval'], kind: 'float' },

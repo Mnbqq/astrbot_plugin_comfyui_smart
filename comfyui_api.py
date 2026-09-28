@@ -718,6 +718,29 @@ class ComfyUI:
         except aiohttp.ClientError as e:
             raise ComfyUIError(f"无法连接 ComfyUI：{e}") from e
 
+    async def free_memory(self, *, unload_models: bool = True) -> bool:
+        """请 ComfyUI 卸载已加载的模型并释放缓存显存。
+
+        为什么需要：真机实测在 16G 内存的机器上从视频模型切到 SDXL（6.5 GB）时，
+        提交内存被顶满，ComfyUI 报 `os error 1455 页面文件太小` 并在 torch_cpu.dll 里崩掉。
+        换模型前先让它卸掉上一套，峰值内存就下来了。
+
+        Args:
+            unload_models: 是否连模型一起卸载（False 只清缓存显存）。
+
+        Returns:
+            是否成功（失败不抛错：这只是优化，不该让出图失败）。
+        """
+        try:
+            await self._request(
+                "POST", "/free", json={"unload_models": unload_models, "free_memory": True}
+            )
+            return True
+        except Exception as exc:      # noqa: BLE001 - 优化路径，任何失败都只记日志
+            if self.logger is not None:
+                self.logger.debug("请求 /free 失败：%s", exc)
+            return False
+
     async def interrupt(self, prompt_id: str = "") -> bool:
         """取消任务。
 

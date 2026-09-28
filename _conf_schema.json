@@ -43,6 +43,12 @@
         "type": "int",
         "hint": "每个前方任务额外补偿 60 秒，此值限制最多按多少个任务计算，避免一个坏任务导致无限等待。",
         "default": 10
+      },
+      "free_before_switch": {
+        "description": "换大模型前先卸载上一套",
+        "type": "bool",
+        "default": true,
+        "hint": "切换到大模型（SDXL / Flux / Lumina / Wan 视频等 4GB 以上）之前，先请 ComfyUI 卸载上一套模型释放内存。16G 内存的机器强烈建议开着 —— 实测不卸载时加载 6.5GB 的 SDXL 会报「页面文件太小 os error 1455」并让 ComfyUI 崩溃。关掉的话每次切模型不用等重新加载，但内存吃紧时容易崩。"
       }
     }
   },
