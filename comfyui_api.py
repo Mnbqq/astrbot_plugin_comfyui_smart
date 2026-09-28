@@ -883,6 +883,10 @@ class ComfyUI:
         last_queue_notice = 0.0
         last_position: int | None = None
         last_error = ""
+        unreachable_since: float | None = None
+        unreachable_reason = ""
+        missing_polls = 0
+        missing_since = 0.0
         watcher: asyncio.Task | None = None
         if on_progress is not None:
             # 进度推送与轮询并行：WS 断了不影响等待，轮询依然是唯一的事实来源
@@ -922,11 +926,35 @@ class ComfyUI:
 
                 try:
                     history = await self._request("GET", f"/history/{prompt_id}")
-                except ComfyUIError:
+                    unreachable_since = None
+                except ComfyUIError as exc:
+                    # 连不上：ComfyUI 可能被关掉或重启了。连续一段时间连不上就别再等，
+                    # 否则用户要白等满 timeout（实测整机重启时白等了 30 分钟）。
+                    if unreachable_since is None:
+                        unreachable_since = time.time()
+                        unreachable_reason = str(exc)
+                    elif time.time() - unreachable_since > UNREACHABLE_GRACE_SECONDS:
+                        raise ComfyUIError(
+                            "连不上 ComfyUI 了（可能被关闭或重启过），本次已放弃等待："
+                            f"{unreachable_reason}"
+                        ) from exc
+                    last_error = "连不上 ComfyUI"
                     continue
                 if not isinstance(history, dict) or prompt_id not in history:
+                    # 服务是通的但查不到这个任务：可能是它被清出队列/历史（例如重启过）。
+                    # 连续多轮都查不到就判定任务丢了，别一直等到超时。
+                    missing_polls += 1
+                    if missing_polls == 1:
+                        missing_since = time.time()
+                    if (missing_polls >= MISSING_PROMPT_POLLS
+                            and time.time() - missing_since > MISSING_PROMPT_SECONDS):
+                        raise ComfyUIError(
+                            "任务已不在 ComfyUI 的队列/历史里（服务可能重启过或队列被清空），"
+                            "本次已放弃等待，请重新发一次。"
+                        )
                     last_error = "等待 ComfyUI 执行"
                     continue
+                missing_polls = 0
 
                 entry = history[prompt_id]
                 if not isinstance(entry, dict):
@@ -1016,6 +1044,12 @@ async def _safe_callback(callback, *args) -> None:
 
 # 视频产物的扩展名（ComfyUI 的 PreviewVideo/SaveVideo/SaveWEBM 都落在 outputs 的
 # images 字段里，靠扩展名区分是图片还是视频）
+# 等待出图时的「服务消失」判定阈值（真机实测：整机重启后任务会凭空消失，
+# 旧实现只能一直轮询到 timeout，用户白等半小时）
+UNREACHABLE_GRACE_SECONDS = 60.0   # 连续多久连不上就放弃
+MISSING_PROMPT_POLLS = 6           # 连续多少轮查不到任务
+MISSING_PROMPT_SECONDS = 20.0      # 且至少过了这么多秒
+
 VIDEO_SUFFIXES = (".mp4", ".webm", ".mkv", ".mov", ".m4v", ".avi")
 # 动图：当图片发（很多平台能直接显示）
 ANIMATED_SUFFIXES = (".gif", ".webp")

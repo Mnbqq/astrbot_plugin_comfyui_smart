@@ -4060,6 +4060,67 @@ def main() -> int:
           and submitted_nat[submitted_nat["12"]["inputs"]["video"][0]]["inputs"]["fps"] == 24.0,
           (submitted_nat or {}).get("6", {}).get("inputs", {}).get("length"))
 
+    print("\n=== 服务中途消失要快速失败（v0.15.6，真机整机重启踩过）===")
+    # 1) 连不上：连续超过宽限期就报错，而不是白等满 timeout
+    orig_request = plugin.comfy._request
+    calls = {"n": 0}
+
+    async def always_unreachable(method, path, **kw):
+        if path.startswith("/history/"):
+            calls["n"] += 1
+            raise api.ComfyUIError("Connection refused")
+        return await orig_request(method, path, **kw)
+
+    plugin.comfy._request = always_unreachable
+    plugin.comfy.timeout = 600          # 没有快速失败的话会等 600 秒
+    orig_server_timeout = api.UNREACHABLE_GRACE_SECONDS
+    api.UNREACHABLE_GRACE_SECONDS = 0.05
+    t0 = time.time()
+    try:
+        asyncio.run(plugin.comfy.wait_for_images("gone-1", plugin.storage.output_dir))
+        err_unreach = ""
+    except Exception as e:
+        err_unreach = str(e)
+    elapsed_unreach = time.time() - t0
+    api.UNREACHABLE_GRACE_SECONDS = orig_server_timeout
+    check("ComfyUI 连不上时快速报错（不等满 timeout）",
+          "连不上 ComfyUI" in err_unreach and elapsed_unreach < 10,
+          f"{err_unreach[:60]} 用时 {elapsed_unreach:.1f}s")
+
+    # 2) 服务通但任务凭空消失：连续多轮查不到就判定丢了
+    async def vanished(method, path, **kw):
+        if path.startswith("/history/"):
+            return {}
+        return await orig_request(method, path, **kw)
+
+    plugin.comfy._request = vanished
+    api.MISSING_PROMPT_POLLS = 2
+    api.MISSING_PROMPT_SECONDS = 0.05
+    t0 = time.time()
+    try:
+        asyncio.run(plugin.comfy.wait_for_images("gone-2", plugin.storage.output_dir))
+        err_missing = ""
+    except Exception as e:
+        err_missing = str(e)
+    elapsed_missing = time.time() - t0
+    check("任务从队列/历史里消失时快速报错并提示重发",
+          "不在 ComfyUI 的队列/历史里" in err_missing and elapsed_missing < 10,
+          f"{err_missing[:60]} 用时 {elapsed_missing:.1f}s")
+
+    # 3) 正常路径不受影响：仍能等到产物
+    sess_ok = api.aiohttp.ClientSession()
+    sess_ok.route("GET", "/history/ok-1", api.aiohttp.ClientResponse(200, payload={"ok-1": {
+        "status": {"status_str": "success", "completed": True},
+        "outputs": {"11": {"images": [{"filename": "ok.png", "type": "output"}]}}}}))
+    sess_ok.route("GET", "/queue", api.aiohttp.ClientResponse(
+        200, payload={"queue_running": [], "queue_pending": []}))
+    sess_ok.route("GET", "/view", api.aiohttp.ClientResponse(200, text="PNG"))
+    plugin.comfy._session = sess_ok
+    plugin.comfy._request = orig_request
+    files = asyncio.run(plugin.comfy.wait_for_images("ok-1", plugin.storage.output_dir))
+    check("正常任务不受新逻辑影响（照常拿到产物）",
+          len(files) == 1 and files[0].name.endswith("ok.png"), [p.name for p in files])
+
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）
     field_re = _re.compile(
