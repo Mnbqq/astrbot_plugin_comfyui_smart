@@ -3872,6 +3872,27 @@ def main() -> int:
     check("safetensors 模型只挑 safetensors 模板（不会拿 GGUF 模板去套）",
           picked_safe is not None and picked_safe.name == "wan_t2v",
           picked_safe.name if picked_safe else None)
+    # 真机实测：有的安装把 unet_gguf 直接映射到 models/diffusion_models，
+    # 于是 GGUF 权重会以 diffusion_models 目录的身份出现 —— 必须靠扩展名认出来
+    picked_gguf_as_diffusion, _a3 = wt.pick_template(
+        plugin.templates, model_name="Wan2.2-TI2V-5B-Q4_K_M.gguf",
+        model_folder="diffusion_models", purpose="t2v")
+    picked_gguf_i2v_as_diffusion, _a4 = wt.pick_template(
+        plugin.templates, model_name="Wan2.2-TI2V-5B-Q4_K_M.gguf",
+        model_folder="diffusion_models", purpose="i2v")
+    check("GGUF 权重即使被列在 diffusion_models 下也走 GGUF 模板（按扩展名识别）",
+          picked_gguf_as_diffusion is not None
+          and picked_gguf_as_diffusion.name == "wan22_t2v_gguf"
+          and picked_gguf_i2v_as_diffusion is not None
+          and picked_gguf_i2v_as_diffusion.name == "wan22_i2v_gguf",
+          (picked_gguf_as_diffusion.name if picked_gguf_as_diffusion else None,
+           picked_gguf_i2v_as_diffusion.name if picked_gguf_i2v_as_diffusion else None))
+    picked_safe_as_gguf_dir, _a5 = wt.pick_template(
+        plugin.templates, model_name="wan2.1_t2v_1.3B_fp16.safetensors",
+        model_folder="unet_gguf", purpose="t2v")
+    check("反过来：safetensors 权重落在 unet_gguf 目录时仍走 safetensors 模板",
+          picked_safe_as_gguf_dir is not None and picked_safe_as_gguf_dir.name == "wan_t2v",
+          picked_safe_as_gguf_dir.name if picked_safe_as_gguf_dir else None)
 
     built_gguf = tpl_gguf_t2v.build(
         positive="a cat running on grass", negative="bad", model_name="Wan2.2-TI2V-5B-Q4_K_M.gguf",

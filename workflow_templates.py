@@ -1444,11 +1444,16 @@ def pick_template(
         return None, guess_arch(model_name, arch_override)
 
     arch = guess_arch(model_name, arch_override)
-    # 装载方式决定候选模板：GGUF 有独立的装载器（UnetLoaderGGUF），不能和 safetensors 混用
-    want_loader = {
-        "diffusion_models": "unet",
-        "unet_gguf": "unet_gguf",
-    }.get(model_folder, "checkpoint")
+    # 装载方式决定候选模板：GGUF 有独立的装载器（UnetLoaderGGUF），不能和 safetensors 混用。
+    # **优先看扩展名**：不同安装把 GGUF 注册在不同目录 —— 实测有的机器把 unet_gguf
+    # 直接映射到 models/diffusion_models、clip_gguf 映射到 models/text_encoders，
+    # 只看目录名会把 GGUF 权重交给 UNETLoader 模板（必然报错）。
+    if str(model_name or "").lower().endswith(".gguf"):
+        want_loader = "unet_gguf"
+    elif model_folder in ("diffusion_models", "unet_gguf"):
+        want_loader = "unet"
+    else:
+        want_loader = "checkpoint"
 
     # 先按用途筛：图生图/扩图/局部重绘不能拿到文生图模板（四者节点结构不同）
     by_purpose = [t for t in templates.values() if t.purpose == purpose]

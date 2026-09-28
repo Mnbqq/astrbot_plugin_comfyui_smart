@@ -539,6 +539,17 @@
 - 视频任务在没指定 `--model` 时会**优先从 `diffusion_models` / `unet_gguf` 里挑**，
   不会拿 `checkpoints` 里的图片底模去硬套；实在没有视频权重会明确告诉你该放哪里。
 
+> **GGUF 文件该放哪个目录？** 不同版本/安装的 ComfyUI-GGUF 注册的目录不一样。
+> 在浏览器打开 `http://<你的ComfyUI地址>/experiment/models`，就能看到每个目录名的
+> **真实路径**。实测过一台机器：
+> `unet_gguf` → `models\unet` + `models\diffusion_models`，
+> `clip_gguf` → `models\text_encoders` + `models\clip`
+> —— 也就是说 GGUF 权重应该扔进 `diffusion_models` / `text_encoders`，
+> 而不是那个同名的 `unet_gguf` 空目录。插件从 v0.15.3 起**只看 `.gguf` 扩展名**挑模板，
+> 所以无论放哪个被注册的目录里都能认出来。
+> 放好后可发 `/刷新模型`，或直接问接口确认：`/models/unet_gguf` 与
+> `/object_info/UnetLoaderGGUF` 里应该能看到你的文件名。
+
 ---
 
 ## 图生视频（首尾帧）
@@ -607,6 +618,7 @@
 | 「排队等待超过 N 秒」 | 这是**插件侧**排队超时（还没轮到提交），不是 ComfyUI 慢。同时间出图的人多时，提高「同时出图上限」（多卡/开了并行）或「排队等待上限」，也可以先 `/状态` 看「并发」那一行的排队人数 |
 | 模板「加载失败」里出现「界面格式…自动转换失败」 | 转换会在报错里说清是哪个节点、什么问题（控件数量对不上最常见）。可以按提示改用开发者模式的 Export (API)，或把该节点换成核心节点后重导 |
 | 多后端里某台老是没被选中 | 看 `/状态` 的「后端」几行：`⛔ 熔断中` 说明它刚失败过（原因在配置页状态栏的明细里），等熔断结束或点保存配置重试；`❔ 未探测` 说明还没被派过任务 |
+| `/视频` 报 `unet_name 取值 xxx 不存在` 或 `not in list` | 说明选的权重要么不在 ComfyUI 注册的目录里，要么装载方式不对。先用 `http://<地址>/experiment/models` 看清目录映射，再确认 `/object_info/UnetLoaderGGUF`（GGUF）或 `/object_info/UNETLoader`（safetensors）的候选列表里有你的文件名 |
 | 切了语言但文案没变 | 聊天文案保存配置后立即生效；插件页需要**刷新页面**（导航与标签页标题在加载时套用）。`auto` 跟随 AstrBot 界面语言，拿不到时用中文，可以在配置里显式指定 `zh-CN` / `en-US` |
 | 文案里出现了类似 `queue.waiting` 的字样 | 说明这条键在当前语言文件里缺失（插件不会崩，只是显示键名）。补 `.astrbot-plugin/i18n/*.json` 即可，测试会拦住「两种语言键不一致」 |
 | 插件页显示的还是中文 | 看 `/状态` 的「并发：进行中 / 排队」：排队数持续很高说明有人把名额占满了。单卡保持「同时出图上限 1」；想让一个人不能连开多张，把「单人同时出图上限」设为 1 |
@@ -625,7 +637,7 @@
 启动时插件会打印一条横幅，用来确认「跑的到底是哪一版」：
 
 ```
-ComfyUI 智能绘图 v0.15.2 已激活｜模板 10 个｜数据目录 …｜日志走 astrbot.api.logger｜Pages 已注册｜排队补偿上限 10 个任务｜同时出图上限 1
+ComfyUI 智能绘图 v0.15.3 已激活｜模板 10 个｜数据目录 …｜日志走 astrbot.api.logger｜Pages 已注册｜排队补偿上限 10 个任务｜同时出图上限 1
 ```
 
 ---
@@ -652,6 +664,19 @@ Hires 细分开关 + 反推专用模型（v0.6.2）、并发与队列治理（v0
 ---
 
 ## 更新日志
+
+**v0.15.3** — GGUF 识别改为看扩展名（真机实测：不同安装的目录映射不一样）
+
+- **问题**：v0.15.2 按「目录名」判断 GGUF（`unet_gguf` → GGUF 模板）。实测有一台 ComfyUI
+  把 `unet_gguf` 直接**映射到 `models\diffusion_models`**、`clip_gguf` 映射到
+  `models\text_encoders`（见 `GET /experiment/models` 返回的真实路径）。于是 GGUF 权重
+  在清单里以 `diffusion_models` 的身份出现，被交给了 `UNETLoader` 模板 —— 必然报错。
+- **修复**：`pick_template` **优先按扩展名** `.gguf` 选 GGUF 模板，目录名只作兜底；
+  反过来 safetensors 权重即便落在 `unet_gguf` 目录里也仍走 safetensors 模板。
+- 测试：+2 项（GGUF 权重列在 `diffusion_models` 下仍走 GGUF 模板、safetensors 权重落在
+  `unet_gguf` 目录仍走 safetensors 模板），Python 513 / 前端 39 全绿。
+- **真机结果**（RTX 5060 8G + Wan 2.2 TI2V-5B Q4_K_M）：
+  文生视频 832x480 / 17 帧 / 20 步 → **126 秒**出片；图生视频 512x768 → **60 秒**出片。
 
 **v0.15.2** — GGUF 量化支持：8G 显存也能跑视频（Wan 2.2 TI2V-5B）
 
@@ -1089,7 +1114,7 @@ WebSocket 进度解析与回退、`/取消`（排队中 / 队列中 / 执行中�
 端到端出图）、文生视频（帧数对齐 4n+1、时长上限、产物类型判定、Video 组件下发）、
 图生视频（首尾帧可选输入的摘除与剪枝、16 倍数尺寸贴合、两张图端到端）、
 国际化（两种语言键完全一致、源码用到的键都有文案、格式化与回退、英文模式端到端）、
-GGUF 量化（目录发现、装载方式隔离、Wan 2.2 TI2V-5B 模板与端到端）、
+GGUF 量化（目录发现、按扩展名识别、装载方式隔离、Wan 2.2 TI2V-5B 模板与端到端）、
 以及 mock ComfyUI 下的完整出图流程。
 
 版本留档目录（`astrbot_plugin_comfyui_smart_vX.Y.Z`）里也带着同一套测试：
