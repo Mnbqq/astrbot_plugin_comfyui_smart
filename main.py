@@ -37,7 +37,7 @@ from .workflow_templates import (
 
 PLUGIN_NAME = "astrbot_plugin_comfyui_smart"
 # 与 metadata.yaml 的 version 保持一致（tests/test_logic.py 会校验二者不漂移）
-PLUGIN_VERSION = "0.15.3"
+PLUGIN_VERSION = "0.15.4"
 PLUGIN_DIR = Path(__file__).resolve().parent
 BUILTIN_TEMPLATE_DIR = PLUGIN_DIR / "workflows"
 
@@ -963,6 +963,9 @@ class ComfyUISmartPlugin(Star):
         if purpose == "i2v":
             video_conf = self.config.get("video", {}) or {}
             video_info = resolve_video_params(opts, video_conf)
+            video_info = apply_native_video_defaults(
+                video_info, opts, video_conf, str(selection.get("arch") or "")
+            )
             template_params = {
                 "length": video_info["length"],
                 "fps": int(round(video_info["fps"])),
@@ -983,6 +986,9 @@ class ComfyUISmartPlugin(Star):
         if purpose == "t2v":
             video_conf = self.config.get("video", {}) or {}
             video_info = resolve_video_params(opts, video_conf)
+            video_info = apply_native_video_defaults(
+                video_info, opts, video_conf, str(selection.get("arch") or "")
+            )
             template_params = {
                 "length": video_info["length"],
                 "fps": int(round(video_info["fps"])),
@@ -2603,6 +2609,55 @@ def resolve_video_params(opts: dict, video_conf: dict) -> dict:
             clamped = True
     seconds = round(length / fps, 2)
     return {"seconds": seconds, "fps": fps, "length": length, "clamped": clamped}
+
+
+# Wan 系列是按 24fps、81~121 帧训练的。用低帧率/极少帧去跑，模型几乎没有时间维上下文，
+# 而且按原速播放时会变成「几乎不动的糊图」——真机实测踩过这个坑（17 帧 @8fps 出片像静止图）。
+WAN_NATIVE_FPS = 24.0
+WAN_NATIVE_LENGTH = 81          # 3.375 秒；官方示例是最长 121 帧（5 秒）
+
+
+def apply_native_video_defaults(info: dict, opts: dict, video_conf: dict, arch: str) -> dict:
+    """把 Wan 系列的帧率默认拉回原生 24fps（用户显式给了就完全尊重）。
+
+    Args:
+        info: resolve_video_params() 的结果。
+        opts: 行内参数（用户显式指定过就不再改）。
+        video_conf: 配置里的 video 段（读 max_seconds 上限）。
+        arch: 当前架构（只有 wan / wan22 会被调整）。
+
+    Returns:
+        调整后的 info；非 Wan 架构或用户显式指定过则原样返回。
+    """
+    if arch not in ("wan", "wan22"):
+        return info
+    given_fps = opts.get("fps") not in (None, "")
+    given_seconds = opts.get("seconds") not in (None, "")
+    given_length = opts.get("length") not in (None, "")
+    if given_fps and (given_seconds or given_length):
+        return info                     # 用户把节奏定死了，不插手
+    fps = float(info["fps"]) if given_fps else WAN_NATIVE_FPS
+    if given_length:
+        length = int(info["length"])
+    elif given_seconds or given_fps:
+        # 只给了时长（或只给了帧率）：按已定的那一半换算长度，别丢用户的意思
+        length = align_video_frames(int(round(float(info["seconds"]) * fps)))
+    else:
+        length = WAN_NATIVE_LENGTH
+        try:
+            max_seconds = float(video_conf.get("max_seconds", 10) or 0)
+        except (TypeError, ValueError):
+            max_seconds = 10.0
+        if max_seconds > 0 and length / fps > max_seconds:
+            length = align_video_frames(int(max_seconds * fps), up=False)
+    adjusted = dict(info)
+    adjusted.update({
+        "fps": fps,
+        "length": length,
+        "seconds": round(length / fps, 2),
+        "native": True,
+    })
+    return adjusted
 
 
 def fit_to_limit(width: int, height: int, max_side: int) -> tuple[int, int]:

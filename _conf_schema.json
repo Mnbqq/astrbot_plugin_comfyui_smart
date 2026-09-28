@@ -6,7 +6,11 @@
       "language": {
         "description": "语言",
         "type": "string",
-        "options": ["auto", "zh-CN", "en-US"],
+        "options": [
+          "auto",
+          "zh-CN",
+          "en-US"
+        ],
         "hint": "auto=跟随 AstrBot 界面语言（拿不到就用中文）。聊天文案、LLM 提示词与配置页导航会跟着切换。文案文件在 .astrbot-plugin/i18n/ 下，可自行增补。",
         "default": "auto"
       }
@@ -79,7 +83,11 @@
       "strategy": {
         "description": "调度策略",
         "type": "string",
-        "options": ["least_queue", "round_robin", "primary"],
+        "options": [
+          "least_queue",
+          "round_robin",
+          "primary"
+        ],
         "hint": "least_queue=谁闲给谁（默认）；round_robin=轮流派；primary=只用主后端。",
         "default": "least_queue"
       },
@@ -204,7 +212,12 @@
       "negative_mode": {
         "description": "负面提示词策略",
         "type": "string",
-        "options": ["merge", "guard_only", "custom_only", "raw"],
+        "options": [
+          "merge",
+          "guard_only",
+          "custom_only",
+          "raw"
+        ],
         "hint": "merge=合并全部（默认词+手部规避词+架构词+LLM词，最稳）；guard_only=你的词+手部规避词，不采纳 LLM 的负面词；custom_only=只用你自己的词并自动去重；raw=严格原样，连去重都不做。行内 --negative 在 merge/guard_only/custom_only 下会合并，在 raw 下直接覆盖。",
         "default": "merge"
       },
@@ -264,7 +277,13 @@
       "method": {
         "description": "放大算法",
         "type": "string",
-        "options": ["bislerp", "bilinear", "bicubic", "area", "nearest-exact"],
+        "options": [
+          "bislerp",
+          "bilinear",
+          "bicubic",
+          "area",
+          "nearest-exact"
+        ],
         "default": "bislerp"
       }
     }
@@ -306,13 +325,13 @@
       "default_seconds": {
         "description": "默认时长（秒）",
         "type": "int",
-        "hint": "不写 --seconds 时用这个。视频比出图慢很多，建议先 4 秒试水。",
+        "hint": "不写 --seconds 时用这个。Wan 系列会自动按原生节奏处理：什么都没写时用 81 帧（24fps ≈ 3.4 秒）；只写了 --seconds 时按 24fps 换算帧数。视频比出图慢很多，官方示例是 121 帧 / 5 秒。",
         "default": 4
       },
       "default_fps": {
         "description": "默认帧率",
         "type": "int",
-        "hint": "Wan / HunyuanVideo 常用 16；帧数会按 4n+1 自动对齐。",
+        "hint": "只对非 Wan 视频模型生效。Wan 系列是按 24fps 训练的，会自动用 24fps —— 用 8~16fps 出片并按原速播放会变成「几乎不动的糊图」（真机实测踩过）。想强制慢放可以行内写 --fps。帧数按 4n+1 自动对齐。",
         "default": 16
       },
       "max_seconds": {

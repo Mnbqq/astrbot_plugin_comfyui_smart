@@ -3577,8 +3577,9 @@ def main() -> int:
     check("尺寸贴合输入图（640x960 → 512x768，16 的倍数）",
           submitted_i2v["5"]["inputs"]["width"] == 512
           and submitted_i2v["5"]["inputs"]["height"] == 768, submitted_i2v["5"]["inputs"])
-    check("秒数换算成帧数写进模板（3 秒 16fps → 49 帧）",
-          submitted_i2v["5"]["inputs"]["length"] == 49, submitted_i2v["5"]["inputs"]["length"])
+    # v0.15.4 起：Wan 系列没写 --fps 时按原生 24fps 换算（3 秒 → 73 帧），观感才对
+    check("秒数换算成帧数写进模板（3 秒 → 原生 24fps 的 73 帧）",
+          submitted_i2v["5"]["inputs"]["length"] == 73, submitted_i2v["5"]["inputs"]["length"])
     chain_i2v = [x for x in out_i2v if x.get("type") == "chain"][-1]["chain"]
     check("视频用 Video 组件发出，并说明是「以首帧为起点」",
           any(comp.__class__.__name__ == "Video" for comp in chain_i2v)
@@ -3962,8 +3963,8 @@ def main() -> int:
           submitted_gguf is not None and submitted_gguf["1"]["class_type"] == "UnetLoaderGGUF"
           and submitted_gguf["6"]["class_type"] == "Wan22ImageToVideoLatent",
           sorted({n["class_type"] for n in (submitted_gguf or {}).values()}))
-    check("秒数换算成帧数（5 秒 16fps → 81 帧）",
-          (submitted_gguf or {}).get("6", {}).get("inputs", {}).get("length") == 81,
+    check("秒数换算成帧数（5 秒 → 原生 24fps 的 121 帧）",
+          (submitted_gguf or {}).get("6", {}).get("inputs", {}).get("length") == 121,
           (submitted_gguf or {}).get("6", {}).get("inputs"))
     check("GGUF 视频结果也用 Video 组件发出",
           any(comp.__class__.__name__ == "Video"
@@ -3990,6 +3991,63 @@ def main() -> int:
     msg_img = video_with_image_model()
     check("把图片底模当视频底模时提前拦住（不再提交必失败的图）",
           "不像视频模型" in msg_img and "unet_gguf" in msg_img, msg_img[:140])
+
+    print("\n=== 视频节奏跟随模型原生（v0.15.4，真机观感问题）===")
+    # 真机实测：Wan 2.2 是按 24fps / 81~121 帧训练的。给 17 帧 @8fps 跑出来几乎是静止图，
+    # 用户看到的就是「0 秒 / 内容不对」。所以没有显式指定时要自动拉到原生节奏。
+    vconf = {"default_seconds": 4, "default_fps": 16, "max_seconds": 10}
+    base = m.resolve_video_params({}, vconf)
+    check("其它视频模型仍按配置默认（4 秒 16fps → 65 帧）",
+          (base["length"], base["fps"]) == (65, 16.0), (base["length"], base["fps"]))
+
+    nat = m.apply_native_video_defaults(dict(base), {}, vconf, "wan22")
+    check("Wan 系列没指定参数 → 自动 24fps / 81 帧（原生节奏）",
+          (nat["length"], nat["fps"], nat["seconds"]) == (81, 24.0, 3.38),
+          (nat["length"], nat["fps"], nat["seconds"]))
+    check("Wan 1.3B/14B（arch=wan）同样处理",
+          m.apply_native_video_defaults(dict(base), {}, vconf, "wan")["length"] == 81, True)
+    check("非 Wan 架构（sd15/video）不动",
+          m.apply_native_video_defaults(dict(base), {}, vconf, "video")["length"] == 65
+          and m.apply_native_video_defaults(dict(base), {}, vconf, "sd15")["fps"] == 16.0, True)
+
+    only_fps = m.resolve_video_params({"fps": "12"}, vconf)
+    nat_fps = m.apply_native_video_defaults(dict(only_fps), {"fps": "12"}, vconf, "wan22")
+    check("用户只指定了 --fps：尊重帧率，帧数按它换算",
+          nat_fps["fps"] == 12.0 and nat_fps["length"] == 49,
+          (nat_fps["fps"], nat_fps["length"]))
+
+    only_seconds = m.resolve_video_params({"seconds": "2"}, vconf)
+    nat_sec = m.apply_native_video_defaults(dict(only_seconds), {"seconds": "2"}, vconf, "wan22")
+    check("用户只指定了 --seconds：帧率仍拉到 24，帧数按 2 秒换算（49）",
+          (nat_sec["fps"], nat_sec["length"]) == (24.0, 49), (nat_sec["fps"], nat_sec["length"]))
+
+    only_length = m.resolve_video_params({"length": "33", "fps": "8"}, vconf)
+    nat_len = m.apply_native_video_defaults(dict(only_length), {"length": "33", "fps": "8"}, vconf, "wan22")
+    check("用户同时给了 --length 与 --fps：完全尊重，不插手",
+          (nat_len["length"], nat_len["fps"]) == (33, 8.0), (nat_len["length"], nat_len["fps"]))
+
+    tight = {"default_seconds": 4, "default_fps": 16, "max_seconds": 2}
+    clamped = m.apply_native_video_defaults(
+        m.resolve_video_params({}, tight), {}, tight, "wan22")
+    check("原生默认也受 max_seconds 约束（2 秒上限 → 45 帧，不超时）",
+          clamped["length"] == 45 and clamped["seconds"] <= 2.0,
+          (clamped["length"], clamped["seconds"]))
+
+    # 端到端：/视频 不写参数时，提交的图里就是 24fps / 81 帧
+    plugin.config["video"] = {"default_seconds": 4, "default_fps": 16, "max_seconds": 10,
+                              "send_video": True}
+    sess_nat = gguf_session(pid="native-1")
+    ev_nat = AstrMessageEvent(sender_id="8100", message_str="/视频 一只猫在草地上奔跑")
+    asyncio.run(drive(plugin.cmd_video(ev_nat)))
+    submitted_nat = None
+    for method, path, kw in sess_nat.calls:
+        if method == "POST" and path == "/prompt":
+            submitted_nat = kw["json"]["prompt"]
+    check("/视频 默认提交 81 帧 + 24fps（观感问题的那次是 17 帧 @8fps）",
+          submitted_nat is not None
+          and submitted_nat["6"]["inputs"]["length"] == 81
+          and submitted_nat["10"]["inputs"]["fps"] == 24.0,
+          (submitted_nat or {}).get("6", {}).get("inputs", {}).get("length"))
 
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）
