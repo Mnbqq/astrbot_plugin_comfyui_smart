@@ -4696,6 +4696,33 @@ def main() -> int:
           pick_video("low", conf_model="Wan2.2-TI2V-5B-Q4_K_M.gguf"))
     plugin.config["video"] = {}
 
+    print("\n=== 配置页「状态」面板要能看到机器档位（v0.20.0）===")
+    sess_stat = api.aiohttp.ClientSession()
+    sess_stat.route("GET", "/system_stats", api.aiohttp.ClientResponse(200, payload={
+        "system": {"ram_total": 16 * 1024 ** 3, "comfyui_version": "0.37.0"},
+        "devices": [{"name": "RTX 5060", "vram_total": 8 * 1024 ** 3, "vram_free": 6 * 1024 ** 3}]}))
+    sess_stat.route("GET", "/queue", api.aiohttp.ClientResponse(
+        200, payload={"queue_running": [], "queue_pending": []}))
+    plugin.comfy._session = sess_stat
+    plugin._machine_tier = ""
+    plugin.config["video"] = {"machine": "auto"}
+    status = asyncio.run(plugin.get_server_status())
+    check("状态接口返回机器档位与各项上限",
+          isinstance(status.get("machine"), dict)
+          and status["machine"].get("tier") == "low"
+          and status["machine"].get("max_length") == 97
+          and status["machine"].get("steps_cap") == 12,
+          status.get("machine"))
+    out_machine = asyncio.run(drive(plugin.cmd_status(AstrMessageEvent(message_str="/状态"))))
+    check("/状态 会告诉用户当前档位与各项上限",
+          "机器档位" in out_machine[0]["text"] and "97 帧" in out_machine[0]["text"],
+          out_machine[0]["text"].splitlines()[:4])
+    check("状态接口原有的字段没被档位代码挤掉",
+          status.get("online") is True and status.get("device") == "RTX 5060"
+          and isinstance(status.get("templates"), list),
+          {k: status.get(k) for k in ("online", "device", "templates")})
+    plugin.config["video"] = {}
+
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）
     field_re = _re.compile(

@@ -556,6 +556,11 @@ async function loadStatus() {
       ['服务地址', info.base_url || '—'],
       ['连接状态', info.online ? '✅ 正常' : ('❌ ' + (info.error || '不可用'))],
       ['设备', info.device || '—'],
+      ['机器档位', info.machine
+        ? (info.machine.label || info.machine.tier)
+          + '（上限 ' + Math.round((info.machine.max_pixels || 0) / 10000) + ' 万像素 · '
+          + (info.machine.max_length || 0) + ' 帧 · ' + (info.machine.steps_cap || 0) + ' 步）'
+        : '—'],
       ['队列', info.queue ? ('执行中 ' + info.queue.running + ' · 等待中 ' + info.queue.pending) : '—'],
       ['并发', info.gate
         ? ('上限 ' + info.gate.max_concurrent + ' · 进行中 ' + info.gate.running

@@ -69,6 +69,10 @@
               <input type="number" id="server_max_tasks_ahead" class="input-modern" min="0" />
             </div>
           </div>
+          <div class="setting-row">
+            <div><h3>换大模型前先卸载上一套</h3><p>切换底模家族（例如视频模型 ↔ SDXL）之前，先让 ComfyUI 释放显存与内存。16G 内存的机器上能避免切换时崩 <code>os error 1455</code>。默认开启。</p></div>
+            <label class="switch-wrapper"><input type="checkbox" id="server_free_before_switch" class="ios-switch" /></label>
+          </div>
         </article>
 
         <article class="card">
@@ -140,6 +144,10 @@
           <div class="setting-row">
             <div><h3>启用提示词优化与智能选型</h3><p>关闭后直接用你的原话当提示词、用第一个可用底模，完全不需要 LLM。</p></div>
             <label class="switch-wrapper"><input type="checkbox" id="llm_enable_optimize" class="ios-switch" /></label>
+          </div>
+          <div class="setting-row">
+            <div><h3>视频提示词也交给 AI 改写</h3><p>打开后 <code>/视频</code> 与 <code>/图生视频</code> 会先把描述改写成「视频提示词」：补全<strong>动作</strong>（缓缓回头、轻轻晃动）、<strong>镜头运动</strong>（固定 / 推近 / 平移）与光影氛围，并保持你原本的语言（中文就输出中文，Wan 原生懂中文）。与图片那套不同——图片是英文 tag，视频要自然语言的动作描述。视频用哪个模型由下面的「文生视频 / 图生视频默认模型」决定，AI 只改提示词。聊天里可用 <code>--llm</code> / <code>--no-llm</code> 临时覆盖。</p></div>
+            <label class="switch-wrapper"><input type="checkbox" id="llm_optimize_for_video" class="ios-switch" /></label>
           </div>
           <div class="form-grid">
             <div class="form-group">
@@ -332,7 +340,28 @@
               <label for="video_max_seconds">时长上限（秒）</label>
               <input type="number" id="video_max_seconds" class="input-modern" min="0" />
             </div>
+            <div class="form-group">
+              <label for="video_machine">机器档位</label>
+              <select id="video_machine" class="input-modern">
+                <option value="auto">自动（按显存判定）</option>
+                <option value="low">低配：≤10G 显存 / ≤16G 内存</option>
+                <option value="mid">标配：12~20G 显存 / 32G 内存</option>
+                <option value="high">高配：≥24G 显存 / ≥64G 内存</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="video_t2v_model">文生视频默认模型</label>
+              <input type="text" id="video_t2v_model" class="input-modern"
+                     placeholder="留空=自动挑（低配优先加速版）；例：Wan2_2-TI2V-5B-Turbo-Q4_K_M.gguf" />
+            </div>
+            <div class="form-group">
+              <label for="video_i2v_model">图生视频默认模型</label>
+              <input type="text" id="video_i2v_model" class="input-modern"
+                     placeholder="Wan 2.2 TI2V-5B 文生图生共用一个模型，可与上面填同一个" />
+            </div>
           </div>
+          <p class="field-hint">档位决定分辨率 / 帧数 / 步数上限：低配 480p · ≤97 帧 · ≤12 步；标配 720p · ≤121 帧 · ≤30 步；高配 720p · ≤161 帧 · ≤50 步。自动档按显存判定，内存不足 20G 再降一档。<br />
+          低配 / 标配档下没指定模型时，会优先挑文件名带 <code>turbo</code> / <code>lightning</code> / <code>distill</code> / <code>schnell</code> 的加速版权重（实测 Turbo 4 步 74 秒 vs 原版 20 步 281 秒）；填了上面的模型名就以你填的为准。</p>
           <div class="setting-row">
             <div><h3>直接把视频发到聊天</h3><p>关掉后只在聊天里给出本地保存路径（有些平台发不了视频时用）。</p></div>
             <label class="switch-wrapper"><input type="checkbox" id="video_send_video" class="ios-switch" /></label>

@@ -413,7 +413,30 @@ vm.runInContext(source, sandbox, { filename: 'app.js' });
   await vm.runInContext("copyField('modal-positive', '正向提示词')", sandbox);
   check('剪贴板不可用时退化为选中文本', getEl('modal-positive').selected === true);
   await vm.runInContext('closeDetail()', sandbox);
-  check('弹窗可关闭', modal.hidden === true && !modal.classList.contains('open'));
+  /* ---------- 配置面板与字段定义必须同步（真出过：FIELDS 加了、HTML 没加控件） ---------- */
+const htmlSource = fs.readFileSync(
+  path.join(__dirname, '..', 'pages', 'settings', 'index.html'), 'utf8');
+const fieldIds = [...source.matchAll(/\{ id: '([^']+)'/g)].map((m) => m[1]);
+const htmlIds = new Set([...htmlSource.matchAll(/id="([A-Za-z0-9_]+)"/g)].map((m) => m[1]));
+const missingControls = fieldIds.filter((id) => !htmlIds.has(id));
+check('FIELDS 里每个配置项在 index.html 里都有控件（' + fieldIds.length + ' 项）',
+  missingControls.length === 0, missingControls);
+
+/* 反向：HTML 里看起来像配置项的 id（带模块前缀）必须在 FIELDS 里有映射，
+   避免改了字段名后留下永远读不到的僵尸控件 */
+const CONFIG_PREFIX = /^(general|server|backends|queue|llm|vision|draw|hires|i2i|video|output|permission|agent)_/;
+const NON_FIELD = new Set(['video_send_video'.replace('x', 'x')]);   // 目前无例外，保留扩展位
+const orphans = [...htmlIds].filter((id) => CONFIG_PREFIX.test(id)
+  && !fieldIds.includes(id) && !NON_FIELD.has(id) && !id.startsWith('inpaint_'));
+check('index.html 里没有 FIELDS 映射不到的僵尸配置控件', orphans.length === 0, orphans);
+
+/* 新功能必须在面板上可见（这几项是用户反馈「面板没同步」的那批） */
+for (const id of ['server_free_before_switch', 'llm_optimize_for_video', 'video_machine',
+                  'video_t2v_model', 'video_i2v_model']) {
+  check('面板已暴露 ' + id, htmlIds.has(id) && fieldIds.includes(id));
+}
+
+check('弹窗可关闭', modal.hidden === true && !modal.classList.contains('open'));
 
   console.log('\n=== 结果：' + PASSED + ' passed, ' + FAILED + ' failed ===');
   process.exit(FAILED ? 1 : 0);

@@ -37,7 +37,7 @@ from .workflow_templates import (
 
 PLUGIN_NAME = "astrbot_plugin_comfyui_smart"
 # 与 metadata.yaml 的 version 保持一致（tests/test_logic.py 会校验二者不漂移）
-PLUGIN_VERSION = "0.19.0"
+PLUGIN_VERSION = "0.20.0"
 
 # 机器档位：决定分辨率/帧数/步数上限。auto 时按显存判定（内存太小再降一档）。
 MACHINE_PRESETS = {
@@ -598,6 +598,18 @@ class ComfyUISmartPlugin(Star):
             # 多后端：每个后端的在线/队列/熔断情况
             "backends": self.pool.snapshot(),
         }
+        # 机器档位（配置页状态面板与 /状态 都会显示）：探测失败不影响状态返回
+        try:
+            machine = await self._machine()
+            info["machine"] = {
+                "tier": machine["tier"],
+                "label": machine["label"],
+                "max_pixels": machine["max_pixels"],
+                "max_length": machine["max_length"],
+                "steps_cap": machine["steps_cap"],
+            }
+        except Exception as exc:      # noqa: BLE001 - 状态面板不该因为这一项挂掉
+            logger.debug("取机器档位失败：%s", exc)
         try:
             stats = await self.comfy.ping()
             info["online"] = True
@@ -2117,6 +2129,12 @@ class ComfyUISmartPlugin(Star):
         lines.append("　连接：✅ 正常" if info["online"] else f"　连接：❌ {info.get('error', '不可用')}")
         if info.get("device"):
             lines.append(f"　设备：{info['device']}")
+        if info.get("machine"):
+            mach = info["machine"]
+            lines.append(
+                f"　机器档位：{mach['label']}（上限 {round(mach['max_pixels'] / 10000)} 万像素"
+                f" · {mach['max_length']} 帧 · {mach['steps_cap']} 步）"
+            )
         if info.get("queue"):
             lines.append(
                 f"　队列：执行中 {info['queue']['running']} · 等待中 {info['queue']['pending']}"
