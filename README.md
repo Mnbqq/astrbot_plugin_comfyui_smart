@@ -35,6 +35,7 @@
 | `/帮助` | 用法速查 |
 
 行内参数（可组合）：`--model 底模 --lora 名:0.8 --vae 名 --size 1024x1024 --steps 28 --cfg 7 --seed 123 --ratio 16:9`
+提示词开关（本次生效）：**`--llm` 强制让 AI 改写 / `--no-llm` 本次不改写**
 
 ## 配置要点
 
@@ -43,7 +44,7 @@
 | `general` | 语言（auto / zh-CN / en-US） |
 | `server` | ComfyUI 地址、等待上限、**换大模型前自动卸载**（默认开） |
 | `queue` | 同时出图上限、单人上限、排队超时 |
-| `llm_settings` | 提示词优化（中文→英文 tag）、看图模型 |
+| `llm_settings` | 图片提示词优化（中文→英文 tag）、**视频提示词也交给 AI 改写**（`optimize_for_video`）、看图模型 |
 | `draw_settings` | 默认底模/负面/尺寸/步数、强制 LoRA/VAE、架构覆盖 |
 | `hires` | 高清修复 |
 | `i2i` | 图生图的 `--denoise` 默认值、输入图上限 |
@@ -82,6 +83,15 @@
 **模型放哪**：底模 → `models/checkpoints/`；视频 unet（含 GGUF）→ `models/diffusion_models/`；文本编码器 → `models/text_encoders/`；VAE → `models/vae/`；LoRA → `models/loras/`。
 > GGUF 的目录映射各安装不同：打开 `http://<你的ComfyUI>/experiment/models` 看真实路径（有机器把 `unet_gguf` 映射到 `diffusion_models`）。插件**按 `.gguf` 扩展名**识别，放哪个被注册的目录都能认。
 
+## AI 改写提示词（图片 / 视频两套）
+
+| 用途 | 改写目标 | 开关 | 说明 |
+|---|---|---|---|
+| 图片 | 英文 tag 堆叠 + 选底模/LoRA/VAE | `llm_settings.enable_prompt_optimize` | 中文提示词在 SD1.5/SDXL 上基本无效，靠它翻译 |
+| **视频** | **动作 + 镜头 + 光影**（保持你的语言） | `llm_settings.optimize_for_video` | 视频要的是「她缓缓回头、镜头推近」，不是 tag；视频模型由 `video.t2v_model` / `i2v_model` 决定，**LLM 只改提示词、不选模型** |
+
+聊天里可以临时覆盖：`--llm` 强制改写、`--no-llm` 本次不改写（对图片和视频都生效）。
+
 ## 中文提示词
 
 | 用途 | 中文 | 说明 |
@@ -116,6 +126,7 @@
 
 ## 更新日志（最近）
 
+- **v0.18.0** — LLM 参与**视频**提示词：新增视频专用改写（补动作/镜头/光影、保持中文）+ 开关 `llm_settings.optimize_for_video`；新增行内开关 `--llm` / `--no-llm`（图片与视频都能临时覆盖）
 - **v0.17.0** — 视频模型可按功能分别配置（`t2v_model` / `i2v_model`）+ 机器档位（`machine`：auto/low/mid/high，自动限制分辨率/帧数/步数）；README 瘦身，工程细节移到 `docs/`
 - **v0.16.0** — 支持 LTX-Video 2B（GGUF，最省显存的一档）
 - **v0.15.9** — 换大模型前自动 `/free` 卸载，修 `os error 1455` 崩溃

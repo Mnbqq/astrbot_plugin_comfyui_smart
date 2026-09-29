@@ -423,6 +423,51 @@ class LLMService:
             )
         return result
 
+    async def optimize_video_prompt(
+        self,
+        user_desc: str,
+        *,
+        has_start_image: bool = False,
+        seconds: float = 0.0,
+        fps: float = 0.0,
+        negative: str = "",
+        event=None,
+    ) -> dict:
+        """把描述改写成**视频**提示词（重点补动作与镜头，保持用户语言）。
+
+        Args:
+            user_desc: 用户的原始描述。
+            has_start_image: 是否图生视频（有首帧图）。
+            seconds: 计划时长（秒）。
+            fps: 计划帧率。
+            negative: 配置里的默认负面词，供模型参考。
+            event: 可选消息事件。
+
+        Returns:
+            含 positive / negative / _raw 的字典（解析失败时只有 _raw）。
+
+        Raises:
+            RuntimeError: LLM 不可用或调用失败。
+        """
+        kind = "图生视频（用户会发一张首帧图）" if has_start_image else "文生视频（从零生成）"
+        hint = ("动作要围绕这张首帧图展开，例如「她缓缓回头」「镜头缓缓推近」"
+                if has_start_image else
+                "主体、动作、环境都要写清楚，并给一个镜头运动")
+        system = self._t("llm.video_system") or VIDEO_PROMPT_SYSTEM
+        user = self._t(
+            "llm.video_user",
+            desc=user_desc,
+            kind=kind,
+            hint=hint,
+            seconds=f"{seconds:g}" if seconds else "未指定",
+            fps=f"{fps:g}" if fps else "未指定",
+            negative=negative or "（无）",
+        )
+        text = await self.generate(system, user, event=event)
+        parsed = parse_optimize_result(text)
+        parsed["_raw"] = text
+        return parsed
+
     async def optimize_prompt(
         self,
         user_desc: str,
@@ -459,6 +504,29 @@ class LLMService:
         parsed = parse_optimize_result(text)
         parsed["_raw"] = text
         return parsed
+
+
+# 视频提示词的系统提示词（与图片不同：视频要动作 + 镜头，不要堆 tag）
+VIDEO_PROMPT_SYSTEM = (
+    "你是 AI 视频提示词工程师。把用户的描述改写成**视频**提示词，而不是图片 tag。\n"
+    "规则：\n"
+    "1. 必须写清**动作**：谁在做什么、动作怎么变化（例如「缓缓回头」「身体轻轻晃动」「转头看向镜头」）。\n"
+    "2. 写**一个**镜头运动：固定镜头 / 缓缓推近 / 横向平移 / 轻微手持感。\n"
+    "3. 画面要素按「主体 + 外貌服装 → 环境 → 光影氛围」各一两句，别堆砌形容词。\n"
+    "4. **保持用户的语言**：用户写中文就输出中文（Wan 系列原生懂中文）。\n"
+    "5. 长度 40~80 个汉字（或 25~50 个英文词）。\n"
+    "6. 不要写「静止」「不动」「视频」「帧」这类词，也不要点名模型或参数。\n"
+    "7. 输出 JSON：{\"positive\": \"改写后的提示词\", \"negative\": \"一句通用负面词或空串\"}；"
+    "negative 只给画质/结构类（如水印、畸形肢体、模糊），可用中文。\n"
+    "只输出 JSON，不要解释。"
+)
+VIDEO_PROMPT_USER = (
+    "用户描述：{desc}\n"
+    "本次任务：{kind}\n"
+    "要求：{hint}\n"
+    "计划时长约 {seconds} 秒、{fps} fps。\n"
+    "默认负面词（可参考，不要照抄）：{negative}"
+)
 
 
 # 反推提示词的系统提示词

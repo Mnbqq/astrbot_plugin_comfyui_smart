@@ -37,7 +37,7 @@ from .workflow_templates import (
 
 PLUGIN_NAME = "astrbot_plugin_comfyui_smart"
 # 与 metadata.yaml 的 version 保持一致（tests/test_logic.py 会校验二者不漂移）
-PLUGIN_VERSION = "0.17.0"
+PLUGIN_VERSION = "0.18.0"
 
 # 机器档位：决定分辨率/帧数/步数上限。auto 时按显存判定（内存太小再降一档）。
 MACHINE_PRESETS = {
@@ -120,6 +120,8 @@ PARAM_ALIASES = {
     "hires-steps": "hires_steps",
     "lora": "lora", "模型": "model", "model": "model",
     "negative": "negative", "负面": "negative",
+    # 提示词优化开关（本次生效）：--llm 强制改写 / --no-llm 本次不改写
+    "llm": "llm", "优化": "llm", "no-llm": "no_llm", "no_llm": "no_llm", "不优化": "no_llm",
     # 扩图（outpaint）：左右上下扩展量与羽化
     "left": "left", "左": "left", "左边": "left",
     "right": "right", "右": "right", "右边": "right",
@@ -1013,6 +1015,20 @@ class ComfyUISmartPlugin(Star):
         llm_negative = ""
         llm_note = ""
         preset = preset or {}
+        # 本次是否让 LLM 改写：行内 --llm / --no-llm 优先于配置
+        purpose_preview = force_purpose or ("i2i" if source_image else "t2i")
+        is_video = purpose_preview in ("t2v", "i2v")
+        flag_llm = str(opts.get("llm") or "").strip() not in ("", "0", "false")
+        flag_no_llm = str(opts.get("no_llm") or "").strip() not in ("", "0", "false")
+        if is_video:
+            want_llm = bool(llm_conf.get("optimize_for_video", True))
+        else:
+            want_llm = bool(llm_conf.get("enable_prompt_optimize", True))
+        if flag_llm:
+            want_llm = True
+        elif flag_no_llm:
+            want_llm = False
+
         if preset.get("positive"):
             # 已经有现成提示词（例如 /反推 的结果）：不再让 LLM 改写一遍
             positive = str(preset["positive"])
@@ -1020,7 +1036,32 @@ class ComfyUISmartPlugin(Star):
             llm_note = "（提示词来自反推结果，未再改写）"
             if preset.get("checkpoint"):
                 opt["checkpoint"] = preset["checkpoint"]
-        elif bool(llm_conf.get("enable_prompt_optimize", True)):
+        elif want_llm and is_video:
+            # 视频：改写重点是「动作 + 镜头」，且保持用户语言（与图片 tag 那套完全不同）
+            try:
+                video_conf = self.config.get("video", {}) or {}
+                try:
+                    vinfo = resolve_video_params(opts, video_conf)
+                    seconds, fps = vinfo["seconds"], vinfo["fps"]
+                except ComfyUIError:
+                    seconds = fps = 0.0
+                opt = await self.llm.optimize_video_prompt(
+                    user_desc,
+                    has_start_image=bool(source_image),
+                    seconds=seconds,
+                    fps=fps,
+                    negative=default_negative,
+                    event=event,
+                )
+            except RuntimeError as e:
+                logger.warning("LLM 不可用，视频提示词直接用原话：%s", e)
+                opt = {}
+                llm_note = "（未启用/无可用 LLM，已直接用你的原话出视频）"
+            if opt.get("positive"):
+                positive = opt["positive"]
+                llm_note = "（已让 AI 按视频视角补全动作与镜头）"
+            llm_negative = str(opt.get("negative") or "")
+        elif want_llm:
             try:
                 opt = await self.llm.optimize_prompt(
                     user_desc,
@@ -1052,7 +1093,7 @@ class ComfyUISmartPlugin(Star):
             logger.info("本次任务派给后端 %s（%s）", backend.name, backend.url)
 
         # 图生图 / 扩图：先把输入图上传到 ComfyUI，拿到 LoadImage 能用的引用
-        purpose = force_purpose or ("i2i" if source_image else "t2i")
+        purpose = purpose_preview
         image_ref = ""
         mask_ref = ""
         if source_image:

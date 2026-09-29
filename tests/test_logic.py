@@ -4510,6 +4510,137 @@ def main() -> int:
           (graph_cap or {}).get("8", {}).get("inputs"))
     plugin.config["video"] = {}
 
+    print("\n=== LLM 参与视频提示词 + 行内开关（v0.18.0）===")
+    # 记录 LLM 被怎么调用
+    llm_calls: list[dict] = []
+    orig_optimize_video = plugin.llm.optimize_video_prompt
+    orig_optimize_image = plugin.llm.optimize_prompt
+
+    async def spy_video(user_desc, **kw):
+        llm_calls.append({"kind": "video", "desc": user_desc, **kw})
+        return {"positive": "AI改写后的视频提示词：她缓缓回头，镜头缓缓推近", "negative": "模糊, 畸形", "_raw": "{}"}
+
+    async def spy_image(user_desc, catalog, defaults=None, **kw):
+        llm_calls.append({"kind": "image", "desc": user_desc})
+        return {"positive": "ai rewritten image tags", "negative": "lowres"}
+
+    plugin.llm.optimize_video_prompt = spy_video
+    plugin.llm.optimize_prompt = spy_image
+
+    def video_sess(pid="llm-1"):
+        sess = api.aiohttp.ClientSession()
+        sess.route("GET", "/models", api.aiohttp.ClientResponse(
+            200, payload=["checkpoints", "unet_gguf"]))
+        sess.route("GET", "/models/unet_gguf", api.aiohttp.ClientResponse(
+            200, payload=["Wan2_2-TI2V-5B-Turbo-Q4_K_M.gguf"]))
+        sess.route("GET", "/models/checkpoints", api.aiohttp.ClientResponse(200, payload=[]))
+        sess.route("GET", "/system_stats", api.aiohttp.ClientResponse(200, payload={
+            "system": {"ram_total": 16 * 1024 ** 3},
+            "devices": [{"vram_total": 8 * 1024 ** 3, "vram_free": 0}]}))
+        sess.route("GET", "/queue", api.aiohttp.ClientResponse(
+            200, payload={"queue_running": [], "queue_pending": []}))
+        sess.route("POST", "/prompt", api.aiohttp.ClientResponse(200, payload={"prompt_id": pid}))
+        sess.route("POST", "/free", api.aiohttp.ClientResponse(200, payload={}))
+        sess.route("GET", f"/history/{pid}", api.aiohttp.ClientResponse(200, payload={pid: {
+            "status": {"status_str": "success", "completed": True},
+            "outputs": {"11": {"images": [{"filename": "v.mp4", "type": "output"}],
+                               "animated": [True]}}}}))
+        sess.route("GET", "/view", api.aiohttp.ClientResponse(200, text="MP4"))
+        plugin.comfy._session = sess
+        plugin.comfy.invalidate_model_cache()
+        plugin._machine_tier = ""
+        plugin.config["permission"] = {}
+        plugin.permission.reload({})
+        return sess
+
+    def submitted_positive(sess):
+        for method, path, kw in sess.calls:
+            if method == "POST" and path == "/prompt":
+                graph = kw["json"]["prompt"]
+                for node in graph.values():
+                    if node.get("class_type") == "CLIPTextEncode":
+                        txt = node["inputs"].get("text", "")
+                        if txt:
+                            return txt
+        return ""
+
+    base_video_conf = {"machine": "low", "send_video": True, "default_seconds": 4,
+                       "default_fps": 16, "max_seconds": 10}
+
+    # 1) 默认开：视频会走 LLM，且调用的是视频专用方法
+    llm_calls.clear()
+    plugin.config["llm_settings"] = {"optimize_for_video": True}
+    plugin.config["video"] = dict(base_video_conf)
+    s_v = video_sess("llm-1")
+    asyncio.run(drive(plugin.cmd_video(AstrMessageEvent(sender_id="9300", message_str="/视频 一只猫在草地上跑"))))
+    check("视频默认会让 LLM 改写（调用 optimize_video_prompt 而不是图片那套）",
+          len(llm_calls) == 1 and llm_calls[0]["kind"] == "video",
+          [c["kind"] for c in llm_calls])
+    check("改写后的提示词真的写进了工作流",
+          submitted_positive(s_v).startswith("AI改写后的视频提示词"),
+          submitted_positive(s_v)[:40])
+    check("图生视频会把「有首帧图」告诉 LLM（动作要围绕这张图）",
+          llm_calls[0]["has_start_image"] is False, llm_calls[0])
+
+    # 2) 关掉开关：不调用 LLM，直接用原话
+    llm_calls.clear()
+    plugin.config["llm_settings"] = {"optimize_for_video": False}
+    s_off = video_sess("llm-2")
+    asyncio.run(drive(plugin.cmd_video(AstrMessageEvent(sender_id="9301", message_str="/视频 一只猫在草地上跑"))))
+    check("开关关掉后视频不再找 LLM（用原话出片）",
+          not llm_calls and "一只猫在草地上跑" in submitted_positive(s_off),
+          (len(llm_calls), submitted_positive(s_off)[:30]))
+
+    # 3) --no-llm 临时关掉（配置是开的）
+    llm_calls.clear()
+    plugin.config["llm_settings"] = {"optimize_for_video": True}
+    s_no = video_sess("llm-3")
+    asyncio.run(drive(plugin.cmd_video(AstrMessageEvent(
+        sender_id="9302", message_str="/视频 一只猫在草地上跑 --no-llm"))))
+    check("--no-llm 能临时跳过改写（配置开着也不改写）",
+          not llm_calls and "一只猫在草地上跑" in submitted_positive(s_no),
+          (len(llm_calls), submitted_positive(s_no)[:30]))
+
+    # 4) --llm 强制改写（配置关着也改写），且图片用途走图片那套
+    llm_calls.clear()
+    plugin.config["llm_settings"] = {"optimize_for_video": False, "enable_prompt_optimize": False}
+    s_force = video_sess("llm-4")
+    asyncio.run(drive(plugin.cmd_video(AstrMessageEvent(
+        sender_id="9303", message_str="/视频 一只猫在草地上跑 --llm"))))
+    check("--llm 能强制改写（配置关着也生效）",
+          len(llm_calls) == 1 and llm_calls[0]["kind"] == "video"
+          and submitted_positive(s_force).startswith("AI改写后的视频提示词"),
+          (len(llm_calls), submitted_positive(s_force)[:30]))
+
+    llm_calls.clear()
+    plugin.config["llm_settings"] = {"enable_prompt_optimize": True, "optimize_for_video": True}
+    plugin.config["draw_settings"] = {"default_negative": "lowres"}
+    sess_img = api.aiohttp.ClientSession()
+    sess_img.route("GET", "/models", api.aiohttp.ClientResponse(200, payload=["checkpoints"]))
+    sess_img.route("GET", "/models/checkpoints", api.aiohttp.ClientResponse(
+        200, payload=["animagine-xl-4.0.safetensors"]))
+    sess_img.route("GET", "/system_stats", api.aiohttp.ClientResponse(200, payload={
+        "system": {"ram_total": 16 * 1024 ** 3},
+        "devices": [{"vram_total": 8 * 1024 ** 3, "vram_free": 0}]}))
+    sess_img.route("GET", "/queue", api.aiohttp.ClientResponse(
+        200, payload={"queue_running": [], "queue_pending": []}))
+    sess_img.route("POST", "/prompt", api.aiohttp.ClientResponse(200, payload={"prompt_id": "img-1"}))
+    sess_img.route("GET", "/history/img-1", api.aiohttp.ClientResponse(200, payload={"img-1": {
+        "status": {"status_str": "success", "completed": True},
+        "outputs": {"7": {"images": [{"filename": "x.png", "type": "output"}]}}}}))
+    sess_img.route("GET", "/view", api.aiohttp.ClientResponse(200, text="PNG"))
+    plugin.comfy._session = sess_img
+    plugin.comfy.invalidate_model_cache()
+    asyncio.run(drive(plugin.cmd_draw(AstrMessageEvent(sender_id="9304", message_str="/画图 一个白裙少女"))))
+    check("图片用途仍然走图片那套 tag 改写（两条链路不串）",
+          len(llm_calls) == 1 and llm_calls[0]["kind"] == "image",
+          [c["kind"] for c in llm_calls])
+
+    plugin.llm.optimize_video_prompt = orig_optimize_video
+    plugin.llm.optimize_prompt = orig_optimize_image
+    plugin.config["video"] = {}
+    plugin.config["llm_settings"] = {}
+
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）
     field_re = _re.compile(

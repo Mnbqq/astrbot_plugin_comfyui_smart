@@ -16,6 +16,7 @@ const FIELDS = [
   { id: 'general_language', path: ['general', 'language'], kind: 'select',
     options: ['auto', 'zh-CN', 'en-US'] },
   { id: 'server_free_before_switch', path: ['server', 'free_before_switch'], kind: 'bool' },
+  { id: 'llm_optimize_for_video', path: ['llm_settings', 'optimize_for_video'], kind: 'bool' },
   { id: 'video_machine', path: ['video', 'machine'], kind: 'select',
     options: ['auto', 'low', 'mid', 'high'] },
   { id: 'video_t2v_model', path: ['video', 't2v_model'], kind: 'text' },

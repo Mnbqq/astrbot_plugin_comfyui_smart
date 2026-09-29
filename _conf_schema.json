@@ -136,6 +136,12 @@
         "description": "自定义接口的模型名",
         "type": "string",
         "default": ""
+      },
+      "optimize_for_video": {
+        "description": "视频提示词也交给 AI 改写",
+        "type": "bool",
+        "default": true,
+        "hint": "打开后，/视频 与 /图生视频 会先把你的描述改写成「视频提示词」：补全**动作**（缓缓回头、轻轻晃动）、**镜头运动**（固定/推近/平移）与光影氛围，并保持你原本的语言（中文就输出中文，Wan 原生懂中文）。和图片那套不同——图片是英文 tag 堆叠，视频要自然语言的动作描述。视频用的模型由 video.t2v_model / video.i2v_model 决定，LLM 只改提示词、不选模型。聊天里可以临时覆盖：--llm 强制改写、--no-llm 本次不改写。"
       }
     }
   },
