@@ -4298,6 +4298,104 @@ def main() -> int:
     check("配置关掉后不再调用 /free", count_free(s_off) == 0, count_free(s_off))
     plugin.config["server"] = {}
 
+    print("\n=== LTX-Video 2B（省显存视频，v0.16.0）===")
+    check("LTXV 识别为 ltxv 架构（768x512 / 8 步 / CFG 1 / euler）",
+          wt.guess_arch("ltxv-2b-0.9.8-distilled-q8_0.gguf") == "ltxv"
+          and wt.arch_profile("ltxv")["size"] == (768, 512)
+          and wt.arch_profile("ltxv")["steps"] == 8
+          and wt.arch_profile("ltxv")["cfg"] == 1.0
+          and wt.arch_profile("ltxv")["sampler"] == "euler",
+          (wt.guess_arch("ltxv-2b-0.9.8-distilled-q8_0.gguf"), wt.arch_profile("ltxv")))
+
+    tpl_ltxv = plugin.templates["ltxv_t2v"]
+    check("LTXV 模板已加载（SamplerCustom + LTXVScheduler + LTXV 专用节点）",
+          tpl_ltxv.arch == "ltxv" and tpl_ltxv.loader == "unet_gguf"
+          and {"UnetLoaderGGUF", "CLIPLoaderGGUF", "LTXVConditioning", "EmptyLTXVLatentVideo",
+               "LTXVScheduler", "SamplerCustom", "KSamplerSelect", "CreateVideo",
+               "SaveVideo"} <= tpl_ltxv.required_nodes(),
+          sorted(tpl_ltxv.required_nodes()))
+
+    built_ltxv = tpl_ltxv.build(
+        positive="一只猫在草地上奔跑", negative="bad", model_name="ltxv-2b-0.9.8-distilled-q8_0.gguf",
+        width=768, height=512, steps=8, cfg=1.0, sampler="euler", scheduler="normal", seed=11,
+        params={"length": 97, "fps": 25, "steps": 8},
+    )
+    check("LTXV 的步数写进 LTXVScheduler（不是采样器）",
+          built_ltxv["9"]["inputs"]["steps"] == 8
+          and "steps" not in built_ltxv["10"]["inputs"],
+          (built_ltxv["9"]["inputs"], sorted(built_ltxv["10"]["inputs"])))
+    check("LTXV 的帧数/尺寸写进 EmptyLTXVLatentVideo，帧率写进 CreateVideo",
+          (built_ltxv["7"]["inputs"]["width"], built_ltxv["7"]["inputs"]["height"],
+           built_ltxv["7"]["inputs"]["length"]) == (768, 512, 97)
+          and built_ltxv["12"]["inputs"]["fps"] == 25.0,
+          (built_ltxv["7"]["inputs"], built_ltxv["12"]["inputs"]))
+    check("LTXV 的 seed/cfg 写进 SamplerCustom",
+          built_ltxv["10"]["inputs"]["noise_seed"] == 11
+          and built_ltxv["10"]["inputs"]["cfg"] == 1.0,
+          built_ltxv["10"]["inputs"])
+
+    picked_ltxv, arch_ltxv = wt.pick_template(
+        plugin.templates, model_name="ltxv-2b-0.9.8-distilled-q8_0.gguf",
+        model_folder="unet_gguf", purpose="t2v")
+    picked_wan_gguf, _aw = wt.pick_template(
+        plugin.templates, model_name="Wan2_2-TI2V-5B-Turbo-Q4_K_M.gguf",
+        model_folder="unet_gguf", purpose="t2v")
+    check("LTXV 与 Wan 的 GGUF 视频模型各走各的模板（不会互相串）",
+          picked_ltxv is not None and picked_ltxv.name == "ltxv_t2v"
+          and picked_wan_gguf is not None and picked_wan_gguf.name == "wan22_t2v_gguf",
+          (picked_ltxv.name if picked_ltxv else None,
+           picked_wan_gguf.name if picked_wan_gguf else None))
+
+    # 原生节奏：LTXV 25fps / 97 帧 / 8n+1 对齐
+    vconf2 = {"default_seconds": 4, "default_fps": 16, "max_seconds": 10}
+    ltxv_native = m.apply_native_video_defaults(
+        m.resolve_video_params({}, vconf2), {}, vconf2, "ltxv")
+    check("LTXV 默认 25fps / 97 帧（8n+1）",
+          (ltxv_native["fps"], ltxv_native["length"], ltxv_native["length"] % 8) == (25.0, 97, 1),
+          ltxv_native)
+    ltxv_two = m.apply_native_video_defaults(
+        m.resolve_video_params({"seconds": "2"}, vconf2), {"seconds": "2"}, vconf2, "ltxv")
+    check("LTXV 指定时长时也按 8n+1 对齐（2 秒 → 57 帧）",
+          ltxv_two["length"] == 57 and ltxv_two["length"] % 8 == 1, ltxv_two)
+
+    # 端到端：/视频 用 LTXV 模型提交
+    sess_ltxv = api.aiohttp.ClientSession()
+    sess_ltxv.route("GET", "/models", api.aiohttp.ClientResponse(
+        200, payload=["checkpoints", "unet_gguf", "clip_gguf", "vae"]))
+    sess_ltxv.route("GET", "/models/unet_gguf", api.aiohttp.ClientResponse(
+        200, payload=["ltxv-2b-0.9.8-distilled-q8_0.gguf"]))
+    sess_ltxv.route("GET", "/models/clip_gguf", api.aiohttp.ClientResponse(
+        200, payload=["t5-v1_1-xxl-encoder-Q4_K_M.gguf"]))
+    sess_ltxv.route("GET", "/models/vae", api.aiohttp.ClientResponse(
+        200, payload=["ltx-video-vae.safetensors"]))
+    sess_ltxv.route("GET", "/models/checkpoints", api.aiohttp.ClientResponse(200, payload=[]))
+    sess_ltxv.route("GET", "/queue", api.aiohttp.ClientResponse(
+        200, payload={"queue_running": [], "queue_pending": []}))
+    sess_ltxv.route("POST", "/prompt", api.aiohttp.ClientResponse(200, payload={"prompt_id": "ltxv-1"}))
+    sess_ltxv.route("POST", "/free", api.aiohttp.ClientResponse(200, payload={}))
+    sess_ltxv.route("GET", "/history/ltxv-1", api.aiohttp.ClientResponse(200, payload={"ltxv-1": {
+        "status": {"status_str": "success", "completed": True},
+        "outputs": {"13": {"images": [{"filename": "ltxv_00001_.mp4", "type": "output"}],
+                           "animated": [True]}}}}))
+    sess_ltxv.route("GET", "/view", api.aiohttp.ClientResponse(200, text="MP4"))
+    plugin.comfy._session = sess_ltxv
+    plugin.comfy.invalidate_model_cache()
+    out_ltxv = asyncio.run(drive(plugin.cmd_video(
+        AstrMessageEvent(sender_id="9100", message_str="/视频 一只猫在草地上奔跑"))))
+    submitted_ltxv = None
+    for method, path, kw in sess_ltxv.calls:
+        if method == "POST" and path == "/prompt":
+            submitted_ltxv = kw["json"]["prompt"]
+    classes_ltxv = sorted({n["class_type"] for n in (submitted_ltxv or {}).values()})
+    check("/视频 对 LTXV 权重自动用 LTXV 模板出片",
+          submitted_ltxv is not None and "SamplerCustom" in classes_ltxv
+          and "LTXVScheduler" in classes_ltxv and "UnetLoaderGGUF" in classes_ltxv,
+          classes_ltxv)
+    check("LTXV 提交的帧数/帧率符合 8n+1 与 25fps",
+          (submitted_ltxv or {}).get("7", {}).get("inputs", {}).get("length") == 97
+          and (submitted_ltxv or {}).get("12", {}).get("inputs", {}).get("fps") == 25.0,
+          (submitted_ltxv or {}).get("7", {}).get("inputs"))
+
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）
     field_re = _re.compile(

@@ -1,0 +1,221 @@
+{
+  "name": "ltxv_t2v",
+  "purpose": "t2v",
+  "arch": "ltxv",
+  "loader": "unet_gguf",
+  "description": "文生视频（LTX-Video 2B 0.9.8 distilled，GGUF）：8G 显存最省的一档。UnetLoaderGGUF 读 LTXV 的 GGUF；CLIPLoaderGGUF 用 t5xxl（type=ltxv，可复用 Flux 那份 t5 GGUF）；VAE 用 LTXV 专用 VAE；帧数走 EmptyLTXVLatentVideo（必须 8n+1），采样是 SamplerCustom + LTXVScheduler（步骤写在调度器上），帧率由 CreateVideo 决定。蒸馏版 4~8 步 / CFG 1 即可出片。",
+  "bindings": {
+    "model_loader": {
+      "node": "1"
+    },
+    "vae_loader": {
+      "node": "3"
+    },
+    "positive": {
+      "node": "4"
+    },
+    "negative": {
+      "node": "5"
+    },
+    "latent": {
+      "node": "7"
+    },
+    "sampler": {
+      "node": "10"
+    },
+    "save": {
+      "node": "13"
+    }
+  },
+  "params": {
+    "length": "7",
+    "steps": "9",
+    "fps": "12"
+  },
+  "graph": {
+    "1": {
+      "class_type": "UnetLoaderGGUF",
+      "_meta": {
+        "title": "LTX-Video 2B（GGUF）"
+      },
+      "inputs": {
+        "unet_name": "ltxv-2b-0.9.8-distilled-q8_0.gguf"
+      }
+    },
+    "2": {
+      "class_type": "CLIPLoaderGGUF",
+      "_meta": {
+        "title": "文本编码器（t5xxl）"
+      },
+      "inputs": {
+        "clip_name": "t5-v1_1-xxl-encoder-Q4_K_M.gguf",
+        "type": "ltxv"
+      }
+    },
+    "3": {
+      "class_type": "VAELoader",
+      "_meta": {
+        "title": "LTXV VAE"
+      },
+      "inputs": {
+        "vae_name": "ltx-video-vae.safetensors"
+      }
+    },
+    "4": {
+      "class_type": "CLIPTextEncode",
+      "_meta": {
+        "title": "正面提示词"
+      },
+      "inputs": {
+        "text": "",
+        "clip": [
+          "2",
+          0
+        ]
+      }
+    },
+    "5": {
+      "class_type": "CLIPTextEncode",
+      "_meta": {
+        "title": "负面提示词"
+      },
+      "inputs": {
+        "text": "",
+        "clip": [
+          "2",
+          0
+        ]
+      }
+    },
+    "6": {
+      "class_type": "LTXVConditioning",
+      "_meta": {
+        "title": "帧率条件"
+      },
+      "inputs": {
+        "positive": [
+          "4",
+          0
+        ],
+        "negative": [
+          "5",
+          0
+        ],
+        "frame_rate": 25.0
+      }
+    },
+    "7": {
+      "class_type": "EmptyLTXVLatentVideo",
+      "_meta": {
+        "title": "尺寸与帧数"
+      },
+      "inputs": {
+        "width": 768,
+        "height": 512,
+        "length": 97,
+        "batch_size": 1
+      }
+    },
+    "8": {
+      "class_type": "KSamplerSelect",
+      "_meta": {
+        "title": "采样算法"
+      },
+      "inputs": {
+        "sampler_name": "euler"
+      }
+    },
+    "9": {
+      "class_type": "LTXVScheduler",
+      "_meta": {
+        "title": "LTXV 调度器"
+      },
+      "inputs": {
+        "steps": 8,
+        "max_shift": 2.05,
+        "base_shift": 0.95,
+        "stretch": true,
+        "terminal": 0.1
+      }
+    },
+    "10": {
+      "class_type": "SamplerCustom",
+      "_meta": {
+        "title": "自定义采样"
+      },
+      "inputs": {
+        "model": [
+          "1",
+          0
+        ],
+        "add_noise": true,
+        "noise_seed": 0,
+        "cfg": 1.0,
+        "positive": [
+          "6",
+          0
+        ],
+        "negative": [
+          "6",
+          1
+        ],
+        "sampler": [
+          "8",
+          0
+        ],
+        "sigmas": [
+          "9",
+          0
+        ],
+        "latent_image": [
+          "7",
+          0
+        ]
+      }
+    },
+    "11": {
+      "class_type": "VAEDecode",
+      "_meta": {
+        "title": "VAE 解码"
+      },
+      "inputs": {
+        "samples": [
+          "10",
+          0
+        ],
+        "vae": [
+          "3",
+          0
+        ]
+      }
+    },
+    "12": {
+      "class_type": "CreateVideo",
+      "_meta": {
+        "title": "合成视频"
+      },
+      "inputs": {
+        "images": [
+          "11",
+          0
+        ],
+        "fps": 25.0
+      }
+    },
+    "13": {
+      "class_type": "SaveVideo",
+      "_meta": {
+        "title": "保存视频（mp4）"
+      },
+      "inputs": {
+        "video": [
+          "12",
+          0
+        ],
+        "filename_prefix": "astrbot_ltxv",
+        "format": "auto",
+        "codec": "auto"
+      }
+    }
+  }
+}

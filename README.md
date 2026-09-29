@@ -124,7 +124,7 @@
 
 ## 工作流模板
 
-模板是数据，不是代码。内置十二个：
+模板是数据，不是代码。内置十三个：
 
 | 模板 | 适用 | 说明 |
 |------|------|------|
@@ -137,6 +137,7 @@
 | `wan22_t2v_gguf` | Wan 2.2 TI2V-5B **GGUF** | 文生视频（省显存）：`UnetLoaderGGUF` + `CLIPLoaderGGUF(type=wan)` + `Wan22ImageToVideoLatent` |
 | `wan22_i2v_gguf` | 同上 | 图生视频（首帧驱动）：`Wan22ImageToVideoLatent.start_image` 接一张 `LoadImage` |
 | `flux_schnell_gguf` | Flux.1 schnell GGUF | 文生图（4 步）：`UnetLoaderGGUF` + `DualCLIPLoaderGGUF` + `EmptySD3LatentImage` |
+| `ltxv_t2v` | LTX-Video 2B GGUF | 文生视频（省显存）：`SamplerCustom` + `LTXVScheduler` + `EmptyLTXVLatentVideo` |
 | `lumina_checkpoint` | Lumina-Image-2.0 | 文生图（1024/30 步）：`ModelSamplingAuraFlow(4)` + `EmptySD3LatentImage` + `res_multistep` |
 | `flux_checkpoint` | 一体化 Flux 单文件底模 | 模型/文本编码器/VAE 打包在一起的版本 |
 | `flux_unet` | 分离权重的 Flux | `diffusion_models` 的 UNET + `text_encoders` 的 CLIP + 独立 VAE |
@@ -185,6 +186,8 @@
 | Flux（提示词理解最强） | `flux1-schnell-Q4_K_S.gguf` + `t5-v1_1-xxl-encoder-Q4_K_M.gguf` + `clip_l.safetensors` + `ae.safetensors` | 6.3+2.7+0.2+0.3 GB | `diffusion_models/`、`text_encoders/`、`vae/` | 自动走 `flux_schnell_gguf`（**4 步**出图） |
 | **文生/图生视频（加速）** | `Wan2_2-TI2V-5B-Turbo-Q4_K_M.gguf` | 3.2 GB | `diffusion_models/` | `/视频 … --model Wan2_2-TI2V-5B-Turbo-Q4_K_M.gguf --steps 4 --cfg 1.0`（实测 81 帧 832x480：**74 秒**，比原版 20 步的 281 秒快 3.8 倍，运动量还更大） |
 | 视频（质量优先） | `Wan2.2-TI2V-5B-Q4_K_M.gguf`（原版） | 3.2 GB | `diffusion_models/` | 默认；20~30 步 |
+| **视频（最省显存）** | `ltxv-2b-0.9.8-distilled-q8_0.gguf` + `ltx-video-vae.safetensors` | 2.0+0.8 GB | `diffusion_models/`、`vae/` | `/视频 … --model ltxv-2b-0.9.8-distilled-q8_0.gguf`（**768x512 / 97 帧 / 8 步**，文本编码器复用 Flux 的 t5 GGUF） |
+| 视频（更轻的 Wan） | `wan2.1_t2v_1.3B_fp16.safetensors` | 2.6 GB | `diffusion_models/` | 与现有 Wan 模板通用（复用 umt5 + wan VAE），比 5B 快、质量略低 |
 | 换 VAE（修偏色/发灰） | `vae-ft-mse-840000-ema-pruned.safetensors`（SD1.5）/ `sdxl_vae.safetensors`（SDXL） | 各 0.3 GB | `vae/` | `/画图 … --vae sdxl_vae.safetensors` |
 
 > **目录映射的坑**（真机实测）：不同安装的 ComfyUI-GGUF 把 `unet_gguf`/`clip_gguf`
@@ -696,7 +699,7 @@
 启动时插件会打印一条横幅，用来确认「跑的到底是哪一版」：
 
 ```
-ComfyUI 智能绘图 v0.15.9 已激活｜模板 12 个｜数据目录 …｜日志走 astrbot.api.logger｜Pages 已注册｜排队补偿上限 10 个任务｜同时出图上限 1
+ComfyUI 智能绘图 v0.16.0 已激活｜模板 13 个｜数据目录 …｜日志走 astrbot.api.logger｜Pages 已注册｜排队补偿上限 10 个任务｜同时出图上限 1
 ```
 
 ---
@@ -723,6 +726,21 @@ Hires 细分开关 + 反推专用模型（v0.6.2）、并发与队列治理（v0
 ---
 
 ## 更新日志
+
+**v0.16.0** — 支持 LTX-Video 2B（8G 显存最省的一档视频模型）
+
+- **新增 `ltxv_t2v` 模板**：`UnetLoaderGGUF`（LTXV GGUF）+ `CLIPLoaderGGUF(type=ltxv)`
+  （可**复用 Flux 那份 t5xxl GGUF**）+ LTXV 专用 VAE + `LTXVConditioning`(25fps) +
+  `EmptyLTXVLatentVideo` + `KSamplerSelect(euler)` + `LTXVScheduler` + `SamplerCustom` +
+  `VAEDecode` + `CreateVideo` + `SaveVideo`。蒸馏版 **4~8 步 / CFG 1** 就能出片。
+- **步数注入扩展**：LTXV 的步数写在 `LTXVScheduler` 上而不是采样器上，模板用
+  `params: {"steps": "<调度器节点>"}` 声明，插件照写（其它模板没声明就自动忽略）。
+- **按架构分档的原生节奏**：Wan 系列 24fps / 81 帧 / 4n+1；**LTXV 25fps / 97 帧 / 8n+1**
+  （LTXV 的 VAE 时间压缩是 8 倍，帧数必须是 8n+1，`--seconds` 也会按 8n+1 对齐）。
+- **视频架构白名单统一**成 `VIDEO_ARCHES`（wan / wan22 / ltxv / video），
+  避免新架构在「挑视频底模」和「像不像视频模型」两处被漏掉。
+- 模板总数 13；测试：+12 项断言（架构识别、模板结构、步数进调度器、8n+1 对齐、
+  与 Wan 模板不串、`/视频` 端到端走 SamplerCustom），Python 556 / 前端 39 / API 面 55。
 
 **v0.15.9** — 换大模型前自动卸载 + 记录「os error 1455」这个坑
 

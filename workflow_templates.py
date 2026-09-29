@@ -580,6 +580,21 @@ ARCH_PROFILES: dict[str, dict] = {
         "quality_tags": "",
         "negative_extra": "",
     },
+    "ltxv": {
+        # LTX-Video 2B 0.9.8 distilled：官方模板 768x512 / 97 帧 / 25fps / euler /
+        # LTXVScheduler(30, 2.05, 0.95, True, 0.1)；蒸馏版 4~8 步、CFG 1 即可
+        "pixels": 768 * 512,
+        "label": "LTX-Video 2B（省显存视频）",
+        "size": (768, 512),
+        "steps": 8,
+        "cfg": 1.0,
+        "sampler": "euler",
+        "scheduler": "normal",
+        "guidance": None,
+        "negative": True,
+        "quality_tags": "",
+        "negative_extra": "",
+    },
     "flux_schnell": {
         # Flux schnell：官方模板 4 步 / CFG 1 / euler + simple，guidance 1（不吃负面）
         "pixels": 1024 * 1024,
@@ -647,6 +662,8 @@ DEFAULT_ARCH = "sd15"
 
 # 显式关键词 -> 架构（顺序即优先级，"xl" 这条在后面单独判断）
 _ARCH_HINTS: tuple[tuple[tuple[str, ...], str], ...] = (
+    # LTX-Video 2B（省显存首选）：768x512 / 25fps / 8n+1 帧 / distilled 4~8 步
+    (("ltxv", "ltx-video", "ltx_video"), "ltxv"),
     # Flux schnell：4 步 / CFG 1，必须先于 flux 匹配（放到同一个 GGUF 模板里由档案决定步数）
     (("schnell",), "flux_schnell"),
     # Lumina-Image-2.0 系（含社区微调 all-in-one）：16 通道潜空间 + AuraFlow shift

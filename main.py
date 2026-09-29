@@ -37,7 +37,10 @@ from .workflow_templates import (
 
 PLUGIN_NAME = "astrbot_plugin_comfyui_smart"
 # 与 metadata.yaml 的 version 保持一致（tests/test_logic.py 会校验二者不漂移）
-PLUGIN_VERSION = "0.15.9"
+PLUGIN_VERSION = "0.16.0"
+
+# 视频架构白名单：视频用途挑底模、以及「像不像视频模型」的校验都用它
+VIDEO_ARCHES = frozenset({"wan", "wan22", "ltxv", "video"})
 
 # 这些架构的模型动辄 4~20 GB，切换时最容易把提交内存顶满（真机 os error 1455 崩溃）
 BIG_MEMORY_ARCHES = frozenset({
@@ -620,7 +623,7 @@ class ComfyUISmartPlugin(Star):
             # 「拿图片底模当视频底模」的必然失败（真机实测过）。
             video_pool = [
                 name for name in unets
-                if guess_arch(name, arch_override) in ("wan", "wan22", "video")
+                if guess_arch(name, arch_override) in VIDEO_ARCHES
             ]
             if video_pool:
                 model = video_pool[0]
@@ -659,7 +662,7 @@ class ComfyUISmartPlugin(Star):
         # 避免把缺自定义节点的工作流提交过去再被服务端拒绝。
         available = await (client or self.comfy).node_classes()
         arch = guess_arch(model, arch_override)
-        if purpose in ("t2v", "i2v") and arch not in ("wan", "wan22", "video"):
+        if purpose in ("t2v", "i2v") and arch not in VIDEO_ARCHES:
             raise ComfyUIError(
                 f"选中的底模 {model} 不像视频模型（识别为 {arch} 架构），"
                 "视频需要专门的视频权重（如 Wan 2.2 TI2V-5B / Wan 2.1 T2V），"
@@ -990,6 +993,7 @@ class ComfyUISmartPlugin(Star):
             template_params = {
                 "length": video_info["length"],
                 "fps": int(round(video_info["fps"])),
+                "steps": sampling.get("steps"),
             }
             if not end_ref:
                 # 没有尾帧：把模板里的可选输入 end_image 摘掉（否则会留一条指向占位文件的死链）
@@ -2637,6 +2641,14 @@ def resolve_video_params(opts: dict, video_conf: dict) -> dict:
 WAN_NATIVE_FPS = 24.0
 WAN_NATIVE_LENGTH = 81          # 3.375 秒；官方示例是最长 121 帧（5 秒）
 
+# 各视频架构的原生节奏：(帧率, 默认帧数, 帧数对齐块)
+# Wan 系列 24fps / 4n+1；LTX-Video 25fps / 8n+1（官方模板 97 帧）
+NATIVE_VIDEO_RHYTHM = {
+    "wan": (24.0, 81, 4),
+    "wan22": (24.0, 81, 4),
+    "ltxv": (25.0, 97, 8),
+}
+
 
 def apply_native_video_defaults(info: dict, opts: dict, video_conf: dict, arch: str) -> dict:
     """把 Wan 系列的帧率默认拉回原生 24fps（用户显式给了就完全尊重）。
@@ -2650,27 +2662,30 @@ def apply_native_video_defaults(info: dict, opts: dict, video_conf: dict, arch: 
     Returns:
         调整后的 info；非 Wan 架构或用户显式指定过则原样返回。
     """
-    if arch not in ("wan", "wan22"):
+    rhythm = NATIVE_VIDEO_RHYTHM.get(arch)
+    if rhythm is None:
         return info
+    native_fps, native_length, block = rhythm
     given_fps = opts.get("fps") not in (None, "")
     given_seconds = opts.get("seconds") not in (None, "")
     given_length = opts.get("length") not in (None, "")
     if given_fps and (given_seconds or given_length):
         return info                     # 用户把节奏定死了，不插手
-    fps = float(info["fps"]) if given_fps else WAN_NATIVE_FPS
+    fps = float(info["fps"]) if given_fps else native_fps
     if given_length:
         length = int(info["length"])
     elif given_seconds or given_fps:
         # 只给了时长（或只给了帧率）：按已定的那一半换算长度，别丢用户的意思
-        length = align_video_frames(int(round(float(info["seconds"]) * fps)))
+        length = align_video_frames(int(round(float(info["seconds"]) * fps)), block=block)
     else:
-        length = WAN_NATIVE_LENGTH
+        length = native_length
+        length = align_video_frames(length, block=block)
         try:
             max_seconds = float(video_conf.get("max_seconds", 10) or 0)
         except (TypeError, ValueError):
             max_seconds = 10.0
         if max_seconds > 0 and length / fps > max_seconds:
-            length = align_video_frames(int(max_seconds * fps), up=False)
+            length = align_video_frames(int(max_seconds * fps), block=block, up=False)
     adjusted = dict(info)
     adjusted.update({
         "fps": fps,
