@@ -1,4 +1,53 @@
 {
+  "features": {
+    "description": "功能开关",
+    "type": "object",
+    "hint": "按需开放生成能力。**默认只开文生图**，其余全部关闭：关闭后对应指令会直接回复「功能未开启」并提示去哪里打开，不会占用显存。无指令出图（LLM 工具）也只受这里控制——文生图关了就彻底用不了出图。",
+    "items": {
+      "t2i": {
+        "description": "文生图（/画图）",
+        "type": "bool",
+        "default": true,
+        "hint": "默认开启。最基本的出图能力。"
+      },
+      "i2i": {
+        "description": "图生图（/图生图、/改图）",
+        "type": "bool",
+        "default": false,
+        "hint": "默认关闭。以图生图比较吃显存，也可能被用来改别人的图，按需开放。"
+      },
+      "outpaint": {
+        "description": "扩图（/扩图）",
+        "type": "bool",
+        "default": false,
+        "hint": "默认关闭。往外扩画面，显存占用随扩展量上升。"
+      },
+      "inpaint": {
+        "description": "局部重绘（配置页涂抹遮罩）",
+        "type": "bool",
+        "default": false,
+        "hint": "默认关闭。配置页的「局部重绘」标签页在关闭时会提示不可用。"
+      },
+      "t2v": {
+        "description": "文生视频（/视频）",
+        "type": "bool",
+        "default": false,
+        "hint": "默认关闭。视频最吃显存与时间（8G 机器一条 74~281 秒）。"
+      },
+      "i2v": {
+        "description": "图生视频（/图生视频）",
+        "type": "bool",
+        "default": false,
+        "hint": "默认关闭。让一张图动起来，同样吃显存。"
+      },
+      "reverse_prompt": {
+        "description": "看图反推提示词（/反推）",
+        "type": "bool",
+        "default": false,
+        "hint": "默认关闭。严格说不是生成功能，但同样会调用视觉模型，所以一并做成开关。"
+      }
+    }
+  },
   "general": {
     "description": "通用",
     "type": "object",

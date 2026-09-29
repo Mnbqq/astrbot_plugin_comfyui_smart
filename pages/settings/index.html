@@ -495,6 +495,40 @@
 
         <article class="card">
           <div class="card-header">
+            <div><h3>生成功能开关</h3><p><strong>默认只开文生图</strong>，其余按需打开。关闭的功能会直接回复「功能未开启」并提示来这里打开，不占显存；无指令出图也只受这里控制。</p></div>
+          </div>
+          <div class="setting-row">
+            <div><h3>文生图（/画图）</h3><p>基本出图能力，默认开启。</p></div>
+            <label class="switch-wrapper"><input type="checkbox" id="features_t2i" class="ios-switch" /></label>
+          </div>
+          <div class="setting-row">
+            <div><h3>图生图（/图生图、/改图）</h3><p>以图生图比较吃显存，也可能被用来改别人的图，按需开放。</p></div>
+            <label class="switch-wrapper"><input type="checkbox" id="features_i2i" class="ios-switch" /></label>
+          </div>
+          <div class="setting-row">
+            <div><h3>扩图（/扩图）</h3><p>往外扩画面，显存占用随扩展量上升。</p></div>
+            <label class="switch-wrapper"><input type="checkbox" id="features_outpaint" class="ios-switch" /></label>
+          </div>
+          <div class="setting-row">
+            <div><h3>局部重绘（本页「局部重绘」标签页）</h3><p>涂抹遮罩后重绘局部，关闭时该标签页会提示不可用。</p></div>
+            <label class="switch-wrapper"><input type="checkbox" id="features_inpaint" class="ios-switch" /></label>
+          </div>
+          <div class="setting-row">
+            <div><h3>文生视频（/视频）</h3><p>最吃显存与时间：8G 机器上一条 74~281 秒。</p></div>
+            <label class="switch-wrapper"><input type="checkbox" id="features_t2v" class="ios-switch" /></label>
+          </div>
+          <div class="setting-row">
+            <div><h3>图生视频（/图生视频）</h3><p>让一张图动起来（发两张图=首尾帧），同样吃显存。</p></div>
+            <label class="switch-wrapper"><input type="checkbox" id="features_i2v" class="ios-switch" /></label>
+          </div>
+          <div class="setting-row">
+            <div><h3>看图反推提示词（/反推）</h3><p>严格说不是生成功能，但同样会调用视觉模型，所以一并做成开关。</p></div>
+            <label class="switch-wrapper"><input type="checkbox" id="features_reverse_prompt" class="ios-switch" /></label>
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="card-header">
             <div><h3>无指令出图</h3><p>让对话模型在用户说「帮我画一张…」时直接调用绘图能力，无需输入指令。</p></div>
           </div>
           <div class="setting-row">

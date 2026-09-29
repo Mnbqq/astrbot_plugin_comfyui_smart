@@ -37,7 +37,7 @@ from .workflow_templates import (
 
 PLUGIN_NAME = "astrbot_plugin_comfyui_smart"
 # 与 metadata.yaml 的 version 保持一致（tests/test_logic.py 会校验二者不漂移）
-PLUGIN_VERSION = "0.20.0"
+PLUGIN_VERSION = "0.21.0"
 
 # 机器档位：决定分辨率/帧数/步数上限。auto 时按显存判定（内存太小再降一档）。
 MACHINE_PRESETS = {
@@ -94,6 +94,33 @@ def resolve_machine_tier(configured: str, vram_gb: float = 0.0, ram_gb: float = 
 # 名字里带这些词的视频权重通常是「加速/蒸馏」版（步数少、CFG 1 单遍），
 # 低配机器上默认挑它们能省几倍时间（实测 Turbo 4 步 74 秒 vs 原版 20 步 281 秒）
 SPEED_HINTS = ("turbo", "lightning", "distill", "schnell", "flash", "lite", "fast")
+
+# 功能开关：默认**只开文生图**，其余按需开启（缺省组也按这份默认值处理，
+# 这样老配置升级上来同样是「只开文生图」，与配置页显示一致）
+FEATURE_DEFAULTS = {
+    "t2i": True,
+    "i2i": False,
+    "outpaint": False,
+    "inpaint": False,
+    "t2v": False,
+    "i2v": False,
+    "reverse_prompt": False,
+}
+# 开关名 -> (界面上的中文名, 对应指令)，用于「未开启」时的提示
+FEATURE_LABELS = {
+    "t2i": ("文生图", "/画图"),
+    "i2i": ("图生图", "/图生图"),
+    "outpaint": ("扩图", "/扩图"),
+    "inpaint": ("局部重绘", "配置页的局部重绘"),
+    "t2v": ("文生视频", "/视频"),
+    "i2v": ("图生视频", "/图生视频"),
+    "reverse_prompt": ("看图反推提示词", "/反推"),
+}
+
+
+class FeatureDisabledError(ComfyUIError):
+    """功能开关关掉了（继承 ComfyUIError，好让各指令的既有错误分支原样兜住）。"""
+
 
 # 视频架构白名单：视频用途挑底模、以及「像不像视频模型」的校验都用它
 VIDEO_ARCHES = frozenset({"wan", "wan22", "ltxv", "video"})
@@ -598,6 +625,7 @@ class ComfyUISmartPlugin(Star):
             # 多后端：每个后端的在线/队列/熔断情况
             "backends": self.pool.snapshot(),
         }
+        info["features"] = self.enabled_features()
         # 机器档位（配置页状态面板与 /状态 都会显示）：探测失败不影响状态返回
         try:
             machine = await self._machine()
@@ -857,6 +885,50 @@ class ComfyUISmartPlugin(Star):
             "pool": pool,
         }
 
+    def feature_enabled(self, name: str) -> bool:
+        """该功能是否开启（缺省按 FEATURE_DEFAULTS：只开文生图）。
+
+        Args:
+            name: 开关名（t2i/i2i/outpaint/inpaint/t2v/i2v/reverse_prompt）。
+
+        Returns:
+            True 表示可用。
+        """
+        conf = self.config.get("features") or {}
+        value = conf.get(name, FEATURE_DEFAULTS.get(name, True))
+        if isinstance(value, str):      # 手改 JSON 写成 "false"/"off" 也要认
+            return value.strip().lower() not in ("", "0", "false", "off", "no")
+        return bool(value)
+
+    def require_feature(self, name: str) -> None:
+        """功能没开就抛 FeatureDisabledError（消息里写清去哪打开）。
+
+        Raises:
+            FeatureDisabledError: 该功能被关闭。
+        """
+        if self.feature_enabled(name):
+            return
+        label, how = FEATURE_LABELS.get(name, (name, ""))
+        try:
+            message = self.t("error.feature_disabled", feature=label, how=how)
+        except Exception:      # noqa: BLE001 - 翻译缺失也要给出可操作提示
+            message = f"🚫 功能「{label}」当前未开启，请到插件配置的功能开关里打开。"
+        raise FeatureDisabledError(message)
+
+    def _feature_check(self, name: str) -> str:
+        """功能没开时返回提示文案，开着返回空串（供各指令在最早处拦截）。"""
+        if self.feature_enabled(name):
+            return ""
+        label, how = FEATURE_LABELS.get(name, (name, ""))
+        try:
+            return self.t("error.feature_disabled", feature=label, how=how)
+        except Exception:      # noqa: BLE001
+            return f"🚫 功能「{label}」当前未开启，请到插件配置的功能开关里打开。"
+
+    def enabled_features(self) -> list[str]:
+        """已开启功能的展示名列表（给 /帮助 与状态面板用）。"""
+        return [FEATURE_LABELS.get(k, (k, ""))[0] for k in FEATURE_DEFAULTS if self.feature_enabled(k)]
+
     async def _machine(self, client=None) -> dict:
         """取当前机器档位（按配置 + 显存/内存自动判定，只探测一次）。
 
@@ -1050,6 +1122,8 @@ class ComfyUISmartPlugin(Star):
         preset = preset or {}
         # 本次是否让 LLM 改写：行内 --llm / --no-llm 优先于配置
         purpose_preview = force_purpose or ("i2i" if source_image else "t2i")
+        # 功能开关：所有生成能力（含 LLM 无指令出图）都从这一个入口走
+        self.require_feature(purpose_preview)
         is_video = purpose_preview in ("t2v", "i2v")
         flag_llm = str(opts.get("llm") or "").strip() not in ("", "0", "false")
         flag_no_llm = str(opts.get("no_llm") or "").strip() not in ("", "0", "false")
@@ -1714,6 +1788,11 @@ class ComfyUISmartPlugin(Star):
             yield event.plain_result(reason)
             return
 
+        blocked = self._feature_check("t2i")
+        if blocked:
+            yield event.plain_result(blocked)
+            return
+
         raw = _extract_command_payload(event, "画图", "绘图", "draw", "生成图片")
         desc, opts = parse_inline_params(raw)
         if not desc:
@@ -2129,6 +2208,7 @@ class ComfyUISmartPlugin(Star):
         lines.append("　连接：✅ 正常" if info["online"] else f"　连接：❌ {info.get('error', '不可用')}")
         if info.get("device"):
             lines.append(f"　设备：{info['device']}")
+        lines.append("　功能：" + ("、".join(self.enabled_features()) or "（无）"))
         if info.get("machine"):
             mach = info["machine"]
             lines.append(
@@ -2219,6 +2299,11 @@ class ComfyUISmartPlugin(Star):
             yield event.plain_result(reason)
             return
 
+        blocked = self._feature_check("i2i")
+        if blocked:
+            yield event.plain_result(blocked)
+            return
+
         raw = _extract_command_payload(event, "图生图", "改图", "i2i", "重绘")
         desc, opts = parse_inline_params(raw)
 
@@ -2268,6 +2353,11 @@ class ComfyUISmartPlugin(Star):
             yield event.plain_result(reason)
             return
 
+        blocked = self._feature_check("outpaint")
+        if blocked:
+            yield event.plain_result(blocked)
+            return
+
         raw = _extract_command_payload(event, "扩图", "外扩", "outpaint", "扩画")
         desc, opts = parse_inline_params(raw)
 
@@ -2315,6 +2405,11 @@ class ComfyUISmartPlugin(Star):
         )
         if not allowed:
             yield event.plain_result(reason)
+            return
+
+        blocked = self._feature_check("i2v")
+        if blocked:
+            yield event.plain_result(blocked)
             return
 
         raw = _extract_command_payload(event, "图生视频", "首尾帧", "i2v", "让图动起来")
@@ -2369,6 +2464,11 @@ class ComfyUISmartPlugin(Star):
             yield event.plain_result(reason)
             return
 
+        blocked = self._feature_check("t2v")
+        if blocked:
+            yield event.plain_result(blocked)
+            return
+
         raw = _extract_command_payload(event, "视频", "生成视频", "文生视频", "video", "t2v")
         desc, opts = parse_inline_params(raw)
         if not desc:
@@ -2416,6 +2516,11 @@ class ComfyUISmartPlugin(Star):
         )
         if not allowed:
             yield event.plain_result(reason)
+            return
+
+        blocked = self._feature_check("reverse_prompt")
+        if blocked:
+            yield event.plain_result(blocked)
             return
 
         raw = _extract_command_payload(event, "反推", "反推提示词", "识图", "img2prompt")
@@ -2518,7 +2623,11 @@ class ComfyUISmartPlugin(Star):
     @filter.command("帮助", alias={"comfy帮助"})
     async def cmd_help(self, event: AstrMessageEvent):
         """查看帮助。"""
-        yield event.plain_result(self.t("cmd.help.body"))
+        text = self.t("cmd.help.body")
+        opened = self.enabled_features()
+        text += "\n" + self.t("cmd.help.features",
+                             **{"list": "、".join(opened) if opened else "（无）"})
+        yield event.plain_result(text)
 
     # ------------------------------------------------------------------ #
     # 无指令出图（可在配置中开关）

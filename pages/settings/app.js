@@ -13,6 +13,13 @@ const PLUGIN_NAME = 'astrbot_plugin_comfyui_smart';
 
 /* 字段定义：id -> 配置路径与类型 */
 const FIELDS = [
+  { id: 'features_t2i', path: ['features', 't2i'], kind: 'bool' },
+  { id: 'features_i2i', path: ['features', 'i2i'], kind: 'bool' },
+  { id: 'features_outpaint', path: ['features', 'outpaint'], kind: 'bool' },
+  { id: 'features_inpaint', path: ['features', 'inpaint'], kind: 'bool' },
+  { id: 'features_t2v', path: ['features', 't2v'], kind: 'bool' },
+  { id: 'features_i2v', path: ['features', 'i2v'], kind: 'bool' },
+  { id: 'features_reverse_prompt', path: ['features', 'reverse_prompt'], kind: 'bool' },
   { id: 'general_language', path: ['general', 'language'], kind: 'select',
     options: ['auto', 'zh-CN', 'en-US'] },
   { id: 'server_free_before_switch', path: ['server', 'free_before_switch'], kind: 'bool' },
@@ -556,6 +563,8 @@ async function loadStatus() {
       ['服务地址', info.base_url || '—'],
       ['连接状态', info.online ? '✅ 正常' : ('❌ ' + (info.error || '不可用'))],
       ['设备', info.device || '—'],
+      ['已开启功能', (info.features && info.features.length)
+        ? info.features.join('、') : '（无）'],
       ['机器档位', info.machine
         ? (info.machine.label || info.machine.tier)
           + '（上限 ' + Math.round((info.machine.max_pixels || 0) / 10000) + ' 万像素 · '

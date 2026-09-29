@@ -858,8 +858,13 @@ def main() -> int:
     ctx = Context()
     from astrbot.api import AstrBotConfig
 
+    ALL_FEATURES = {"t2i": True, "i2i": True, "outpaint": True, "inpaint": True,
+                    "t2v": True, "i2v": True, "reverse_prompt": True}
     cfg = AstrBotConfig({"server": {"base_url": "127.0.0.1:8188"},
-                         "llm_settings": {"enable_prompt_optimize": False}})
+                         "llm_settings": {"enable_prompt_optimize": False},
+                         # 工装默认全开，免得既有用例被「默认只开文生图」挡住；
+                         # 开关本身的行为在下面的专章里单独测。
+                         "features": dict(ALL_FEATURES)})
     plugin = m.ComfyUISmartPlugin(ctx, cfg)
     routes = [r[0] for r in ctx.registered_web_apis]
     # 回归守卫：曾经因为漏调 register_pages_routes，Pages 的每个请求都被
@@ -4721,6 +4726,81 @@ def main() -> int:
           status.get("online") is True and status.get("device") == "RTX 5060"
           and isinstance(status.get("templates"), list),
           {k: status.get(k) for k in ("online", "device", "templates")})
+    plugin.config["video"] = {}
+
+    print("\n=== 生成功能开关（默认只开文生图，v0.21.0）===")
+    check("缺省（配置里没有 features 组）时只开文生图",
+          plugin.feature_enabled("t2i") is True,
+          None)
+    plugin_no_feat = m.ComfyUISmartPlugin(Context(), AstrBotConfig({
+        "server": {"base_url": "127.0.0.1:8188"}, "llm_settings": {"enable_prompt_optimize": False}}))
+    defaults = {k: plugin_no_feat.feature_enabled(k) for k in m.FEATURE_DEFAULTS}
+    check("老配置升级上来同样是「只开文生图」（与面板显示一致）",
+          defaults == {"t2i": True, "i2i": False, "outpaint": False, "inpaint": False,
+                       "t2v": False, "i2v": False, "reverse_prompt": False},
+          defaults)
+    check("手改 JSON 写成字符串 false/off 也认",
+          (m.ComfyUISmartPlugin(Context(), AstrBotConfig({
+              "features": {"t2i": "false", "i2i": "off", "t2v": "true"}})).feature_enabled("t2i")
+           is False
+           and m.ComfyUISmartPlugin(Context(), AstrBotConfig({
+               "features": {"t2v": "true"}})).feature_enabled("t2v") is True),
+          None)
+    check("已开启功能列表只含开着的那几项",
+          plugin_no_feat.enabled_features() == ["文生图"], plugin_no_feat.enabled_features())
+
+    # 关掉视频：/视频 必须给出可操作提示（而不是默默失败）
+    plugin.config["features"] = {"t2i": True}
+    sess_off = api.aiohttp.ClientSession()
+    plugin.comfy._session = sess_off
+    plugin.comfy.invalidate_model_cache()
+    out_off = asyncio.run(drive(plugin.cmd_video(
+        AstrMessageEvent(sender_id="9500", message_str="/视频 一只猫在草地上跑"))))
+    check("关掉文生视频后 /视频 明确说不可用，并指出去哪打开",
+          "未开启" in out_off[0]["text"] and "功能开关" in out_off[0]["text"]
+          and "文生视频" in out_off[0]["text"],
+          out_off[0]["text"].splitlines()[0][:60])
+    check("被拦截时不向 ComfyUI 提交任何任务", not any(
+        paths == "/prompt" for _m, paths, _kw in sess_off.calls),
+        [c[1] for c in sess_off.calls])
+
+    # 关掉图生图：带图也拦
+    out_i2i = asyncio.run(drive(plugin.cmd_img2img(
+        AstrMessageEvent(sender_id="9501", message_str="/图生图 换成红色衣服"))))
+    check("关掉图生图后 /图生图 同样被拦（带图也一样）",
+          "未开启" in out_i2i[0]["text"] and "图生图" in out_i2i[0]["text"],
+          out_i2i[0]["text"].splitlines()[0][:60])
+
+    # 关掉反推：单独提示
+    out_rev = asyncio.run(drive(plugin.cmd_reverse_prompt(
+        AstrMessageEvent(sender_id="9502", message_str="/反推"))))
+    check("关掉反推后 /反推 给出提示（而不是「请发图片」）",
+          "未开启" in out_rev[0]["text"] and "反推" in out_rev[0]["text"],
+          out_rev[0]["text"].splitlines()[0][:60])
+
+    # 直接调用 generate() 也拦（LLM 无指令出图走同一条路）
+    try:
+        asyncio.run(plugin.generate(user_desc="一只猫", opts={}, event=None,
+                                    force_purpose="t2v"))
+        gate_raised = None
+    except m.FeatureDisabledError as exc:
+        gate_raised = str(exc)
+    check("直接调 generate() 也拦得住（LLM 无指令出图走同一入口）",
+          gate_raised is not None and "文生视频" in gate_raised,
+          (gate_raised or "")[:50])
+
+    # 打开视频后恢复正常
+    plugin.config["features"] = {"t2i": True, "t2v": True}
+    check("打开开关后该功能立即可用",
+          plugin.feature_enabled("t2v") is True and plugin.feature_enabled("i2v") is False,
+          None)
+
+    # /帮助 与 /状态 都要告诉用户开了哪些
+    out_help = asyncio.run(drive(plugin.cmd_help(AstrMessageEvent(message_str="/帮助"))))
+    check("/帮助 列出已开启的功能",
+          "已开启的功能" in out_help[0]["text"] and "文生图" in out_help[0]["text"],
+          out_help[0]["text"].splitlines()[-1][:40])
+    plugin.config["features"] = dict(ALL_FEATURES)
     plugin.config["video"] = {}
 
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")

@@ -148,5 +148,7 @@
   "ui.general.title": "General",
   "ui.general.language": "Language",
   "llm.video_system": "You are an AI video prompt engineer. Rewrite the user's description as a **video** prompt, not image tags.\nRules:\n1. Always describe **motion**: who does what and how it changes (e.g. \"slowly turns her head\").\n2. Give exactly **one** camera move: static / slow push-in / lateral pan / slight handheld.\n3. Cover subject + outfit, then environment, then lighting/mood - one or two clauses each, no tag spam.\n4. **Keep the user's language**: if the user writes Chinese, answer in Chinese (Wan understands Chinese natively).\n5. Length: 25-50 English words (or 40-80 Chinese characters).\n6. Never use words like \"static\", \"still\", \"video\", \"frame\", and never mention models or settings.\n7. Output JSON: {\"positive\": \"...\", \"negative\": \"one generic negative phrase or empty string\"}; negative should only cover quality/structure (watermark, deformed limbs, blurry).\nOutput JSON only, no explanation.",
-  "llm.video_user": "User description: {desc}\nTask type: {kind}\nRequirements: {hint}\nPlanned duration ~{seconds}s at {fps} fps.\nDefault negative prompt (for reference, do not copy): {negative}"
+  "llm.video_user": "User description: {desc}\nTask type: {kind}\nRequirements: {hint}\nPlanned duration ~{seconds}s at {fps} fps.\nDefault negative prompt (for reference, do not copy): {negative}",
+  "error.feature_disabled": "🚫 The \"{feature}\" feature is currently disabled.\n  Enable it in AstrBot → Plugins → ComfyUI Smart Draw → **Feature switches** (command: {how}).",
+  "cmd.help.features": "  Enabled features: {list}"
 }

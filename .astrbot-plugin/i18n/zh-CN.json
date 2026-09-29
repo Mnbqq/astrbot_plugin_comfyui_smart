@@ -148,5 +148,7 @@
   "ui.general.title": "通用",
   "ui.general.language": "语言",
   "llm.video_system": "你是 AI 视频提示词工程师。把用户的描述改写成**视频**提示词，而不是图片 tag。\n规则：\n1. 必须写清**动作**：谁在做什么、动作怎么变化（例如「缓缓回头」「身体轻轻晃动」「转头看向镜头」）。\n2. 写**一个**镜头运动：固定镜头 / 缓缓推近 / 横向平移 / 轻微手持感。\n3. 画面要素按「主体 + 外貌服装 → 环境 → 光影氛围」各一两句，别堆砌形容词。\n4. **保持用户的语言**：用户写中文就输出中文（Wan 系列原生懂中文）。\n5. 长度 40~80 个汉字（或 25~50 个英文词）。\n6. 不要写「静止」「不动」「视频」「帧」这类词，也不要点名模型或参数。\n7. 输出 JSON：{\"positive\": \"改写后的提示词\", \"negative\": \"一句通用负面词或空串\"}；negative 只给画质/结构类（如水印、畸形肢体、模糊），可用中文。\n只输出 JSON，不要解释。",
-  "llm.video_user": "用户描述：{desc}\n本次任务：{kind}\n要求：{hint}\n计划时长约 {seconds} 秒、{fps} fps。\n默认负面词（可参考，不要照抄）：{negative}"
+  "llm.video_user": "用户描述：{desc}\n本次任务：{kind}\n要求：{hint}\n计划时长约 {seconds} 秒、{fps} fps。\n默认负面词（可参考，不要照抄）：{negative}",
+  "error.feature_disabled": "🚫 功能「{feature}」当前未开启。\n　到 AstrBot → 插件 → ComfyUI 智能绘图 → **功能开关**，打开「{feature}」后重试（指令：{how}）。",
+  "cmd.help.features": "　已开启的功能：{list}"
 }
