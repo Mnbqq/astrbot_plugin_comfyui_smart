@@ -351,6 +351,30 @@
         "type": "bool",
         "hint": "关掉后只在聊天里给出本地保存路径（有些平台发不了视频时用）。",
         "default": true
+      },
+      "machine": {
+        "description": "机器档位",
+        "type": "string",
+        "options": [
+          "auto",
+          "low",
+          "mid",
+          "high"
+        ],
+        "default": "auto",
+        "hint": "档位决定分辨率/帧数/步数的上限，避免把低配机器跑爆。auto=按显存自动判定（≤10G→low，12~20G→mid，≥24G→high；内存 <20G 再降一档）。低配示例：8G 显存/16G 内存 → 480p、≤97 帧、蒸馏模型 ≤12 步；标配示例：12~20G 显存/32G 内存 → 720p、≤121 帧、≤30 步；高配示例：≥24G 显存/64G 内存 → 720p、≤161 帧、≤50 步。想突破上限就手动选更高档（能不能跑得动自己负责）。"
+      },
+      "t2v_model": {
+        "description": "文生视频默认模型",
+        "type": "string",
+        "default": "",
+        "hint": "不写 --model 时用这个（填文件名，可只写一部分关键字）。留空=自动挑第一个视频权重。低配推荐 Wan2_2-TI2V-5B-Turbo-Q4_K_M.gguf（快）或 Wan2.2-TI2V-5B-Q4_K_M.gguf（质量）；标配推荐 wan2.2_ti2v_5B_fp16.safetensors。模型放 diffusion_models/ 或 unet_gguf/。"
+      },
+      "i2v_model": {
+        "description": "图生视频默认模型",
+        "type": "string",
+        "default": "",
+        "hint": "不写 --model 时用这个。Wan 2.2 TI2V-5B 是文生/图生共用一个模型，所以低配上两个可以填同一个；若你另有 I2V 权重（如 wan2.2_i2v_* 或 Wan2.1 I2V），填它即可。留空=自动挑。"
       }
     }
   },

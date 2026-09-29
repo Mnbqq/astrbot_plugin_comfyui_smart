@@ -3962,7 +3962,7 @@ def main() -> int:
         return sess
 
     plugin.config["video"] = {"default_seconds": 4, "default_fps": 16, "max_seconds": 10,
-                              "send_video": True}
+                              "send_video": True, "machine": "high"}
     sess_gguf = gguf_session(pid="gguf-1")
     ev_gguf = AstrMessageEvent(sender_id="8008", message_str="/视频 一只猫在草地上奔跑 --seconds 5")
     out_gguf = asyncio.run(drive(plugin.cmd_video(ev_gguf)))
@@ -3974,6 +3974,7 @@ def main() -> int:
           submitted_gguf is not None and submitted_gguf["1"]["class_type"] == "UnetLoaderGGUF"
           and submitted_gguf["6"]["class_type"] == "Wan22ImageToVideoLatent",
           sorted({n["class_type"] for n in (submitted_gguf or {}).values()}))
+    # 注：这条要在「高配档」下测原生节奏；低配档会把 121 帧截到 97（见下面的档位测试）
     check("秒数换算成帧数（5 秒 → 原生 24fps 的 121 帧）",
           (submitted_gguf or {}).get("6", {}).get("inputs", {}).get("length") == 121,
           (submitted_gguf or {}).get("6", {}).get("inputs"))
@@ -4395,6 +4396,119 @@ def main() -> int:
           (submitted_ltxv or {}).get("7", {}).get("inputs", {}).get("length") == 97
           and (submitted_ltxv or {}).get("12", {}).get("inputs", {}).get("fps") == 25.0,
           (submitted_ltxv or {}).get("7", {}).get("inputs"))
+
+    print("\n=== 机器档位 + 按功能配视频模型（v0.17.0）===")
+    # 档位判定
+    check("档位判定：显存 ≤10G → low，12~20G → mid，≥24G → high",
+          (m.resolve_machine_tier("auto", 8, 16), m.resolve_machine_tier("auto", 16, 32),
+           m.resolve_machine_tier("auto", 24, 64)) == ("low", "mid", "high"),
+          [m.resolve_machine_tier("auto", v, 64) for v in (8, 16, 24)])
+    check("内存不足时降一档（16G 显存 + 16G 内存 → low）",
+          m.resolve_machine_tier("auto", 16, 16) == "low"
+          and m.resolve_machine_tier("auto", 24, 16) == "mid",
+          (m.resolve_machine_tier("auto", 16, 16), m.resolve_machine_tier("auto", 24, 16)))
+    check("探测不到显存时按最低档（保守）",
+          m.resolve_machine_tier("auto", 0, 0) == "low", m.resolve_machine_tier("auto", 0, 0))
+    check("手动指定档位优先于自动判定",
+          m.resolve_machine_tier("high", 8, 16) == "high"
+          and m.resolve_machine_tier("low", 48, 128) == "low", True)
+    check("三档的上限符合文档（low 480p/97 帧/12 步；mid 720p/121 帧/30 步；high 720p/161 帧/50 步）",
+          (m.MACHINE_PRESETS["low"]["max_pixels"], m.MACHINE_PRESETS["low"]["max_length"],
+           m.MACHINE_PRESETS["low"]["steps_cap"]) == (832 * 480, 97, 12)
+          and (m.MACHINE_PRESETS["mid"]["max_pixels"], m.MACHINE_PRESETS["mid"]["max_length"],
+               m.MACHINE_PRESETS["mid"]["steps_cap"]) == (1280 * 720, 121, 30)
+          and (m.MACHINE_PRESETS["high"]["max_length"], m.MACHINE_PRESETS["high"]["steps_cap"])
+          == (161, 50),
+          {k: (v["max_pixels"], v["max_length"], v["steps_cap"]) for k, v in m.MACHINE_PRESETS.items()})
+
+    # _machine()：读得到显存就按显存判，读不到按 low
+    def machine_with(vram_gb, ram_gb, conf="auto"):
+        sess = api.aiohttp.ClientSession()
+        sess.route("GET", "/system_stats", api.aiohttp.ClientResponse(200, payload={
+            "system": {"ram_total": int(ram_gb * 1024 ** 3)},
+            "devices": [{"vram_total": int(vram_gb * 1024 ** 3), "vram_free": 0}]}))
+        plugin.comfy._session = sess
+        plugin._machine_tier = ""
+        plugin.config["video"] = {"machine": conf}
+        return asyncio.run(plugin._machine())
+
+    got_low = machine_with(8, 16)
+    got_mid = machine_with(16, 32)
+    check("自动探测显存决定档位（8G→low，16G/32G→mid）",
+          got_low["tier"] == "low" and got_mid["tier"] == "mid",
+          (got_low["tier"], got_mid["tier"]))
+    check("档位带出对应的上限值（low 的像素预算 832x480）",
+          got_low["max_pixels"] == 832 * 480 and got_low["steps_cap"] == 12,
+          (got_low["max_pixels"], got_low["steps_cap"]))
+
+    # 按功能配模型：t2v_model / i2v_model
+    def video_conf_session(t2v="", i2v="", pool=("Wan2_2-TI2V-5B-Turbo-Q4_K_M.gguf",
+                                                 "Wan2.2-TI2V-5B-Q4_K_M.gguf")):
+        sess = api.aiohttp.ClientSession()
+        sess.route("GET", "/models", api.aiohttp.ClientResponse(
+            200, payload=["checkpoints", "unet_gguf"]))
+        sess.route("GET", "/models/unet_gguf", api.aiohttp.ClientResponse(200, payload=list(pool)))
+        sess.route("GET", "/models/checkpoints", api.aiohttp.ClientResponse(200, payload=[]))
+        sess.route("GET", "/system_stats", api.aiohttp.ClientResponse(200, payload={
+            "system": {"ram_total": 16 * 1024 ** 3},
+            "devices": [{"vram_total": 8 * 1024 ** 3, "vram_free": 0}]}))
+        sess.route("GET", "/queue", api.aiohttp.ClientResponse(
+            200, payload={"queue_running": [], "queue_pending": []}))
+        sess.route("POST", "/prompt", api.aiohttp.ClientResponse(200, payload={"prompt_id": "vm-1"}))
+        sess.route("POST", "/free", api.aiohttp.ClientResponse(200, payload={}))
+        sess.route("GET", "/history/vm-1", api.aiohttp.ClientResponse(200, payload={"vm-1": {
+            "status": {"status_str": "success", "completed": True},
+            "outputs": {"11": {"images": [{"filename": "v.mp4", "type": "output"}],
+                               "animated": [True]}}}}))
+        sess.route("GET", "/view", api.aiohttp.ClientResponse(200, text="MP4"))
+        plugin.comfy._session = sess
+        plugin.comfy.invalidate_model_cache()
+        plugin._machine_tier = ""
+        plugin.config["video"] = {"machine": "low", "t2v_model": t2v, "i2v_model": i2v,
+                                  "send_video": True, "default_seconds": 4, "default_fps": 16,
+                                  "max_seconds": 10}
+        plugin.config["permission"] = {}
+        plugin.permission.reload({})
+        return sess
+
+    def submitted_model(sess):
+        for method, path, kw in sess.calls:
+            if method == "POST" and path == "/prompt":
+                graph = kw["json"]["prompt"]
+                for node in graph.values():
+                    if node.get("class_type") == "UnetLoaderGGUF":
+                        return node["inputs"]["unet_name"]
+        return None
+
+    s_t2v_conf = video_conf_session(t2v="Wan2.2-TI2V-5B-Q4_K_M.gguf")
+    asyncio.run(drive(plugin.cmd_video(AstrMessageEvent(sender_id="9200", message_str="/视频 一只猫"))))
+    check("文生视频用配置里的 video.t2v_model（而不是清单里第一个）",
+          submitted_model(s_t2v_conf) == "Wan2.2-TI2V-5B-Q4_K_M.gguf",
+          submitted_model(s_t2v_conf))
+
+    s_fallback = video_conf_session(t2v="不存在的模型.safetensors")
+    asyncio.run(drive(plugin.cmd_video(AstrMessageEvent(sender_id="9201", message_str="/视频 一只猫"))))
+    # 回退时挑的是「清单里第一个视频权重」（清单会按名字排序，所以别写死具体是哪个）
+    check("配置的模型不存在时回退到自动挑选（不报错，仍出片）",
+          submitted_model(s_fallback) in ("Wan2_2-TI2V-5B-Turbo-Q4_K_M.gguf",
+                                          "Wan2.2-TI2V-5B-Q4_K_M.gguf"),
+          submitted_model(s_fallback))
+
+    # 档位上限：低配档把 5 秒（121 帧）截到 97 帧、步数夹到 12
+    s_cap = video_conf_session(t2v="Wan2.2-TI2V-5B-Q4_K_M.gguf")
+    asyncio.run(drive(plugin.cmd_video(AstrMessageEvent(
+        sender_id="9202", message_str="/视频 一只猫 --seconds 5 --steps 30"))))
+    graph_cap = None
+    for method, path, kw in s_cap.calls:
+        if method == "POST" and path == "/prompt":
+            graph_cap = kw["json"]["prompt"]
+    check("低配档把帧数截到 97（5 秒 → 4 秒）",
+          (graph_cap or {}).get("6", {}).get("inputs", {}).get("length") == 97,
+          (graph_cap or {}).get("6", {}).get("inputs"))
+    check("低配档把步数夹到 12",
+          (graph_cap or {}).get("8", {}).get("inputs", {}).get("steps") == 12,
+          (graph_cap or {}).get("8", {}).get("inputs"))
+    plugin.config["video"] = {}
 
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）

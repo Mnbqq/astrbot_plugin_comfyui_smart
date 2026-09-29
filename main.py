@@ -37,7 +37,59 @@ from .workflow_templates import (
 
 PLUGIN_NAME = "astrbot_plugin_comfyui_smart"
 # 与 metadata.yaml 的 version 保持一致（tests/test_logic.py 会校验二者不漂移）
-PLUGIN_VERSION = "0.16.0"
+PLUGIN_VERSION = "0.17.0"
+
+# 机器档位：决定分辨率/帧数/步数上限。auto 时按显存判定（内存太小再降一档）。
+MACHINE_PRESETS = {
+    "low": {
+        "label": "低配（≤10G 显存 / ≤16G 内存）",
+        "max_pixels": 832 * 480,      # 480p
+        "max_length": 97,             # 约 4 秒 @24fps
+        "steps_cap": 12,              # 蒸馏/少步模型够用
+    },
+    "mid": {
+        "label": "标配（12~20G 显存 / 32G 内存）",
+        "max_pixels": 1280 * 720,     # 720p
+        "max_length": 121,            # 5 秒 @24fps
+        "steps_cap": 30,
+    },
+    "high": {
+        "label": "高配（≥24G 显存 / ≥64G 内存）",
+        "max_pixels": 1280 * 720,
+        "max_length": 161,            # 6.7 秒 @24fps
+        "steps_cap": 50,
+    },
+}
+
+
+def resolve_machine_tier(configured: str, vram_gb: float = 0.0, ram_gb: float = 0.0) -> str:
+    """决定用哪一档：配置显式指定优先，否则按显存（内存太小再降一档）。
+
+    Args:
+        configured: 配置里的 video.machine（auto/low/mid/high）。
+        vram_gb: 服务端显存总量（GB，取不到给 0）。
+        ram_gb: 服务端内存总量（GB，取不到给 0）。
+
+    Returns:
+        "low" / "mid" / "high"。
+    """
+    tier = str(configured or "auto").strip().lower()
+    if tier in MACHINE_PRESETS:
+        return tier
+    if vram_gb <= 0:
+        # 探测不到显存/内存时按**最低档**处理：宁可保守（少一档分辨率），
+        # 也不要在不认识的机器上按高配去跑
+        return "low"
+    if vram_gb <= 10:
+        tier = "low"
+    elif vram_gb < 22:
+        tier = "mid"
+    else:
+        tier = "high"
+    if 0 < ram_gb <= 20 and tier != "low":                # 内存不够再降一档
+        tier = "low" if tier == "mid" else "mid"
+    return tier
+
 
 # 视频架构白名单：视频用途挑底模、以及「像不像视频模型」的校验都用它
 VIDEO_ARCHES = frozenset({"wan", "wan22", "ltxv", "video"})
@@ -224,6 +276,8 @@ class ComfyUISmartPlugin(Star):
         )
         # 上一次用过的大模型家族（换家族前会先 /free，避免内存顶爆）
         self._last_big_arch = ""
+        # 机器档位缓存（只探测一次：显存/内存总量）
+        self._machine_tier = ""
         self.llm = LLMService(context, self.config, translate=self.t)
         # 后端池：单后端时等价于原来的单客户端；配了多个则按负载分配
         self._retired_pools: list[BackendPool] = []
@@ -618,7 +672,24 @@ class ComfyUISmartPlugin(Star):
                     pool = pools.get(folder, [])
             model = matched
         if not model and purpose in ("t2v", "i2v"):
-            # 视频任务：没指定模型时**先看 unet 类目录**（diffusion_models / unet_gguf）。
+            # 1) 配置里按功能指定的默认模型（video.t2v_model / video.i2v_model）
+            video_conf = self.config.get("video", {}) or {}
+            conf_key = "t2v_model" if purpose == "t2v" else "i2v_model"
+            preferred = str(video_conf.get(conf_key) or "").strip()
+            if preferred:
+                for folder_name, files in unet_pools:
+                    hit = _match_model(preferred, files)
+                    if hit:
+                        model, folder, pool = hit, folder_name, files
+                        break
+                else:
+                    hit = _match_model(preferred, checkpoints)
+                    if hit:
+                        model, folder, pool = hit, "checkpoints", checkpoints
+                    else:
+                        logger.warning("配置的视频模型 %r 在模型清单里找不到，改用自动挑选", preferred)
+        if not model and purpose in ("t2v", "i2v"):
+            # 2) 自动挑：视频任务**先看 unet 类目录**（diffusion_models / unet_gguf）。
             # checkpoints 里几乎不会有视频权重，回退到第一个 checkpoint 只会得到
             # 「拿图片底模当视频底模」的必然失败（真机实测过）。
             video_pool = [
@@ -750,6 +821,35 @@ class ComfyUISmartPlugin(Star):
             "arch": arch,
             "pool": pool,
         }
+
+    async def _machine(self, client=None) -> dict:
+        """取当前机器档位（按配置 + 显存/内存自动判定，只探测一次）。
+
+        Args:
+            client: 可选的 ComfyUI 客户端（多后端时用当前这台）。
+
+        Returns:
+            MACHINE_PRESETS 里的一条，外加 "tier" 键。
+        """
+        conf = (self.config.get("video", {}) or {}).get("machine", "auto")
+        tier = str(conf or "auto").strip().lower()
+        if tier in MACHINE_PRESETS:
+            return {"tier": tier, **MACHINE_PRESETS[tier]}
+        if not self._machine_tier:
+            vram_gb = ram_gb = 0.0
+            try:
+                stats = await (client or self.comfy).ping()
+                devices = stats.get("devices") or []
+                if devices:
+                    vram_gb = float(devices[0].get("vram_total") or 0) / 1024 ** 3
+                ram_gb = float((stats.get("system") or {}).get("ram_total") or 0) / 1024 ** 3
+            except Exception as exc:      # noqa: BLE001 - 探测失败就按保守档
+                logger.debug("探测显存失败，按保守档处理：%s", exc)
+            self._machine_tier = resolve_machine_tier("auto", vram_gb, ram_gb)
+            logger.info("机器档位自动判定：%s（显存 %.1fG / 内存 %.1fG）→ %s",
+                        self._machine_tier, vram_gb, ram_gb,
+                        MACHINE_PRESETS[self._machine_tier]["label"])
+        return {"tier": self._machine_tier, **MACHINE_PRESETS[self._machine_tier]}
 
     def _resolve_sampling(
         self, arch: str, opt: dict, opts: dict, draw_conf: dict
@@ -975,6 +1075,12 @@ class ComfyUISmartPlugin(Star):
         )
         template: WorkflowTemplate = selection["template"]
         sampling = self._resolve_sampling(selection["arch"], opt, opts, draw_conf)
+        # 机器档位：步数上限（低配机器少步模型就够，别让 30 步把等待拖长）
+        machine = await self._machine()
+        steps_cap = int(machine.get("steps_cap") or 0)
+        if steps_cap and int(sampling.get("steps") or 0) > steps_cap:
+            logger.info("机器档位 %s：步数 %s → %s", machine["tier"], sampling["steps"], steps_cap)
+            sampling["steps"] = steps_cap
 
         # 图生图 / 局部重绘：尺寸按原图比例（受 max_side 限制），重绘幅度可调
         # 扩图：尺寸由「原图 + 四周扩展量」决定（节点自己会算，这里只用于汇报与限额）
@@ -988,7 +1094,7 @@ class ComfyUISmartPlugin(Star):
             video_conf = self.config.get("video", {}) or {}
             video_info = resolve_video_params(opts, video_conf)
             video_info = apply_native_video_defaults(
-                video_info, opts, video_conf, str(selection.get("arch") or "")
+                video_info, opts, video_conf, str(selection.get("arch") or ""), machine
             )
             template_params = {
                 "length": video_info["length"],
@@ -1001,7 +1107,7 @@ class ComfyUISmartPlugin(Star):
             source_size = read_image_size(source_image)
             if source_size:
                 sampling["width"], sampling["height"] = fit_video_size(
-                    source_size[0], source_size[1]
+                    source_size[0], source_size[1], budget=int(machine["max_pixels"])
                 )
             logger.info(
                 "图生视频｜首帧 %s｜尾帧 %s｜%sx%s｜%s 帧｜%.0f fps｜约 %.1f 秒",
@@ -1012,7 +1118,7 @@ class ComfyUISmartPlugin(Star):
             video_conf = self.config.get("video", {}) or {}
             video_info = resolve_video_params(opts, video_conf)
             video_info = apply_native_video_defaults(
-                video_info, opts, video_conf, str(selection.get("arch") or "")
+                video_info, opts, video_conf, str(selection.get("arch") or ""), machine
             )
             template_params = {
                 "length": video_info["length"],
@@ -2650,17 +2756,20 @@ NATIVE_VIDEO_RHYTHM = {
 }
 
 
-def apply_native_video_defaults(info: dict, opts: dict, video_conf: dict, arch: str) -> dict:
+def apply_native_video_defaults(
+    info: dict, opts: dict, video_conf: dict, arch: str, preset: dict | None = None
+) -> dict:
     """把 Wan 系列的帧率默认拉回原生 24fps（用户显式给了就完全尊重）。
 
     Args:
         info: resolve_video_params() 的结果。
         opts: 行内参数（用户显式指定过就不再改）。
         video_conf: 配置里的 video 段（读 max_seconds 上限）。
-        arch: 当前架构（只有 wan / wan22 会被调整）。
+        arch: 当前架构（只有视频架构会被调整）。
+        preset: 机器档位（可选），用来再收紧一次帧数上限。
 
     Returns:
-        调整后的 info；非 Wan 架构或用户显式指定过则原样返回。
+        调整后的 info；非视频架构或用户显式指定过则原样返回。
     """
     rhythm = NATIVE_VIDEO_RHYTHM.get(arch)
     if rhythm is None:
@@ -2686,6 +2795,10 @@ def apply_native_video_defaults(info: dict, opts: dict, video_conf: dict, arch: 
             max_seconds = 10.0
         if max_seconds > 0 and length / fps > max_seconds:
             length = align_video_frames(int(max_seconds * fps), block=block, up=False)
+    # 机器档位再收一道：低配就别出 121 帧的长片
+    cap = int((preset or {}).get("max_length") or 0)
+    if cap and length > cap:
+        length = align_video_frames(cap, block=block, up=False)
     adjusted = dict(info)
     adjusted.update({
         "fps": fps,
