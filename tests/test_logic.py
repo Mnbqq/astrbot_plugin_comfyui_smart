@@ -4647,6 +4647,55 @@ def main() -> int:
     plugin.config["video"] = {}
     plugin.config["llm_settings"] = {}
 
+    print("\n=== 低配档默认优先选「加速版」视频权重（v0.19.0）===")
+    POOL = ["Wan2.2-TI2V-5B-Q4_K_M.gguf", "Wan2_2-TI2V-5B-Turbo-Q4_K_M.gguf",
+            "ltxv-2b-0.9.8-distilled-q8_0.gguf"]
+
+    def pick_video(tier, conf_model="", vram=8):
+        sess = api.aiohttp.ClientSession()
+        sess.route("GET", "/models", api.aiohttp.ClientResponse(
+            200, payload=["checkpoints", "unet_gguf"]))
+        sess.route("GET", "/models/unet_gguf", api.aiohttp.ClientResponse(200, payload=list(POOL)))
+        sess.route("GET", "/models/checkpoints", api.aiohttp.ClientResponse(200, payload=[]))
+        sess.route("GET", "/system_stats", api.aiohttp.ClientResponse(200, payload={
+            "system": {"ram_total": 16 * 1024 ** 3},
+            "devices": [{"vram_total": int(vram * 1024 ** 3), "vram_free": 0}]}))
+        sess.route("GET", "/queue", api.aiohttp.ClientResponse(
+            200, payload={"queue_running": [], "queue_pending": []}))
+        sess.route("POST", "/prompt", api.aiohttp.ClientResponse(200, payload={"prompt_id": "pick-1"}))
+        sess.route("POST", "/free", api.aiohttp.ClientResponse(200, payload={}))
+        sess.route("GET", "/history/pick-1", api.aiohttp.ClientResponse(200, payload={"pick-1": {
+            "status": {"status_str": "success", "completed": True},
+            "outputs": {"11": {"images": [{"filename": "v.mp4", "type": "output"}],
+                               "animated": [True]}}}}))
+        sess.route("GET", "/view", api.aiohttp.ClientResponse(200, text="MP4"))
+        plugin.comfy._session = sess
+        plugin.comfy.invalidate_model_cache()
+        plugin._machine_tier = ""
+        plugin.config["video"] = {"machine": tier, "t2v_model": conf_model, "send_video": True,
+                                  "default_seconds": 4, "default_fps": 16, "max_seconds": 10}
+        plugin.config["permission"] = {}
+        plugin.permission.reload({})
+        asyncio.run(drive(plugin.cmd_video(AstrMessageEvent(sender_id="9400", message_str="/视频 一只猫"))))
+        for method, path, kw in sess.calls:
+            if method == "POST" and path == "/prompt":
+                for node in kw["json"]["prompt"].values():
+                    if node.get("class_type") == "UnetLoaderGGUF":
+                        return node["inputs"]["unet_name"]
+        return None
+
+    check("低配档自动跳过原版、优先 Turbo（74 秒 vs 281 秒）",
+          pick_video("low") == "Wan2_2-TI2V-5B-Turbo-Q4_K_M.gguf", pick_video("low"))
+    check("auto 档按显存判定后同样优先 Turbo（8G → low）",
+          pick_video("auto") == "Wan2_2-TI2V-5B-Turbo-Q4_K_M.gguf", pick_video("auto"))
+    check("高配档不干预，仍按清单顺序（原版优先）",
+          pick_video("high", vram=48) == "Wan2.2-TI2V-5B-Q4_K_M.gguf",
+          pick_video("high", vram=48))
+    check("配置里锁定模型时优先级最高（压过加速版偏好）",
+          pick_video("low", conf_model="Wan2.2-TI2V-5B-Q4_K_M.gguf") == "Wan2.2-TI2V-5B-Q4_K_M.gguf",
+          pick_video("low", conf_model="Wan2.2-TI2V-5B-Q4_K_M.gguf"))
+    plugin.config["video"] = {}
+
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）
     field_re = _re.compile(

@@ -37,7 +37,7 @@ from .workflow_templates import (
 
 PLUGIN_NAME = "astrbot_plugin_comfyui_smart"
 # 与 metadata.yaml 的 version 保持一致（tests/test_logic.py 会校验二者不漂移）
-PLUGIN_VERSION = "0.18.1"
+PLUGIN_VERSION = "0.19.0"
 
 # 机器档位：决定分辨率/帧数/步数上限。auto 时按显存判定（内存太小再降一档）。
 MACHINE_PRESETS = {
@@ -90,6 +90,10 @@ def resolve_machine_tier(configured: str, vram_gb: float = 0.0, ram_gb: float = 
         tier = "low" if tier == "mid" else "mid"
     return tier
 
+
+# 名字里带这些词的视频权重通常是「加速/蒸馏」版（步数少、CFG 1 单遍），
+# 低配机器上默认挑它们能省几倍时间（实测 Turbo 4 步 74 秒 vs 原版 20 步 281 秒）
+SPEED_HINTS = ("turbo", "lightning", "distill", "schnell", "flash", "lite", "fast")
 
 # 视频架构白名单：视频用途挑底模、以及「像不像视频模型」的校验都用它
 VIDEO_ARCHES = frozenset({"wan", "wan22", "ltxv", "video"})
@@ -698,6 +702,23 @@ class ComfyUISmartPlugin(Star):
                 name for name in unets
                 if guess_arch(name, arch_override) in VIDEO_ARCHES
             ]
+            # 低配/标配机器：默认优先「加速版」权重，省几倍等待时间（名字里带 turbo/distill/…）。
+            # 想固定用哪个模型，配置 video.t2v_model / i2v_model，或聊天里 --model 指定。
+            if video_pool:
+                try:
+                    tier = (await self._machine(client))["tier"]
+                except Exception:      # noqa: BLE001 - 探测失败就按原顺序
+                    tier = ""
+                if tier in ("low", "mid") and len(video_pool) > 1:
+                    ordered = sorted(
+                        video_pool,
+                        key=lambda n: (0 if any(h in n.lower() for h in SPEED_HINTS) else 1,
+                                       video_pool.index(n)),
+                    )
+                    if ordered != video_pool:
+                        logger.info("机器档位 %s：视频默认模型优先挑加速版（%s）",
+                                    tier, ordered[0])
+                        video_pool = ordered
             if video_pool:
                 model = video_pool[0]
                 folder = _pool_of(model)
