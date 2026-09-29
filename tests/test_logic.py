@@ -4749,43 +4749,49 @@ def main() -> int:
     check("已开启功能列表只含开着的那几项",
           plugin_no_feat.enabled_features() == ["文生图"], plugin_no_feat.enabled_features())
 
-    # 关掉视频：/视频 必须给出可操作提示（而不是默默失败）
+    # 关闭的功能必须「静默忽略」：不做任何回复，也不提交任务
     plugin.config["features"] = {"t2i": True}
     sess_off = api.aiohttp.ClientSession()
     plugin.comfy._session = sess_off
     plugin.comfy.invalidate_model_cache()
-    out_off = asyncio.run(drive(plugin.cmd_video(
-        AstrMessageEvent(sender_id="9500", message_str="/视频 一只猫在草地上跑"))))
-    check("关掉文生视频后 /视频 明确说不可用，并指出去哪打开",
-          "未开启" in out_off[0]["text"] and "功能开关" in out_off[0]["text"]
-          and "文生视频" in out_off[0]["text"],
-          out_off[0]["text"].splitlines()[0][:60])
+    silent_cases = [
+        ("/视频", plugin.cmd_video, "/视频 一只猫在草地上跑"),
+        ("/图生视频", plugin.cmd_image_to_video, "/图生视频 让她回头"),
+        ("/图生图", plugin.cmd_img2img, "/图生图 换成红色衣服"),
+        ("/扩图", plugin.cmd_outpaint, "/扩图 往外扩 200"),
+        ("/反推", plugin.cmd_reverse_prompt, "/反推"),
+    ]
+    for name, handler, text in silent_cases:
+        out = asyncio.run(drive(handler(AstrMessageEvent(sender_id="9500", message_str=text))))
+        check(f"关闭的功能 {name} 静默无响应（一条消息都不发）",
+              out == [], [getattr(o, "get", lambda *_: o)("text", "") for o in out])
     check("被拦截时不向 ComfyUI 提交任何任务", not any(
-        paths == "/prompt" for _m, paths, _kw in sess_off.calls),
-        [c[1] for c in sess_off.calls])
+        path == "/prompt" for _m, path, _kw in sess_off.calls), [c[1] for c in sess_off.calls])
+    check("/图生图 关闭时带图也静默（不误报「请发图」）",
+          asyncio.run(drive(plugin.cmd_img2img(AstrMessageEvent(
+              sender_id="9501", message_str="/图生图 换个背景")))) == [], None)
 
-    # 关掉图生图：带图也拦
-    out_i2i = asyncio.run(drive(plugin.cmd_img2img(
-        AstrMessageEvent(sender_id="9501", message_str="/图生图 换成红色衣服"))))
-    check("关掉图生图后 /图生图 同样被拦（带图也一样）",
-          "未开启" in out_i2i[0]["text"] and "图生图" in out_i2i[0]["text"],
-          out_i2i[0]["text"].splitlines()[0][:60])
+    # LLM 无指令出图：工具开关关闭 或 文生图关闭 → 都静默
+    plugin.config["agent"] = {"enable_llm_tool": False}
+    out_tool_off = asyncio.run(drive(plugin.tool_generate_image(
+        AstrMessageEvent(sender_id="9502", message_str="画只猫"), prompt="一只猫")))
+    check("无指令出图关闭时，LLM 工具静默（不再回「工具未启用」）",
+          out_tool_off == [], out_tool_off)
+    plugin.config["agent"] = {"enable_llm_tool": True}
+    plugin.config["features"] = {"t2i": False}      # 显式关掉文生图（空字典时 t2i 仍是默认开）
+    out_tool_no_t2i = asyncio.run(drive(plugin.tool_generate_image(
+        AstrMessageEvent(sender_id="9503", message_str="画只猫"), prompt="一只猫")))
+    check("文生图关闭时，LLM 工具同样静默", out_tool_no_t2i == [], out_tool_no_t2i)
+    plugin.config["agent"] = {}
 
-    # 关掉反推：单独提示
-    out_rev = asyncio.run(drive(plugin.cmd_reverse_prompt(
-        AstrMessageEvent(sender_id="9502", message_str="/反推"))))
-    check("关掉反推后 /反推 给出提示（而不是「请发图片」）",
-          "未开启" in out_rev[0]["text"] and "反推" in out_rev[0]["text"],
-          out_rev[0]["text"].splitlines()[0][:60])
-
-    # 直接调用 generate() 也拦（LLM 无指令出图走同一条路）
+    # 直接调用 generate() 仍会抛（内部保险，防止别的入口绕过）
     try:
         asyncio.run(plugin.generate(user_desc="一只猫", opts={}, event=None,
                                     force_purpose="t2v"))
         gate_raised = None
     except m.FeatureDisabledError as exc:
         gate_raised = str(exc)
-    check("直接调 generate() 也拦得住（LLM 无指令出图走同一入口）",
+    check("直接调 generate() 仍会抛 FeatureDisabledError（内部保险）",
           gate_raised is not None and "文生视频" in gate_raised,
           (gate_raised or "")[:50])
 

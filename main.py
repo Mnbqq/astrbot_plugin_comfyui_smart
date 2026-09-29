@@ -37,7 +37,7 @@ from .workflow_templates import (
 
 PLUGIN_NAME = "astrbot_plugin_comfyui_smart"
 # 与 metadata.yaml 的 version 保持一致（tests/test_logic.py 会校验二者不漂移）
-PLUGIN_VERSION = "0.21.0"
+PLUGIN_VERSION = "0.21.1"
 
 # 机器档位：决定分辨率/帧数/步数上限。auto 时按显存判定（内存太小再降一档）。
 MACHINE_PRESETS = {
@@ -915,16 +915,6 @@ class ComfyUISmartPlugin(Star):
             message = f"🚫 功能「{label}」当前未开启，请到插件配置的功能开关里打开。"
         raise FeatureDisabledError(message)
 
-    def _feature_check(self, name: str) -> str:
-        """功能没开时返回提示文案，开着返回空串（供各指令在最早处拦截）。"""
-        if self.feature_enabled(name):
-            return ""
-        label, how = FEATURE_LABELS.get(name, (name, ""))
-        try:
-            return self.t("error.feature_disabled", feature=label, how=how)
-        except Exception:      # noqa: BLE001
-            return f"🚫 功能「{label}」当前未开启，请到插件配置的功能开关里打开。"
-
     def enabled_features(self) -> list[str]:
         """已开启功能的展示名列表（给 /帮助 与状态面板用）。"""
         return [FEATURE_LABELS.get(k, (k, ""))[0] for k in FEATURE_DEFAULTS if self.feature_enabled(k)]
@@ -1788,9 +1778,8 @@ class ComfyUISmartPlugin(Star):
             yield event.plain_result(reason)
             return
 
-        blocked = self._feature_check("t2i")
-        if blocked:
-            yield event.plain_result(blocked)
+        # 功能关闭：静默忽略，不做任何回复（配置页「功能开关」控制）
+        if not self.feature_enabled("t2i"):
             return
 
         raw = _extract_command_payload(event, "画图", "绘图", "draw", "生成图片")
@@ -2299,9 +2288,8 @@ class ComfyUISmartPlugin(Star):
             yield event.plain_result(reason)
             return
 
-        blocked = self._feature_check("i2i")
-        if blocked:
-            yield event.plain_result(blocked)
+        # 功能关闭：静默忽略，不做任何回复（配置页「功能开关」控制）
+        if not self.feature_enabled("i2i"):
             return
 
         raw = _extract_command_payload(event, "图生图", "改图", "i2i", "重绘")
@@ -2353,9 +2341,8 @@ class ComfyUISmartPlugin(Star):
             yield event.plain_result(reason)
             return
 
-        blocked = self._feature_check("outpaint")
-        if blocked:
-            yield event.plain_result(blocked)
+        # 功能关闭：静默忽略，不做任何回复（配置页「功能开关」控制）
+        if not self.feature_enabled("outpaint"):
             return
 
         raw = _extract_command_payload(event, "扩图", "外扩", "outpaint", "扩画")
@@ -2407,9 +2394,8 @@ class ComfyUISmartPlugin(Star):
             yield event.plain_result(reason)
             return
 
-        blocked = self._feature_check("i2v")
-        if blocked:
-            yield event.plain_result(blocked)
+        # 功能关闭：静默忽略，不做任何回复（配置页「功能开关」控制）
+        if not self.feature_enabled("i2v"):
             return
 
         raw = _extract_command_payload(event, "图生视频", "首尾帧", "i2v", "让图动起来")
@@ -2464,9 +2450,8 @@ class ComfyUISmartPlugin(Star):
             yield event.plain_result(reason)
             return
 
-        blocked = self._feature_check("t2v")
-        if blocked:
-            yield event.plain_result(blocked)
+        # 功能关闭：静默忽略，不做任何回复（配置页「功能开关」控制）
+        if not self.feature_enabled("t2v"):
             return
 
         raw = _extract_command_payload(event, "视频", "生成视频", "文生视频", "video", "t2v")
@@ -2518,9 +2503,8 @@ class ComfyUISmartPlugin(Star):
             yield event.plain_result(reason)
             return
 
-        blocked = self._feature_check("reverse_prompt")
-        if blocked:
-            yield event.plain_result(blocked)
+        # 功能关闭：静默忽略，不做任何回复（配置页「功能开关」控制）
+        if not self.feature_enabled("reverse_prompt"):
             return
 
         raw = _extract_command_payload(event, "反推", "反推提示词", "识图", "img2prompt")
@@ -2643,8 +2627,8 @@ class ComfyUISmartPlugin(Star):
             aspect_ratio(string): 画面比例，可选 1:1、16:9、9:16、4:3、3:4，留空则自动
         """
         agent_conf = self.config.get("agent", {}) or {}
-        if not agent_conf.get("enable_llm_tool", False):
-            yield event.plain_result("绘图工具当前未启用，请让管理员在插件配置里打开「无指令出图」。")
+        # 无指令出图关闭、或文生图功能关闭：静默忽略，不做任何回复
+        if not agent_conf.get("enable_llm_tool", False) or not self.feature_enabled("t2i"):
             return
 
         uid = str(event.get_sender_id())
