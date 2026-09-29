@@ -3,7 +3,7 @@
   "purpose": "i2v",
   "arch": "generic",
   "loader": "unet",
-  "description": "图生视频（Wan 2.x 原生首尾帧）：以你发的图为起点生成短视频；发两张图（或引用一张再发一张）时，第一张当首帧、第二张当尾帧，画面从首帧过渡到尾帧。用 WanFirstLastFrameToVideo（start_image / end_image 都是可选输入，所以一张图也能跑），帧数与帧率由 /图生视频 的 --seconds/--fps 算好写进来。需要 diffusion_models 里的 Wan I2V 权重、text_encoders 里的 umt5_xxl、vae 里的 wan_2.1_vae。 输出 mp4（h264）：聊天端兼容性比 webm 好，官方模板也是这么做的。",
+  "description": "图生视频（Wan 2.x 原生首尾帧）：以你发的图为起点生成短视频；发两张图（或引用一张再发一张）时，第一张当首帧、第二张当尾帧，画面从首帧过渡到尾帧。用 WanFirstLastFrameToVideo（start_image / end_image 都是可选输入，所以一张图也能跑），帧数与帧率由 /图生视频 的 --seconds/--fps 算好写进来。需要 diffusion_models 里的 Wan I2V 权重、text_encoders 里的 umt5_xxl、vae 里的 wan_2.1_vae。 输出 mp4（h264）：聊天端兼容性比 webm 好，官方模板也是这么做的。 文本编码器用 GGUF 量化版（umt5 Q4 约 3.4GB，fp8 版要 6.3GB）；VAE 默认 wan_2.1_vae，若底模是 Wan 2.2 请用 --vae wan2.2_vae.safetensors 覆盖。",
   "bindings": {
     "image_loader": {
       "node": "4"
@@ -32,12 +32,12 @@
       }
     },
     "2": {
-      "class_type": "CLIPLoader",
+      "class_type": "CLIPLoaderGGUF",
       "_meta": {
-        "title": "文本编码器（umt5）"
+        "title": "文本编码器（umt5 GGUF）"
       },
       "inputs": {
-        "clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+        "clip_name": "umt5-xxl-encoder-Q4_K_M.gguf",
         "type": "wan"
       }
     },

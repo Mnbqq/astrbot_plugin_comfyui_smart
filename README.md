@@ -126,6 +126,7 @@
 
 ## 更新日志（最近）
 
+- **v0.18.1** — Wan safetensors 模板改用 **GGUF 文本编码器**（umt5 Q4 仅 3.4GB，原 fp8 要 6.3GB）+ `wan_2.1_vae`；实测 Wan 1.3B 在本机**比 5B 还慢**（391s vs 281s），已在推荐表里标注不推荐
 - **v0.18.0** — LLM 参与**视频**提示词：新增视频专用改写（补动作/镜头/光影、保持中文）+ 开关 `llm_settings.optimize_for_video`；新增行内开关 `--llm` / `--no-llm`（图片与视频都能临时覆盖）
 - **v0.17.0** — 视频模型可按功能分别配置（`t2v_model` / `i2v_model`）+ 机器档位（`machine`：auto/low/mid/high，自动限制分辨率/帧数/步数）；README 瘦身，工程细节移到 `docs/`
 - **v0.16.0** — 支持 LTX-Video 2B（GGUF，最省显存的一档）

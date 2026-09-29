@@ -3376,9 +3376,15 @@ def main() -> int:
     tpl_video = wt.load_templates(ROOT / "workflows")["wan_t2v"]
     check("内置文生视频模板已加载，用途是 t2v", tpl_video.purpose == "t2v", tpl_video.purpose)
     check("视频模板用 Wan 原生节点（含 CreateVideo + SaveVideo 输出锚点）",
-          {"UNETLoader", "CLIPLoader", "VAELoader", "EmptyHunyuanLatentVideo",
+          {"UNETLoader", "CLIPLoaderGGUF", "VAELoader", "EmptyHunyuanLatentVideo",
            "ModelSamplingSD3", "CreateVideo", "SaveVideo"} <= tpl_video.required_nodes(),
           sorted(tpl_video.required_nodes()))
+    check("Wan safetensors 模板用 GGUF 文本编码器（低配用户只有 umt5 量化版，fp8 要 6.3GB）",
+          tpl_video.graph[tpl_video.bindings.get("CLIPLoader", "2") if False else "2"]["class_type"]
+          == "CLIPLoaderGGUF"
+          and tpl_video.graph["2"]["inputs"]["type"] == "wan"
+          and tpl_video.graph["3"]["inputs"]["vae_name"] == "wan_2.1_vae.safetensors",
+          (tpl_video.graph["2"]["class_type"], tpl_video.graph["2"]["inputs"]))
     check("视频输出节点被当成「产物落地」的锚点（否则不可达节点会被误删）",
           tpl_video.graph[tpl_video.bindings["save"]]["class_type"] == "SaveVideo"
           and tpl_video.graph[tpl_video.graph[tpl_video.bindings["save"]]["inputs"]["video"][0]]["class_type"]
@@ -3493,7 +3499,7 @@ def main() -> int:
     tpl_i2v = wt.load_templates(ROOT / "workflows")["wan_i2v"]
     check("内置图生视频模板已加载，用途是 i2v", tpl_i2v.purpose == "i2v", tpl_i2v.purpose)
     check("i2v 模板用 Wan 首尾帧节点（可选 start/end image）",
-          {"WanFirstLastFrameToVideo", "UNETLoader", "CLIPLoader", "VAELoader",
+          {"WanFirstLastFrameToVideo", "UNETLoader", "CLIPLoaderGGUF", "VAELoader",
            "ModelSamplingSD3", "CreateVideo", "SaveVideo"} <= tpl_i2v.required_nodes(),
           sorted(tpl_i2v.required_nodes()))
     check("首帧与尾帧绑定到两个不同的 LoadImage（输入键都叫 image，必须分开）",
