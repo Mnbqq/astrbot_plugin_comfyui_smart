@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 
 EMPTY_STATS = {"model_usage": {}, "users": {}, "records": []}
-EMPTY_QUOTA = {"daily": {}, "cooldown": {}}
+EMPTY_QUOTA = {"daily": {}, "daily_video": {}, "cooldown": {}}
 MAX_RECORDS = 500
 
 
@@ -57,6 +57,7 @@ class Storage:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.catalog_path = self.data_dir / "catalog.json"
         self.stats_path = self.data_dir / "stats.json"
+        self.audit_path = self.data_dir / "audit.jsonl"
         self.quota_path = self.data_dir / "quota.json"
         self._lock = asyncio.Lock()
 
@@ -90,6 +91,60 @@ class Storage:
     # ------------------------------------------------------------------ #
     # 统计与出图记录
     # ------------------------------------------------------------------ #
+    # ------------------------------------------------------------------ #
+    # 审计日志（谁在什么时候用什么模型出图，便于排障与合规）
+    # ------------------------------------------------------------------ #
+    def append_audit(self, entry: dict, *, keep: int = 2000) -> None:
+        """追加一条审计记录（JSONL，自动裁剪到最近 keep 条）。
+
+        Args:
+            entry: 记录内容。
+            keep: 保留的最大条数。
+        """
+        line = json.dumps(entry, ensure_ascii=False)
+        try:
+            with self.audit_path.open("a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+            lines = self.audit_path.read_text(encoding="utf-8").splitlines()
+            if len(lines) > keep:
+                self.audit_path.write_text(
+                    "\n".join(lines[-keep:]) + "\n", encoding="utf-8"
+                )
+        except OSError:
+            pass      # 审计失败不能影响出图
+
+    def load_audit(self, *, limit: int = 20, user_id: str = "") -> list[dict]:
+        """读取最近的审计记录（新在前）。
+
+        Args:
+            limit: 最多返回多少条。
+            user_id: 只看某个用户；留空看全部。
+
+        Returns:
+            记录列表（解析失败的行会被跳过）。
+        """
+        if not self.audit_path.exists():
+            return []
+        try:
+            lines = self.audit_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return []
+        out: list[dict] = []
+        for line in reversed(lines):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                item = json.loads(line)
+            except ValueError:
+                continue
+            if user_id and str(item.get("user_id")) != str(user_id):
+                continue
+            out.append(item)
+            if len(out) >= limit:
+                break
+        return out
+
     def load_stats(self) -> dict:
         """读取统计信息。"""
         data = _read_json(self.stats_path, None)
@@ -167,22 +222,26 @@ class Storage:
         if not isinstance(data, dict):
             return json.loads(json.dumps(EMPTY_QUOTA))
         data.setdefault("daily", {})
+        data.setdefault("daily_video", {})
         data.setdefault("cooldown", {})
         return data
 
-    async def get_daily_count(self, user_id: str, day: str) -> int:
-        """读取某用户当天的出图次数。
+    async def get_daily_count(self, user_id: str, day: str, *, video: bool = False) -> int:
+        """读取某用户当天的使用次数。
 
         Args:
             user_id: 用户 id。
             day: 日期字符串 YYYY-MM-DD。
+            video: True 读「视频」这一独立配额桶（视频一条动辄几分钟，不该和出图同权）。
 
         Returns:
             次数。
         """
         async with self._lock:
             quota = self._load_quota()
-            return int((quota["daily"].get(day) or {}).get(user_id, 0))
+            quota.setdefault("daily_video", {})
+            bucket = quota["daily_video"] if video else quota["daily"]
+            return int((bucket.get(day) or {}).get(user_id, 0))
 
     async def get_cooldown_until(self, user_id: str) -> float:
         """读取某用户的冷却截止时间戳。
@@ -201,7 +260,7 @@ class Storage:
                 return 0.0
 
     async def record_usage(
-        self, user_id: str, day: str, *, cooldown_until: float
+        self, user_id: str, day: str, *, cooldown_until: float, video: bool = False
     ) -> None:
         """记录一次使用：当天计数 +1 并写入冷却截止时间。
 
@@ -209,14 +268,19 @@ class Storage:
             user_id: 用户 id。
             day: 日期字符串 YYYY-MM-DD。
             cooldown_until: 冷却截止时间戳。
+            video: True 同时记进「视频」独立配额桶。
         """
         async with self._lock:
             quota = self._load_quota()
             bucket = quota["daily"].setdefault(day, {})
             bucket[user_id] = int(bucket.get(user_id, 0)) + 1
+            if video:
+                vbucket = quota.setdefault("daily_video", {}).setdefault(day, {})
+                vbucket[user_id] = int(vbucket.get(user_id, 0)) + 1
             # 只保留最近 7 天的计数，避免文件无限增长
-            for stale in sorted(quota["daily"])[:-7]:
-                quota["daily"].pop(stale, None)
+            for key in ("daily", "daily_video"):
+                for stale in sorted(quota[key])[:-7]:
+                    quota[key].pop(stale, None)
             if cooldown_until:
                 quota["cooldown"][user_id] = cooldown_until
             _atomic_write(self.quota_path, quota)

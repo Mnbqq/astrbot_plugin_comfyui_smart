@@ -78,6 +78,15 @@ def register_pages_routes(plugin) -> bool:
     async def get_stats():
         return json_response(plugin.storage.load_stats())
 
+    async def get_audit(limit: str = "50", user_id: str = ""):
+        """审计日志（管理面板可查；出图记录 + 内容过滤拦截）。"""
+        try:
+            count = max(1, min(500, int(limit)))
+        except (TypeError, ValueError):
+            count = 50
+        rows = plugin.storage.load_audit(limit=count, user_id=str(user_id or ""))
+        return json_response({"total": len(rows), "records": rows})
+
     async def run_inpaint():
         """局部重绘：配置页涂好遮罩后调这里跑一次。"""
         payload = await request.json(default={})
@@ -115,6 +124,7 @@ def register_pages_routes(plugin) -> bool:
         (f"/{PLUGIN_NAME}/status", get_status, ["GET"], "读取 ComfyUI 状态"),
         (f"/{PLUGIN_NAME}/i18n", get_i18n, ["GET"], "读取插件页文案（多语言）"),
         (f"/{PLUGIN_NAME}/stats", get_stats, ["GET"], "读取统计"),
+        (f"/{PLUGIN_NAME}/audit", get_audit, ["GET"], "读取审计日志"),
         (f"/{PLUGIN_NAME}/inpaint", run_inpaint, ["POST"], "局部重绘（涂抹遮罩）"),
         (f"/{PLUGIN_NAME}/stats/clear", clear_stats, ["POST"], "清空统计"),
         (f"/{PLUGIN_NAME}/images/<filename>", get_image, ["GET"], "读取生成的图片"),

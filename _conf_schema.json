@@ -505,6 +505,54 @@
         "description": "管理员豁免白名单、冷却与限额",
         "type": "bool",
         "default": true
+      },
+      "feature_rules": {
+        "description": "按群/用户的功能白名单",
+        "type": "text",
+        "default": "",
+        "hint": "一行一条，`#` 开头是注释。格式：\nuser:123456=t2i,i2v　← 该用户可用文生图与图生视频\ngroup:987654=t2i　　← 该群只能用文生图\ndefault=t2i,i2i　　　← 其余人可用的功能\n功能名：t2i / i2i / outpaint / inpaint / t2v / i2v / reverse_prompt，也可写 all（全部）或 none（全禁）。\n优先级：user > group > default > 上面的「功能开关」。管理员在「豁免」打开时不受这里限制。\n留空 = 所有人跟随全局功能开关。"
+      },
+      "video_daily_limit": {
+        "description": "每人每日视频上限（0 不限）",
+        "type": "int",
+        "default": 0,
+        "hint": "视频一条动辄几分钟，单独限次更合理；出图的每日上限仍用上面的「每人每日上限」。"
+      },
+      "video_cooldown": {
+        "description": "视频冷却时间（秒，0 不限）",
+        "type": "int",
+        "default": 0,
+        "hint": "视频专用冷却；出图冷却仍用上面的「冷却时间」。"
+      },
+      "nsfw_filter": {
+        "description": "内容过滤（拦截露骨描述）",
+        "type": "bool",
+        "default": false,
+        "hint": "命中词表的描述会被直接拦下（默认静默无回复，可在下面打开提示）。用户原话与 AI 改写后的提示词都会检查。"
+      },
+      "nsfw_words": {
+        "description": "内容过滤词表（一行一个，留空用内置）",
+        "type": "text",
+        "default": "",
+        "hint": "留空使用内置的通用词表；填写后以内置 + 你填的为准。大小写不敏感。"
+      },
+      "nsfw_negative": {
+        "description": "内容过滤开启时附加的负面词",
+        "type": "text",
+        "default": "",
+        "hint": "例如 `nsfw, nude, explicit`；只在内容过滤打开时附加到负面提示词里，降低擦边概率。"
+      },
+      "nsfw_notify": {
+        "description": "内容过滤拦截时提示用户",
+        "type": "bool",
+        "default": false,
+        "hint": "默认关闭（静默忽略，与功能开关的行为一致）；打开后会回一句「被内容过滤拦下」。"
+      },
+      "audit_log": {
+        "description": "记录审计日志",
+        "type": "bool",
+        "default": true,
+        "hint": "记录每次生成（谁/何时/什么用途/用哪个模型/耗时/提示词前 60 字）与内容过滤拦截。管理员用 /审计 [条数] [--user ID] 查看，配置页 API 在 /audit。文件是插件数据目录下的 audit.jsonl，只保留最近 2000 条。"
       }
     }
   },

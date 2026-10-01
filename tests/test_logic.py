@@ -4809,6 +4809,149 @@ def main() -> int:
     plugin.config["features"] = dict(ALL_FEATURES)
     plugin.config["video"] = {}
 
+    print("\n=== 治理三件套：按范围功能白名单 / 内容过滤 / 视频配额 / 审计（v0.22.0）===")
+
+    # ---- 1) 按群/用户功能白名单 ----
+    plugin.config["features"] = {"t2i": True}          # 全局只开文生图
+    plugin.config["permission"] = {
+        "feature_rules": "user:7001=t2i,t2v\ngroup:8001=t2i,i2i\ndefault=t2i",
+    }
+    plugin.permission.reload(plugin.config["permission"])
+    ev_user = AstrMessageEvent(sender_id="7001", message_str="/视频 猫")
+    ev_other = AstrMessageEvent(sender_id="7002", message_str="/视频 猫")
+    ev_group = AstrMessageEvent(sender_id="7003", message_str="/图生图 x", group_id="8001")
+    check("用户规则放宽了全局没开的功能（7001 可用文生视频）",
+          plugin.feature_enabled("t2v", ev_user) is True, None)
+    check("没写规则的用户走 default（7002 只有文生图）",
+          plugin.feature_enabled("t2v", ev_other) is False
+          and plugin.feature_enabled("t2i", ev_other) is True, None)
+    check("群规则生效（8001 群里可用图生图）",
+          plugin.feature_enabled("i2i", ev_group) is True
+          and plugin.feature_enabled("t2v", ev_group) is False, None)
+    check("优先级 user > group（同一个人同时在群里时以用户规则为准）",
+          plugin.feature_enabled("t2v", AstrMessageEvent(sender_id="7001", message_str="x",
+                                                        group_id="8001")) is True, None)
+    check("管理员在豁免打开时不受范围规则限制（跟随全局）",
+          plugin.feature_enabled("t2v", AstrMessageEvent(sender_id="7001", message_str="x",
+                                                         admin=True)) is False, None)
+    check("把豁免关掉后管理员也受范围规则约束",
+          (plugin.permission.reload({**plugin.config["permission"], "admin_bypass": False}),
+           plugin.feature_enabled("t2v", AstrMessageEvent(sender_id="7001", message_str="x",
+                                                          admin=True)))[1] is True, None)
+    plugin.permission.reload(plugin.config["permission"])
+
+    # 受限制的用户发 /视频：静默（且不提交任务）
+    sess_rule = api.aiohttp.ClientSession()
+    plugin.comfy._session = sess_rule
+    plugin.comfy.invalidate_model_cache()
+    out_rule = asyncio.run(drive(plugin.cmd_video(ev_other)))
+    check("范围规则里没开视频的用户发 /视频：静默无响应",
+          out_rule == [] and not any(p_ == "/prompt" for _m, p_, _k in sess_rule.calls),
+          out_rule)
+    check("/帮助 会按当前用户列出可用功能",
+          "文生图" in asyncio.run(drive(plugin.cmd_help(ev_user)))[0]["text"], None)
+
+    # ---- 2) 内容过滤 ----
+    plugin.config["permission"] = {"nsfw_filter": True, "nsfw_words": "露骨测试词",
+                                   "nsfw_negative": "blocked_extra_tag"}
+    plugin.permission.reload(plugin.config["permission"])
+    plugin.config["features"] = dict(ALL_FEATURES)
+    sess_nsfw = api.aiohttp.ClientSession()
+    sess_nsfw.route("GET", "/models", api.aiohttp.ClientResponse(200, payload=["checkpoints"]))
+    sess_nsfw.route("GET", "/models/checkpoints", api.aiohttp.ClientResponse(
+        200, payload=["animagine-xl-4.0.safetensors"]))
+    sess_nsfw.route("GET", "/system_stats", api.aiohttp.ClientResponse(200, payload={
+        "system": {"ram_total": 16 * 1024 ** 3},
+        "devices": [{"vram_total": 8 * 1024 ** 3, "vram_free": 0}]}))
+    sess_nsfw.route("GET", "/queue", api.aiohttp.ClientResponse(
+        200, payload={"queue_running": [], "queue_pending": []}))
+    sess_nsfw.route("POST", "/prompt", api.aiohttp.ClientResponse(200, payload={"prompt_id": "ns-1"}))
+    sess_nsfw.route("GET", "/history/ns-1", api.aiohttp.ClientResponse(200, payload={"ns-1": {
+        "status": {"status_str": "success", "completed": True},
+        "outputs": {"7": {"images": [{"filename": "n.png", "type": "output"}]}}}}))
+    sess_nsfw.route("GET", "/view", api.aiohttp.ClientResponse(200, text="PNG"))
+    plugin.comfy._session = sess_nsfw
+    plugin.comfy.invalidate_model_cache()
+    out_nsfw = asyncio.run(drive(plugin.cmd_draw(AstrMessageEvent(
+        sender_id="7009", message_str="/画图 露骨测试词 一只猫"))))
+    check("内容过滤命中：默认静默拦下（一条消息都不发）", out_nsfw == [], out_nsfw)
+    check("拦截不会提交到 ComfyUI", not any(p_ == "/prompt" for _m, p_, _k in sess_nsfw.calls), None)
+    try:
+        asyncio.run(plugin.generate(user_desc="露骨测试词", opts={}, event=None, force_purpose="t2i"))
+        nsfw_raised = None
+    except m.ContentBlockedError as exc:
+        nsfw_raised = str(exc)
+    check("直接调 generate() 也会被内容过滤挡住（内部保险）",
+          nsfw_raised is not None, (nsfw_raised or "")[:40])
+    plugin.config["permission"] = {**plugin.config["permission"], "nsfw_notify": True}
+    plugin.permission.reload(plugin.config["permission"])
+    out_nsfw_notify = asyncio.run(drive(plugin.cmd_draw(AstrMessageEvent(
+        sender_id="7010", message_str="/画图 露骨测试词 一只猫"))))
+    check("打开「拦截时提示」后会回一句（默认是静默）",
+          len(out_nsfw_notify) == 1 and "内容过滤" in out_nsfw_notify[0]["text"],
+          out_nsfw_notify[0]["text"][:40] if out_nsfw_notify else None)
+    plugin.config["permission"] = {"nsfw_filter": True, "nsfw_negative": "blocked_extra_tag"}
+    plugin.permission.reload(plugin.config["permission"])
+    asyncio.run(drive(plugin.cmd_draw(AstrMessageEvent(
+        sender_id="7011", message_str="/画图 a cat, sunlight"))))
+    submitted_nsfw = None
+    for _m, p_, kw in sess_nsfw.calls:
+        if p_ == "/prompt":
+            submitted_nsfw = kw["json"]["prompt"]
+    neg_texts = [n["inputs"].get("text", "") for n in (submitted_nsfw or {}).values()
+                 if n["class_type"] == "CLIPTextEncode"]
+    check("过滤开启时会把附加负面词拼进负面提示词",
+          any("blocked_extra_tag" in t for t in neg_texts), neg_texts)
+    check("内容过滤命中也会写进审计（purpose=blocked_nsfw）",
+          any(r.get("purpose") == "blocked_nsfw" for r in plugin.storage.load_audit(limit=20)), None)
+
+    # ---- 3) 视频独立配额 ----
+    plugin.config["permission"] = {"video_daily_limit": 1}
+    plugin.permission.reload(plugin.config["permission"])
+    await_video_quota = asyncio.run(plugin.storage.record_usage(
+        "7012", time.strftime("%Y-%m-%d"), cooldown_until=0, video=True))
+    allowed_video, reason_video = asyncio.run(plugin.permission.check(
+        "7012", is_admin=False, storage=plugin.storage, video=True))
+    allowed_image, _r = asyncio.run(plugin.permission.check(
+        "7012", is_admin=False, storage=plugin.storage))
+    check("视频配额独立计数（用了 1 条后视频被拒、出图不受影响）",
+          allowed_video is False and allowed_image is True and "视频额度" in reason_video,
+          (allowed_video, reason_video))
+    out_quota = asyncio.run(drive(plugin.cmd_video(AstrMessageEvent(
+        sender_id="7012", message_str="/视频 一只猫"))))
+    check("/视频 超额时给出视频配额提示（出图额度不受影响）",
+          len(out_quota) == 1 and "视频额度" in out_quota[0]["text"],
+          out_quota[0]["text"][:40] if out_quota else None)
+
+    # ---- 4) 审计日志 ----
+    plugin.config["permission"] = {"audit_log": True}
+    plugin.permission.reload(plugin.config["permission"])
+    rows_before = len(plugin.storage.load_audit(limit=1000))
+    asyncio.run(drive(plugin.cmd_draw(AstrMessageEvent(sender_id="7013", message_str="/画图 审计用猫"))))
+    rows_after = plugin.storage.load_audit(limit=1000)
+    check("成功出图会写审计（含用户/用途/模型/耗时）",
+          len(rows_after) > rows_before
+          and any(r.get("user_id") == "7013" and r.get("purpose") == "t2i"
+                  and r.get("model") and r.get("seconds") is not None for r in rows_after),
+          rows_after[0] if rows_after else None)
+    out_audit = asyncio.run(drive(plugin.cmd_audit(AstrMessageEvent(
+        sender_id="7001", message_str="/审计 5"))))
+    check("/审计 能列出记录（管理员指令）",
+          len(out_audit) == 1 and "审计" in out_audit[0]["text"]
+          and "t2i" in out_audit[0]["text"], out_audit[0]["text"][:60])
+    out_audit_user = asyncio.run(drive(plugin.cmd_audit(AstrMessageEvent(
+        message_str="/审计 5 --user 7013"))))
+    check("/审计 --user 能按用户过滤",
+          "7013" in out_audit_user[0]["text"], out_audit_user[0]["text"][:60])
+    check("审计文件是 JSONL，且能按用户过滤读取",
+          plugin.storage.audit_path.exists()
+          and all(r.get("user_id") == "7013"
+                  for r in plugin.storage.load_audit(limit=5, user_id="7013")), None)
+
+    plugin.config["permission"] = {}
+    plugin.permission.reload({})
+    plugin.config["features"] = dict(ALL_FEATURES)
+
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）
     field_re = _re.compile(

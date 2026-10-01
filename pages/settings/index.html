@@ -472,6 +472,45 @@
             <div><h3>管理员豁免白名单、冷却与限额</h3><p>关闭后管理员同样受限（黑名单始终最高优先级）。</p></div>
             <label class="switch-wrapper"><input type="checkbox" id="perm_admin_bypass" class="ios-switch" /></label>
           </div>
+          <div class="setting-row">
+            <div><h3>记录审计日志</h3><p>记录每次生成（谁/何时/用途/模型/耗时/提示词前 60 字）与内容过滤拦截；管理员用 <code>/审计</code> 查看。</p></div>
+            <label class="switch-wrapper"><input type="checkbox" id="perm_audit_log" class="ios-switch" /></label>
+          </div>
+          <div class="form-grid">
+            <div class="form-group full-width">
+              <label for="perm_feature_rules">按群/用户的功能白名单（一行一条）</label>
+              <textarea id="perm_feature_rules" rows="4" class="input-modern"
+                        placeholder="user:123456=t2i,i2v&#10;group:987654=t2i&#10;default=t2i,i2i"></textarea>
+            </div>
+            <div class="form-group">
+              <label for="perm_video_daily_limit">每人每日视频上限（0 不限）</label>
+              <input type="number" id="perm_video_daily_limit" class="input-modern" min="0" />
+            </div>
+            <div class="form-group">
+              <label for="perm_video_cooldown">视频冷却时间（秒，0 不限）</label>
+              <input type="number" id="perm_video_cooldown" class="input-modern" min="0" />
+            </div>
+          </div>
+          <p class="field-hint">功能名：<code>t2i</code> / <code>i2i</code> / <code>outpaint</code> / <code>inpaint</code> / <code>t2v</code> / <code>i2v</code> / <code>reverse_prompt</code>，也可写 <code>all</code> / <code>none</code>。优先级：user &gt; group &gt; default &gt;「高级 → 生成功能开关」。</p>
+          <div class="setting-row">
+            <div><h3>内容过滤（拦截露骨描述）</h3><p>命中词表的描述直接拦下；用户原话与 AI 改写后的提示词都会检查。</p></div>
+            <label class="switch-wrapper"><input type="checkbox" id="perm_nsfw_filter" class="ios-switch" /></label>
+          </div>
+          <div class="form-grid">
+            <div class="form-group full-width">
+              <label for="perm_nsfw_words">内容过滤词表（一行一个，留空用内置）</label>
+              <textarea id="perm_nsfw_words" rows="3" class="input-modern"
+                        placeholder="留空使用内置通用词表；填写后以内置 + 你填的为准"></textarea>
+            </div>
+            <div class="form-group full-width">
+              <label for="perm_nsfw_negative">过滤开启时附加的负面词</label>
+              <input type="text" id="perm_nsfw_negative" class="input-modern" placeholder="nsfw, nude, explicit" />
+            </div>
+          </div>
+          <div class="setting-row">
+            <div><h3>拦截时提示用户</h3><p>默认关闭（静默忽略，与功能开关一致）；打开后回一句「被内容过滤拦下」。</p></div>
+            <label class="switch-wrapper"><input type="checkbox" id="perm_nsfw_notify" class="ios-switch" /></label>
+          </div>
         </article>
       </section>
 

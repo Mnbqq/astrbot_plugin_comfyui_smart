@@ -95,7 +95,15 @@ const FIELDS = [
   { id: 'perm_blacklist', path: ['permission', 'blacklist_user_ids'], kind: 'list' },
   { id: 'perm_daily_limit', path: ['permission', 'daily_limit'], kind: 'int' },
   { id: 'perm_cooldown', path: ['permission', 'cooldown_seconds'], kind: 'int' },
-  { id: 'perm_admin_bypass', path: ['permission', 'admin_bypass'], kind: 'bool' },
+  { id: 'perm_admin_bypass', path: ['permission', 'admin_bypass'], kind: 'bool' },  { id: 'perm_audit_log', path: ['permission', 'audit_log'], kind: 'bool' },
+  { id: 'perm_feature_rules', path: ['permission', 'feature_rules'], kind: 'text' },
+  { id: 'perm_video_daily_limit', path: ['permission', 'video_daily_limit'], kind: 'int' },
+  { id: 'perm_video_cooldown', path: ['permission', 'video_cooldown'], kind: 'int' },
+  { id: 'perm_nsfw_filter', path: ['permission', 'nsfw_filter'], kind: 'bool' },
+  { id: 'perm_nsfw_words', path: ['permission', 'nsfw_words'], kind: 'text' },
+  { id: 'perm_nsfw_negative', path: ['permission', 'nsfw_negative'], kind: 'text' },
+  { id: 'perm_nsfw_notify', path: ['permission', 'nsfw_notify'], kind: 'bool' },
+
 
   { id: 'agent_enable_tool', path: ['agent', 'enable_llm_tool'], kind: 'bool' },
 ];

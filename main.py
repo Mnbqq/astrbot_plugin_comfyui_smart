@@ -37,7 +37,7 @@ from .workflow_templates import (
 
 PLUGIN_NAME = "astrbot_plugin_comfyui_smart"
 # 与 metadata.yaml 的 version 保持一致（tests/test_logic.py 会校验二者不漂移）
-PLUGIN_VERSION = "0.21.1"
+PLUGIN_VERSION = "0.22.0"
 
 # 机器档位：决定分辨率/帧数/步数上限。auto 时按显存判定（内存太小再降一档）。
 MACHINE_PRESETS = {
@@ -120,6 +120,10 @@ FEATURE_LABELS = {
 
 class FeatureDisabledError(ComfyUIError):
     """功能开关关掉了（继承 ComfyUIError，好让各指令的既有错误分支原样兜住）。"""
+
+
+class ContentBlockedError(ComfyUIError):
+    """描述命中了内容过滤词（同样继承 ComfyUIError，内部保险用）。"""
 
 
 # 视频架构白名单：视频用途挑底模、以及「像不像视频模型」的校验都用它
@@ -885,28 +889,47 @@ class ComfyUISmartPlugin(Star):
             "pool": pool,
         }
 
-    def feature_enabled(self, name: str) -> bool:
-        """该功能是否开启（缺省按 FEATURE_DEFAULTS：只开文生图）。
+    def feature_enabled(self, name: str, event=None) -> bool:
+        """该功能是否开启。
+
+        优先级：按范围规则（user > group > default）> 全局 features 开关。
+        全局缺省按 FEATURE_DEFAULTS（只开文生图）。
 
         Args:
             name: 开关名（t2i/i2i/outpaint/inpaint/t2v/i2v/reverse_prompt）。
+            event: 消息事件；给了就按「群/用户功能白名单」再判一次。
 
         Returns:
             True 表示可用。
         """
+        if event is not None:
+            try:
+                uid = str(event.get_sender_id())
+                gid = str(event.get_group_id() or "")
+                override = self.permission.feature_override(
+                    uid, gid, is_admin=bool(event.is_admin())
+                )
+            except Exception:      # noqa: BLE001 - 事件结构异常就退回全局开关
+                override = None
+            if override is not None:
+                return name in override
         conf = self.config.get("features") or {}
         value = conf.get(name, FEATURE_DEFAULTS.get(name, True))
         if isinstance(value, str):      # 手改 JSON 写成 "false"/"off" 也要认
             return value.strip().lower() not in ("", "0", "false", "off", "no")
         return bool(value)
 
-    def require_feature(self, name: str) -> None:
+    def require_feature(self, name: str, event=None) -> None:
         """功能没开就抛 FeatureDisabledError（消息里写清去哪打开）。
+
+        Args:
+            name: 开关名。
+            event: 消息事件（用于按群/用户规则判断）。
 
         Raises:
             FeatureDisabledError: 该功能被关闭。
         """
-        if self.feature_enabled(name):
+        if self.feature_enabled(name, event):
             return
         label, how = FEATURE_LABELS.get(name, (name, ""))
         try:
@@ -915,9 +938,17 @@ class ComfyUISmartPlugin(Star):
             message = f"🚫 功能「{label}」当前未开启，请到插件配置的功能开关里打开。"
         raise FeatureDisabledError(message)
 
-    def enabled_features(self) -> list[str]:
-        """已开启功能的展示名列表（给 /帮助 与状态面板用）。"""
-        return [FEATURE_LABELS.get(k, (k, ""))[0] for k in FEATURE_DEFAULTS if self.feature_enabled(k)]
+    def enabled_features(self, event=None) -> list[str]:
+        """已开启功能的展示名列表（给 /帮助 与状态面板用）。
+
+        Args:
+            event: 消息事件；给了就按该用户/群的范围规则列。
+        """
+        return [
+            FEATURE_LABELS.get(k, (k, ""))[0]
+            for k in FEATURE_DEFAULTS
+            if self.feature_enabled(k, event)
+        ]
 
     async def _machine(self, client=None) -> dict:
         """取当前机器档位（按配置 + 显存/内存自动判定，只探测一次）。
@@ -1112,8 +1143,14 @@ class ComfyUISmartPlugin(Star):
         preset = preset or {}
         # 本次是否让 LLM 改写：行内 --llm / --no-llm 优先于配置
         purpose_preview = force_purpose or ("i2i" if source_image else "t2i")
+        # 内容过滤（内部保险：指令入口已拦过，这里挡住 LLM 工具/配置页等其它入口）
+        hit = self.permission.nsfw_hit(user_desc)
+        if hit:
+            self._audit(event.get_sender_id() if event else "", purpose="blocked_nsfw",
+                        ok=False, note=hit, prompt=user_desc, event=event)
+            raise ContentBlockedError(self.t("perm.nsfw_blocked", word=hit))
         # 功能开关：所有生成能力（含 LLM 无指令出图）都从这一个入口走
-        self.require_feature(purpose_preview)
+        self.require_feature(purpose_preview, event)
         is_video = purpose_preview in ("t2v", "i2v")
         flag_llm = str(opts.get("llm") or "").strip() not in ("", "0", "false")
         flag_no_llm = str(opts.get("no_llm") or "").strip() not in ("", "0", "false")
@@ -1366,6 +1403,15 @@ class ComfyUISmartPlugin(Star):
             neg_chunks.append(str(opts.get("negative") or ""))
             negative = merge_tags(*neg_chunks)
 
+        # LLM 改写后的正向词也要再查一遍（模型可能自己加进露骨词）
+        hit = self.permission.nsfw_hit(positive)
+        if hit:
+            raise ContentBlockedError(self.t("perm.nsfw_blocked", word=hit))
+
+        # 内容过滤开启时附加负面词（配合过滤一起用，降低擦边概率）
+        if self.permission.nsfw_filter and self.permission.nsfw_negative:
+            negative = merge_tags(negative, self.permission.nsfw_negative)
+
         # 配置里强制指定的 VAE 优先（模型自带 VAE 有问题时用于纠正偏色）
         force_vae = str(draw_conf.get("force_vae") or "").strip()
         if force_vae:
@@ -1573,11 +1619,19 @@ class ComfyUISmartPlugin(Star):
             raise
         if not images:
             raise ComfyUIError(self.t("error.no_output"))
+        # 审计：在唯一出口写，覆盖指令 / LLM 无指令出图 / 配置页等所有入口
+        audit_uid = str(getattr(event, "get_sender_id", lambda: "")() or "") if event else ""
+        self._audit(
+            audit_uid, name=_sender_name(event, audit_uid) if event else "",
+            purpose=purpose, model=selection["model"],
+            seconds=time.time() - started, ok=True, prompt=positive, seed=seed, event=event,
+        )
         videos = [p for p in images if media_kind(p.name) == "video"]
         pictures = [p for p in images if media_kind(p.name) != "video"]
         return {
             "images": pictures,
             "videos": videos,
+            "purpose": purpose,
             "template": template.name,
             "model": selection["model"],
             "lora": selection["lora"],
@@ -1778,12 +1832,22 @@ class ComfyUISmartPlugin(Star):
             yield event.plain_result(reason)
             return
 
-        # 功能关闭：静默忽略，不做任何回复（配置页「功能开关」控制）
-        if not self.feature_enabled("t2i"):
+        # 功能关闭：静默忽略，不做任何回复（全局开关 + 按群/用户白名单）
+        if not self.feature_enabled("t2i", event):
             return
 
         raw = _extract_command_payload(event, "画图", "绘图", "draw", "生成图片")
         desc, opts = parse_inline_params(raw)
+
+        # 内容过滤：命中就拦下（默认静默，可配置成提示一句）
+        hit = self.permission.nsfw_hit(desc)
+        if hit:
+            logger.info("内容过滤拦截：user=%s hit=%s", uid, hit)
+            self._audit(uid, name=_sender_name(event, uid), purpose="blocked_nsfw", ok=False,
+                        note=hit, prompt=desc, event=event)
+            if self.permission.nsfw_notify:
+                yield event.plain_result(self.t("perm.nsfw_blocked", word=hit))
+            return
         if not desc:
             yield event.plain_result(self.t("cmd.draw.usage"))
             return
@@ -1831,6 +1895,48 @@ class ComfyUISmartPlugin(Star):
 
         chain = self._compose_result_chain(event, uid, result)
         yield event.chain_result(chain)
+
+    def _audit(self, uid: str, *, name: str = "", purpose: str = "", model: str = "",
+               seconds: float = 0.0, ok: bool = True, note: str = "",
+               prompt: str = "", seed=None, event=None) -> None:
+        """写一条审计记录（配置 permission.audit_log 打开时）。
+
+        审计失败绝不影响出图：这里吞掉异常，只记一条调试日志。
+
+        Args:
+            uid: 用户 id。
+            name: 昵称。
+            purpose: 用途（t2i/t2v/... 或 blocked_nsfw）。
+            model: 使用的底模。
+            seconds: 耗时。
+            ok: 是否成功。
+            note: 备注（例如命中的过滤词）。
+            prompt: 提示词（只存前 60 字）。
+            seed: 随机种子。
+            event: 消息事件（用于取群号）。
+        """
+        if not bool((self.config.get("permission", {}) or {}).get("audit_log", True)):
+            return
+        try:
+            entry = {
+                "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "user_id": str(uid),
+                "user_name": name or "",
+                "group_id": str(getattr(event, "get_group_id", lambda: "")() or "") if event else "",
+                "purpose": purpose,
+                "model": model,
+                "seconds": round(float(seconds or 0), 1),
+                "ok": bool(ok),
+            }
+            if note:
+                entry["note"] = note
+            if prompt:
+                entry["prompt"] = str(prompt)[:60]
+            if seed is not None:
+                entry["seed"] = seed
+            self.storage.append_audit(entry)
+        except Exception as exc:      # noqa: BLE001 - 审计永远不能影响出图
+            logger.debug("写审计失败：%s", exc)
 
     async def _record_generation(
         self, uid: str, event: AstrMessageEvent, result: dict
@@ -2139,6 +2245,36 @@ class ComfyUISmartPlugin(Star):
             chain.append(Image.fromFileSystem(str(path)))
         return chain
 
+    @filter.command("审计", alias={"audit", "日志", "记录"})
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    async def cmd_audit(self, event: AstrMessageEvent):
+        """查看最近的审计记录（管理员）。"""
+        raw = _extract_command_payload(event, "审计", "audit", "日志", "记录")
+        _desc, opts = parse_inline_params(raw)
+        try:
+            limit = max(1, min(100, int(str(opts.get("count") or "").strip() or 20)))
+        except ValueError:
+            limit = 20
+        only_user = str(opts.get("user") or "").strip()
+        rows = self.storage.load_audit(limit=limit, user_id=only_user)
+        if not rows:
+            yield event.plain_result(self.t("cmd.audit.empty"))
+            return
+        total = len(self.storage.load_audit(limit=100000, user_id=only_user))
+        lines = [self.t("cmd.audit.title", count=len(rows), total=total)]
+        for row in rows:
+            lines.append(self.t(
+                "cmd.audit.line",
+                time=row.get("time", ""),
+                name=row.get("user_name") or "-",
+                uid=row.get("user_id", ""),
+                purpose=row.get("purpose") or row.get("note") or "-",
+                model=(row.get("model") or "-").split("/")[-1][:28],
+                seconds=row.get("seconds", 0),
+                ok=self.t("cmd.audit.ok") if row.get("ok", True) else self.t("cmd.audit.fail"),
+            ))
+        yield event.plain_result("\n".join(lines))
+
     @filter.command("刷新模型")
     @filter.permission_type(filter.PermissionType.ADMIN)
     async def cmd_refresh_models(self, event: AstrMessageEvent):
@@ -2288,12 +2424,22 @@ class ComfyUISmartPlugin(Star):
             yield event.plain_result(reason)
             return
 
-        # 功能关闭：静默忽略，不做任何回复（配置页「功能开关」控制）
-        if not self.feature_enabled("i2i"):
+        # 功能关闭：静默忽略，不做任何回复（全局开关 + 按群/用户白名单）
+        if not self.feature_enabled("i2i", event):
             return
 
         raw = _extract_command_payload(event, "图生图", "改图", "i2i", "重绘")
         desc, opts = parse_inline_params(raw)
+
+        # 内容过滤：命中就拦下（默认静默，可配置成提示一句）
+        hit = self.permission.nsfw_hit(desc)
+        if hit:
+            logger.info("内容过滤拦截：user=%s hit=%s", uid, hit)
+            self._audit(uid, name=_sender_name(event, uid), purpose="blocked_nsfw", ok=False,
+                        note=hit, prompt=desc, event=event)
+            if self.permission.nsfw_notify:
+                yield event.plain_result(self.t("perm.nsfw_blocked", word=hit))
+            return
 
         images = await self._collect_images(event)
         if not images:
@@ -2341,12 +2487,22 @@ class ComfyUISmartPlugin(Star):
             yield event.plain_result(reason)
             return
 
-        # 功能关闭：静默忽略，不做任何回复（配置页「功能开关」控制）
-        if not self.feature_enabled("outpaint"):
+        # 功能关闭：静默忽略，不做任何回复（全局开关 + 按群/用户白名单）
+        if not self.feature_enabled("outpaint", event):
             return
 
         raw = _extract_command_payload(event, "扩图", "外扩", "outpaint", "扩画")
         desc, opts = parse_inline_params(raw)
+
+        # 内容过滤：命中就拦下（默认静默，可配置成提示一句）
+        hit = self.permission.nsfw_hit(desc)
+        if hit:
+            logger.info("内容过滤拦截：user=%s hit=%s", uid, hit)
+            self._audit(uid, name=_sender_name(event, uid), purpose="blocked_nsfw", ok=False,
+                        note=hit, prompt=desc, event=event)
+            if self.permission.nsfw_notify:
+                yield event.plain_result(self.t("perm.nsfw_blocked", word=hit))
+            return
 
         images = await self._collect_images(event)
         if not images:
@@ -2388,18 +2544,28 @@ class ComfyUISmartPlugin(Star):
         uid = str(event.get_sender_id())
         is_admin = bool(event.is_admin())
         allowed, reason = await self.permission.check(
-            uid, is_admin=is_admin, storage=self.storage
+            uid, is_admin=is_admin, storage=self.storage, video=True
         )
         if not allowed:
             yield event.plain_result(reason)
             return
 
-        # 功能关闭：静默忽略，不做任何回复（配置页「功能开关」控制）
-        if not self.feature_enabled("i2v"):
+        # 功能关闭：静默忽略，不做任何回复（全局开关 + 按群/用户白名单）
+        if not self.feature_enabled("i2v", event):
             return
 
         raw = _extract_command_payload(event, "图生视频", "首尾帧", "i2v", "让图动起来")
         desc, opts = parse_inline_params(raw)
+
+        # 内容过滤：命中就拦下（默认静默，可配置成提示一句）
+        hit = self.permission.nsfw_hit(desc)
+        if hit:
+            logger.info("内容过滤拦截：user=%s hit=%s", uid, hit)
+            self._audit(uid, name=_sender_name(event, uid), purpose="blocked_nsfw", ok=False,
+                        note=hit, prompt=desc, event=event)
+            if self.permission.nsfw_notify:
+                yield event.plain_result(self.t("perm.nsfw_blocked", word=hit))
+            return
 
         images = await self._collect_images(event)
         if not images:
@@ -2434,7 +2600,7 @@ class ComfyUISmartPlugin(Star):
             yield event.plain_result(f"💥 {e}")
             return
 
-        await self.permission.record(uid, is_admin=is_admin, storage=self.storage)
+        await self.permission.record(uid, is_admin=is_admin, storage=self.storage, video=True)
         await self._record_generation(uid, event, result)
         yield event.chain_result(self._compose_result_chain(event, uid, result))
 
@@ -2444,18 +2610,28 @@ class ComfyUISmartPlugin(Star):
         uid = str(event.get_sender_id())
         is_admin = bool(event.is_admin())
         allowed, reason = await self.permission.check(
-            uid, is_admin=is_admin, storage=self.storage
+            uid, is_admin=is_admin, storage=self.storage, video=True
         )
         if not allowed:
             yield event.plain_result(reason)
             return
 
-        # 功能关闭：静默忽略，不做任何回复（配置页「功能开关」控制）
-        if not self.feature_enabled("t2v"):
+        # 功能关闭：静默忽略，不做任何回复（全局开关 + 按群/用户白名单）
+        if not self.feature_enabled("t2v", event):
             return
 
         raw = _extract_command_payload(event, "视频", "生成视频", "文生视频", "video", "t2v")
         desc, opts = parse_inline_params(raw)
+
+        # 内容过滤：命中就拦下（默认静默，可配置成提示一句）
+        hit = self.permission.nsfw_hit(desc)
+        if hit:
+            logger.info("内容过滤拦截：user=%s hit=%s", uid, hit)
+            self._audit(uid, name=_sender_name(event, uid), purpose="blocked_nsfw", ok=False,
+                        note=hit, prompt=desc, event=event)
+            if self.permission.nsfw_notify:
+                yield event.plain_result(self.t("perm.nsfw_blocked", word=hit))
+            return
         if not desc:
             video_conf = self.config.get("video", {}) or {}
             yield event.plain_result(self.t(
@@ -2487,7 +2663,7 @@ class ComfyUISmartPlugin(Star):
             yield event.plain_result(f"💥 {e}")
             return
 
-        await self.permission.record(uid, is_admin=is_admin, storage=self.storage)
+        await self.permission.record(uid, is_admin=is_admin, storage=self.storage, video=True)
         await self._record_generation(uid, event, result)
         yield event.chain_result(self._compose_result_chain(event, uid, result))
 
@@ -2503,8 +2679,8 @@ class ComfyUISmartPlugin(Star):
             yield event.plain_result(reason)
             return
 
-        # 功能关闭：静默忽略，不做任何回复（配置页「功能开关」控制）
-        if not self.feature_enabled("reverse_prompt"):
+        # 功能关闭：静默忽略，不做任何回复（全局开关 + 按群/用户白名单）
+        if not self.feature_enabled("reverse_prompt", event):
             return
 
         raw = _extract_command_payload(event, "反推", "反推提示词", "识图", "img2prompt")
@@ -2608,7 +2784,7 @@ class ComfyUISmartPlugin(Star):
     async def cmd_help(self, event: AstrMessageEvent):
         """查看帮助。"""
         text = self.t("cmd.help.body")
-        opened = self.enabled_features()
+        opened = self.enabled_features(event)
         text += "\n" + self.t("cmd.help.features",
                              **{"list": "、".join(opened) if opened else "（无）"})
         yield event.plain_result(text)
@@ -2628,7 +2804,7 @@ class ComfyUISmartPlugin(Star):
         """
         agent_conf = self.config.get("agent", {}) or {}
         # 无指令出图关闭、或文生图功能关闭：静默忽略，不做任何回复
-        if not agent_conf.get("enable_llm_tool", False) or not self.feature_enabled("t2i"):
+        if not agent_conf.get("enable_llm_tool", False) or not self.feature_enabled("t2i", event):
             return
 
         uid = str(event.get_sender_id())
