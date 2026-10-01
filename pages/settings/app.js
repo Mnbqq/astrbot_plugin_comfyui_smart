@@ -20,6 +20,8 @@ const FIELDS = [
   { id: 'features_t2v', path: ['features', 't2v'], kind: 'bool' },
   { id: 'features_i2v', path: ['features', 'i2v'], kind: 'bool' },
   { id: 'features_reverse_prompt', path: ['features', 'reverse_prompt'], kind: 'bool' },
+  { id: 'features_control', path: ['features', 'control'], kind: 'bool' },
+  { id: 'features_upscale', path: ['features', 'upscale'], kind: 'bool' },
   { id: 'general_language', path: ['general', 'language'], kind: 'select',
     options: ['auto', 'zh-CN', 'en-US'] },
   { id: 'server_free_before_switch', path: ['server', 'free_before_switch'], kind: 'bool' },

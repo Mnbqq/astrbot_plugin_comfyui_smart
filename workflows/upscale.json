@@ -1,0 +1,82 @@
+{
+  "name": "upscale",
+  "purpose": "upscale",
+  "arch": "generic",
+  "loader": "checkpoint",
+  "description": "放大：LoadImage → UpscaleModelLoader（4x-UltraSharp）→ ImageUpscaleWithModel → ImageScaleBy（把 4 倍缩回你要的倍数）→ SaveImage。params 暴露 scale_by（= 目标倍数 / 4）与倍数，`/放大 --scale 2` 即 4x 模型 + 0.5 缩放。",
+  "bindings": {
+    "save": {
+      "node": "4"
+    },
+    "image_loader": {
+      "node": "5"
+    }
+  },
+  "params": {
+    "scale_by": "3"
+  },
+  "graph": {
+    "5": {
+      "class_type": "LoadImage",
+      "_meta": {
+        "title": "要放大的图"
+      },
+      "inputs": {
+        "image": "astrbot/upscale.png"
+      }
+    },
+    "1": {
+      "class_type": "UpscaleModelLoader",
+      "_meta": {
+        "title": "放大模型"
+      },
+      "inputs": {
+        "model_name": "4x-UltraSharp.safetensors"
+      }
+    },
+    "2": {
+      "class_type": "ImageUpscaleWithModel",
+      "_meta": {
+        "title": "放大"
+      },
+      "inputs": {
+        "upscale_model": [
+          "1",
+          0
+        ],
+        "image": [
+          "5",
+          0
+        ]
+      }
+    },
+    "3": {
+      "class_type": "ImageScaleBy",
+      "_meta": {
+        "title": "缩回目标倍数"
+      },
+      "inputs": {
+        "image": [
+          "2",
+          0
+        ],
+        "upscale_method": "lanczos",
+        "scale_by": 0.5
+      }
+    },
+    "4": {
+      "class_type": "SaveImage",
+      "_meta": {
+        "title": "保存图片"
+      },
+      "inputs": {
+        "images": [
+          "3",
+          0
+        ],
+        "filename_prefix": "astrbot_upscale"
+      }
+    }
+  },
+  "prompt_required": false
+}

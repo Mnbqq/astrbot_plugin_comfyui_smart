@@ -43,7 +43,7 @@ from .workflow_templates import (
 
 PLUGIN_NAME = "astrbot_plugin_comfyui_smart"
 # 与 metadata.yaml 的 version 保持一致（tests/test_logic.py 会校验二者不漂移）
-PLUGIN_VERSION = "0.24.0"
+PLUGIN_VERSION = "0.25.0"
 
 # 机器档位：决定分辨率/帧数/步数上限。auto 时按显存判定（内存太小再降一档）。
 MACHINE_PRESETS = {
@@ -111,6 +111,8 @@ FEATURE_DEFAULTS = {
     "t2v": False,
     "i2v": False,
     "reverse_prompt": False,
+    "control": False,
+    "upscale": False,
 }
 # 开关名 -> (界面上的中文名, 对应指令)，用于「未开启」时的提示
 FEATURE_LABELS = {
@@ -121,6 +123,8 @@ FEATURE_LABELS = {
     "t2v": ("文生视频", "/视频"),
     "i2v": ("图生视频", "/图生视频"),
     "reverse_prompt": ("看图反推提示词", "/反推"),
+    "control": ("ControlNet 深度控制", "/画图 --control depth"),
+    "upscale": ("放大", "/放大"),
 }
 
 
@@ -163,6 +167,14 @@ PARAM_ALIASES = {
     "negative": "negative", "负面": "negative",
     # 提示词优化开关（本次生效）：--llm 强制改写 / --no-llm 本次不改写
     "llm": "llm", "优化": "llm", "no-llm": "no_llm", "no_llm": "no_llm", "不优化": "no_llm",
+    # ControlNet 控制 / 放大
+    "control": "control", "控制": "control", "controlnet": "control",
+    "control-model": "control_model", "control_model": "control_model", "控制模型": "control_model",
+    "control-strength": "control_strength", "control_strength": "control_strength",
+    "控制强度": "control_strength",
+    "control-end": "control_end", "control_end": "control_end", "控制结束": "control_end",
+    "scale": "scale", "倍数": "scale", "放大倍数": "scale",
+    "upscale": "upscale", "放大": "upscale",
     # 扩图（outpaint）：左右上下扩展量与羽化
     "left": "left", "左": "left", "左边": "left",
     "right": "right", "右": "right", "右边": "right",
@@ -899,6 +911,31 @@ class ComfyUISmartPlugin(Star):
                 "ComfyUI 里没有发现任何可用的底模（checkpoints / diffusion_models 都是空的）"
             )
 
+        # ControlNet 用途：装的是 SDXL 深度 ControlNet，配 SD1.5 底模会直接报
+        # 「y is None, did you try using a controlnet for SDXL on SD1?」（真机实测）。
+        # 没显式指定底模时，自动挑一个 SDXL 系（sdxl / pony / illustrious）。
+        if purpose == "control" and not str(opts.get("model") or opt.get("checkpoint") or "").strip():
+            if guess_arch(model, arch_override) not in ("sdxl", "pony", "illustrious"):
+                # 排除「非纯文生图」的 SDXL 变体：inpaint/instruct 的 UNet 输入通道不同，
+                # 挂 ControlNet 会报 y is None（真机踩过：AnythingXL_inkBase 就是这种）
+                skip_hints = ("inpaint", "instruct", "inkbase", "ink_base", "tile", "refiner",
+                              "canny", "depth", "lineart", "sketch", "seg", "pose")
+                sdxl_like = [
+                    name for name in checkpoints
+                    if guess_arch(name, arch_override) in ("sdxl", "pony", "illustrious")
+                    and not any(h in name.lower() for h in skip_hints)
+                ]
+                if sdxl_like:
+                    logger.info("ControlNet 需要 SDXL 系底模，自动从 %s 改用 %s", model, sdxl_like[0])
+                    model = sdxl_like[0]
+                    folder = _pool_of(model)
+                    pool = pools.get(folder, [])
+                else:
+                    logger.warning(
+                        "ControlNet 模板用的是 SDXL 深度 ControlNet，但清单里没有 SDXL 系底模（当前 %s），"
+                        "可能会报 controlnet for SDXL on SD1", model
+                    )
+
         lora = ""
         wanted_lora = str(opts.get("lora") or opt.get("lora") or "").strip()
         if wanted_lora:
@@ -1003,6 +1040,25 @@ class ComfyUISmartPlugin(Star):
             "arch": arch,
             "pool": pool,
         }
+
+    def _resolve_upscale_selection(self) -> dict:
+        """放大用途的「选型」：不需要底模，只要 upscale 模板。
+
+        Returns:
+            与 _resolve_selection 同构的字典（model 等为空）。
+
+        Raises:
+            ComfyUIError: 没有可用的放大模板。
+        """
+        template, arch = pick_template(
+            self.templates, model_name="", model_folder="", purpose="upscale"
+        )
+        if template is None:
+            raise ComfyUIError(
+                "没有可用的放大模板。请确认插件 workflows 目录里有 upscale.json"
+            )
+        return {"model": "", "folder": "", "lora": "", "vae": "",
+                "template": template, "arch": arch or "generic", "pool": ""}
 
     def feature_enabled(self, name: str, event=None) -> bool:
         """该功能是否开启。
@@ -1271,6 +1327,8 @@ class ComfyUISmartPlugin(Star):
         flag_no_llm = str(opts.get("no_llm") or "").strip() not in ("", "0", "false")
         if is_video:
             want_llm = bool(llm_conf.get("optimize_for_video", True))
+        elif purpose_preview == "upscale":
+            want_llm = False          # 放大不涉及提示词，别浪费一次 LLM 调用
         else:
             want_llm = bool(llm_conf.get("enable_prompt_optimize", True))
         if flag_llm:
@@ -1360,7 +1418,10 @@ class ComfyUISmartPlugin(Star):
             ).strip()
             end_ref = await comfy.upload_image(end_image, subfolder=end_sub)
 
-        selection = await self._resolve_selection(
+        if purpose_preview == "upscale":
+            selection = self._resolve_upscale_selection()
+        else:
+            selection = await self._resolve_selection(
             catalog, opt, opts, purpose=purpose, client=comfy
         )
         template: WorkflowTemplate = selection["template"]
@@ -1423,7 +1484,17 @@ class ComfyUISmartPlugin(Star):
                 sampling["width"], sampling["height"], video_info["length"],
                 video_info["fps"], video_info["seconds"],
             )
-        if purpose in ("i2i", "inpaint"):
+        if purpose == "upscale":
+            # 放大：倍数换算成「4x 模型 + 缩放」（scale_by = 目标倍数 / 4）
+            try:
+                scale = float(str(opts.get("scale") or 2).strip() or 2)
+            except ValueError:
+                scale = 2.0
+            scale = min(4.0, max(1.0, scale))
+            template_params = {"scale_by": round(scale / 4.0, 4)}
+            logger.info("放大｜输入 %s｜目标倍数 %.1fx（模型 4x，缩放 %.3f）",
+                        image_ref, scale, scale / 4.0)
+        elif purpose in ("i2i", "inpaint"):
             i2i_conf = self.config.get("i2i", {}) or {}
             if purpose == "inpaint":
                 # 局部重绘靠遮罩保住其余像素，默认**整段重画**（denoise=1.0）。
@@ -1484,6 +1555,27 @@ class ComfyUISmartPlugin(Star):
                 template_params.get("top"), template_params.get("bottom"),
                 template_params.get("feathering"),
             )
+        if purpose == "control":
+            # ControlNet 深度：强度与结束时机可调（越大越贴参考图的构图/姿势）
+            try:
+                ctrl_strength = float(str(opts.get("control_strength") or 0.8).strip() or 0.8)
+            except ValueError:
+                ctrl_strength = 0.8
+            try:
+                ctrl_end = float(str(opts.get("control_end") or 0.7).strip() or 0.7)
+            except ValueError:
+                ctrl_end = 0.7
+            template_params = {
+                "strength": min(2.0, max(0.0, ctrl_strength)),
+                "end_percent": min(1.0, max(0.05, ctrl_end)),
+            }
+            # ControlNet 权重可换：--control-model 文件名（默认用模板里的标准 SDXL 深度模型）
+            ctrl_model = str(opts.get("control_model") or "").strip()
+            if ctrl_model:
+                template_params["control_net_name"] = ctrl_model
+            logger.info("ControlNet｜参考图 %s｜强度 %.2f｜结束 %.2f",
+                        image_ref, ctrl_strength, ctrl_end)
+
         profile = arch_profile(selection["arch"])
 
         # 正向：按架构补质量词（SD1.5 系模型不加质量词出图会明显发糊）
@@ -1587,7 +1679,9 @@ class ComfyUISmartPlugin(Star):
         hires_method = str(hires_conf.get("method") or "bislerp")
 
         # 自动开关分文生图/图生图两个，互不影响（扩图属于「改图」，跟随图生图那一个）
-        if purpose in ("i2i", "outpaint", "inpaint"):
+        if purpose == "upscale":
+            hires_on = False          # 放大本身就是后处理，不再叠 Hires
+        elif purpose in ("i2i", "outpaint", "inpaint"):
             hires_on = bool(hires_conf.get("enable", False)) and bool(
                 hires_conf.get("enable_for_i2i", True)
             )
@@ -1743,6 +1837,29 @@ class ComfyUISmartPlugin(Star):
         )
         videos = [p for p in images if media_kind(p.name) == "video"]
         pictures = [p for p in images if media_kind(p.name) != "video"]
+
+        # 可选放大后处理：--upscale 2（需要「放大」功能开启）。
+        # 复用 generate() 的 upscale 用途：上传产物 → 4x 模型 → 缩回目标倍数。
+        upscale_note = ""
+        if (purpose != "upscale" and pictures
+                and str(opts.get("upscale") or "").strip()
+                and self.feature_enabled("upscale", event)):
+            try:
+                scale = float(str(opts["upscale"]).strip())
+            except ValueError:
+                scale = 2.0
+            try:
+                sub_result = await self.generate(
+                    user_desc="", opts={"scale": f"{scale:g}"}, event=event,
+                    force_purpose="upscale", source_image=str(pictures[0]),
+                )
+                if sub_result.get("images"):
+                    pictures = sub_result["images"]
+                    upscale_note = f"已 {scale:g}x 放大"
+            except (ComfyUIError, TemplateError) as exc:
+                logger.warning("放大后处理失败，保留原图：%s", exc)
+                upscale_note = "放大失败，已返回原图"
+
         return {
             "images": pictures,
             "videos": videos,
@@ -1759,6 +1876,7 @@ class ComfyUISmartPlugin(Star):
             "prompt_note": prompt_note,
             "hires": hires_info,
             "hires_note": hires_note,
+            "upscale_note": upscale_note,
             "i2i": bool(image_ref),
             "denoise": denoise if denoise is not None else 1.0,
             "outpaint": outpaint_info,
@@ -1967,10 +2085,18 @@ class ComfyUISmartPlugin(Star):
             yield event.plain_result(self.t("cmd.draw.usage"))
             return
 
-        # 带了图片就走图生图（可在配置里关掉）
+        # 带了图片就走图生图（可在配置里关掉）；--control 则走 ControlNet 深度控制
         source_image = ""
+        control_mode = str(opts.get("control") or "").strip().lower()
         images = await self._collect_images(event)
-        if images:
+        if control_mode and control_mode not in ("0", "off", "false", "none"):
+            if not self.feature_enabled("control", event):
+                return
+            if not images:
+                yield event.plain_result(self.t("cmd.draw.control_no_image"))
+                return
+            source_image = images[0]
+        elif images:
             if bool((self.config.get("i2i", {}) or {}).get("enable", True)):
                 source_image = images[0]
             else:
@@ -1991,6 +2117,7 @@ class ComfyUISmartPlugin(Star):
                 on_queued=on_queued,
                 on_progress=on_progress,
                 source_image=source_image,
+                force_purpose="control" if control_mode else "",
             )
         except (ComfyUIError, TemplateError) as e:
             logger.warning("出图失败：%s", e)
@@ -2327,6 +2454,8 @@ class ComfyUISmartPlugin(Star):
                     detail += self.t("result.hires_scale", scale=result["hires"].get("scale", ""))
             if result.get("hires_note"):
                 detail += self.t("result.warning", text=result["hires_note"])
+            if result.get("upscale_note"):
+                detail += self.t("result.note", note=result["upscale_note"])
             if result.get("prompt_note"):
                 detail += self.t("result.note", note=result["prompt_note"])
             if result.get("i2v"):
@@ -2359,6 +2488,53 @@ class ComfyUISmartPlugin(Star):
         for path in result["images"]:
             chain.append(Image.fromFileSystem(str(path)))
         return chain
+
+    @filter.command("放大", alias={"upscale", "画质提升", "高清化"})
+    async def cmd_upscale(self, event: AstrMessageEvent):
+        """把图片放大（默认 2 倍，用 4x 模型再缩回目标倍数）。"""
+        uid = str(event.get_sender_id())
+        is_admin = bool(event.is_admin())
+        allowed, reason = await self.permission.check(
+            uid, is_admin=is_admin, storage=self.storage
+        )
+        if not allowed:
+            yield event.plain_result(reason)
+            return
+
+        if not self.feature_enabled("upscale", event):
+            return
+
+        raw = _extract_command_payload(event, "放大", "upscale", "画质提升", "高清化")
+        _desc, opts = parse_inline_params(raw)
+        images = await self._collect_images(event)
+        if not images:
+            yield event.plain_result(self.t("cmd.upscale.usage"))
+            return
+
+        yield event.plain_result(self.t("cmd.upscale.received"))
+        on_wait, on_queued, on_progress = self._queue_notifiers(event)
+        try:
+            result = await self.generate(
+                user_desc="",
+                opts=opts,
+                event=event,
+                on_wait=on_wait,
+                on_queued=on_queued,
+                on_progress=on_progress,
+                source_image=images[0],
+                force_purpose="upscale",
+            )
+        except (ComfyUIError, TemplateError) as e:
+            logger.warning("放大失败：%s", e)
+            yield event.plain_result(self.t("error.failed", error=e))
+            return
+        except RuntimeError as e:
+            yield event.plain_result(f"💥 {e}")
+            return
+
+        await self.permission.record(uid, is_admin=is_admin, storage=self.storage)
+        await self._record_generation(uid, event, result)
+        yield event.chain_result(self._compose_result_chain(event, uid, result))
 
     @filter.command("审计", alias={"audit", "日志", "记录"})
     @filter.permission_type(filter.PermissionType.ADMIN)

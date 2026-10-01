@@ -385,7 +385,7 @@ def _apply_binding_overrides(graph: dict, bindings: dict, spec: dict, name: str)
     return bindings
 
 
-def _derive_bindings(graph: dict) -> dict:
+def _derive_bindings(graph: dict, *, post_process: bool = False) -> dict:
     """从图结构推导出各注入点。
 
     Args:
@@ -478,6 +478,12 @@ def _derive_bindings(graph: dict) -> dict:
                 bindings["positive"] = (text_nodes[0], _text_key_of(graph[text_nodes[0]]))
                 bindings["negative"] = (text_nodes[1], _text_key_of(graph[text_nodes[1]]))
 
+    if post_process:
+        # 后处理模板（放大等）：没有采样器/提示词/尺寸节点是正常的，
+        # 只要求产物落地锚点，否则 prune_unreachable 会把整张图删空
+        if bindings.get("save") is None:
+            raise TemplateError("后处理模板必须给出 save 绑定（产物落地锚点）")
+        return bindings
     if bindings["sampler"] is None:
         raise TemplateError("工作流中没有 KSampler 节点，无法注入出图参数")
     if bindings["positive"] is None:
@@ -745,6 +751,7 @@ class WorkflowTemplate:
         loader: str = "",
         source: str = "",
         bindings: dict | None = None,
+        prompt_required: bool = True,
         purpose: str = "",
         params: dict | None = None,
     ):
@@ -777,8 +784,12 @@ class WorkflowTemplate:
         cleaned = prune_unreachable(copy.deepcopy(graph))
         validate_graph(cleaned)
         self.graph = cleaned
+        self.prompt_required = bool(prompt_required)
         self.bindings = _apply_binding_overrides(
-            cleaned, _derive_bindings(cleaned), bindings or {}, name
+            cleaned,
+            _derive_bindings(cleaned, post_process=not self.prompt_required),
+            bindings or {},
+            name,
         )
         self.params = _validate_params(cleaned, params or {}, name)
 
@@ -895,14 +906,15 @@ class WorkflowTemplate:
                 graph[node_id]["inputs"][key] = vae_name
             else:
                 _apply_vae(graph, vae_name)
-        # 3) 提示词（正/负）
-        pos_id, pos_key = b["positive"]
-        if not pos_key:
-            pos_key = _text_key_of(graph[pos_id])
-        if pos_key:
-            for key in _text_keys(graph, pos_id, pos_key):
-                graph[pos_id]["inputs"][key] = positive
-        if b["negative"] and arch_profile(self.arch).get("negative", True):
+        # 3) 提示词（正/负）。后处理模板（放大等）没有提示词节点，跳过。
+        if b.get("positive"):
+            pos_id, pos_key = b["positive"]
+            if not pos_key:
+                pos_key = _text_key_of(graph[pos_id])
+            if pos_key:
+                for key in _text_keys(graph, pos_id, pos_key):
+                    graph[pos_id]["inputs"][key] = positive
+        if b.get("negative") and arch_profile(self.arch).get("negative", True):
             neg_id, neg_key = b["negative"]
             if not neg_key:
                 neg_key = _text_key_of(graph[neg_id])
@@ -922,14 +934,15 @@ class WorkflowTemplate:
                 size_inputs["height"] = int(height)
             if "batch_size" in size_inputs:
                 size_inputs["batch_size"] = int(batch_size)
-        # 5) 采样参数
-        sampler_inputs = graph[b["sampler"]]["inputs"]
-        _set_first(sampler_inputs, SAMPLER_FIELDS["seed"], seed)
-        _set_first(sampler_inputs, SAMPLER_FIELDS["steps"], steps)
-        _set_first(sampler_inputs, SAMPLER_FIELDS["cfg"], cfg)
-        _set_first(sampler_inputs, SAMPLER_FIELDS["sampler_name"], sampler or None)
-        _set_first(sampler_inputs, SAMPLER_FIELDS["scheduler"], scheduler or None)
-        _set_first(sampler_inputs, SAMPLER_FIELDS["denoise"], denoise)
+        # 5) 采样参数（后处理模板没有采样器：跳过这一步，其余步骤照常）
+        if b.get("sampler"):
+            sampler_inputs = graph[b["sampler"]]["inputs"]
+            _set_first(sampler_inputs, SAMPLER_FIELDS["seed"], seed)
+            _set_first(sampler_inputs, SAMPLER_FIELDS["steps"], steps)
+            _set_first(sampler_inputs, SAMPLER_FIELDS["cfg"], cfg)
+            _set_first(sampler_inputs, SAMPLER_FIELDS["sampler_name"], sampler or None)
+            _set_first(sampler_inputs, SAMPLER_FIELDS["scheduler"], scheduler or None)
+            _set_first(sampler_inputs, SAMPLER_FIELDS["denoise"], denoise)
         # 6) Flux guidance
         if b["guidance"] and guidance is not None:
             if "guidance" in graph[b["guidance"]]["inputs"]:
@@ -1365,6 +1378,7 @@ def parse_template_payload(
             "purpose": _field("purpose"),
             "bindings": spec,
             "params": params,
+            "prompt_required": payload.get("prompt_required", True) is not False,
             "graph": _as_api_graph(payload["graph"], name, object_info),
         }
     # 裸界面格式：顶层就是 {"nodes": [...], "links": [...]}
@@ -1440,6 +1454,7 @@ def load_templates(*dirs: Path, object_info: dict | None = None) -> dict[str, Wo
                     source=str(path),
                     bindings=meta.get("bindings") or {},
                     params=meta.get("params") or {},
+                    prompt_required=meta.get("prompt_required", True),
                 )
             except (OSError, json.JSONDecodeError, TemplateError):
                 # 坏模板不应拖垮插件启动

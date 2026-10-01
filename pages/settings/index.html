@@ -571,6 +571,14 @@
             <div><h3 data-i18n="ui.title.040">无指令出图</h3><p data-i18n="ui.text.050">让对话模型在用户说「帮我画一张…」时直接调用绘图能力，无需输入指令。</p></div>
           </div>
           <div class="setting-row">
+            <div><h3 data-i18n="ui.feature.control.title">ControlNet 深度控制（/画图 --control depth）</h3><p data-i18n="ui.feature.control.desc">附一张参考图，用它的深度图约束构图与姿势；需要 ControlNet 模型与深度预处理模型。</p></div>
+            <label class="switch-wrapper"><input type="checkbox" id="features_control" class="ios-switch" /></label>
+          </div>
+          <div class="setting-row">
+            <div><h3 data-i18n="ui.feature.upscale.title">放大（/放大、--upscale）</h3><p data-i18n="ui.feature.upscale.desc">用 4x 模型把图片放大（默认 2 倍）；出图时加 --upscale 2 可自动放大结果。</p></div>
+            <label class="switch-wrapper"><input type="checkbox" id="features_upscale" class="ios-switch" /></label>
+          </div>
+          <div class="setting-row">
             <div><h3 data-i18n="ui.title.041">启用无指令出图（LLM 工具）</h3><p data-i18n="ui.text.051">需要所用模型支持工具调用；开启后会把绘图工具暴露给对话模型。</p></div>
             <label class="switch-wrapper"><input type="checkbox" id="agent_enable_tool" class="ios-switch" /></label>
           </div>

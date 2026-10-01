@@ -1,0 +1,202 @@
+{
+  "name": "controlnet_sdxl",
+  "purpose": "control",
+  "arch": "generic",
+  "loader": "checkpoint",
+  "description": "ControlNet 深度控制（SDXL）：把参考图转成深度图，作为构图/姿势约束再出图。LoadImage → DepthAnythingV2Preprocessor（ckpt: depth_anything_v2_vits.pth）→ ControlNetApplyAdvanced（models/controlnet 下的标准 SDXL 深度 ControlNet（默认 control-depth-sdxl-small-fp16.safetensors；可用 --control-model 指定别的））→ KSampler。params 暴露 strength / end_percent，可用 --control-strength 调整约束强度。",
+  "bindings": {
+    "model_loader": {
+      "node": "1"
+    },
+    "positive": {
+      "node": "4"
+    },
+    "negative": {
+      "node": "5"
+    },
+    "sampler": {
+      "node": "9"
+    },
+    "latent": {
+      "node": "8"
+    },
+    "save": {
+      "node": "11"
+    },
+    "image_loader": {
+      "node": "12"
+    }
+  },
+  "params": {
+    "strength": "7",
+    "end_percent": "7",
+    "start_percent": "7",
+    "control_net_name": "6"
+  },
+  "graph": {
+    "1": {
+      "class_type": "CheckpointLoaderSimple",
+      "_meta": {
+        "title": "底模"
+      },
+      "inputs": {
+        "ckpt_name": "animagine-xl-4.0.safetensors"
+      }
+    },
+    "4": {
+      "class_type": "CLIPTextEncode",
+      "_meta": {
+        "title": "正面提示词"
+      },
+      "inputs": {
+        "text": "",
+        "clip": [
+          "1",
+          1
+        ]
+      }
+    },
+    "5": {
+      "class_type": "CLIPTextEncode",
+      "_meta": {
+        "title": "负面提示词"
+      },
+      "inputs": {
+        "text": "",
+        "clip": [
+          "1",
+          1
+        ]
+      }
+    },
+    "6": {
+      "class_type": "ControlNetLoader",
+      "_meta": {
+        "title": "ControlNet（深度）"
+      },
+      "inputs": {
+        "control_net_name": "control-depth-sdxl-small-fp16.safetensors"
+      }
+    },
+    "12": {
+      "class_type": "LoadImage",
+      "_meta": {
+        "title": "参考图（姿势/构图）"
+      },
+      "inputs": {
+        "image": "astrbot/ctrl.png"
+      }
+    },
+    "2": {
+      "class_type": "DepthAnythingV2Preprocessor",
+      "_meta": {
+        "title": "深度图预处理"
+      },
+      "inputs": {
+        "image": [
+          "12",
+          0
+        ],
+        "ckpt_name": "depth_anything_v2_vits.pth",
+        "resolution": 512
+      }
+    },
+    "7": {
+      "class_type": "ControlNetApplyAdvanced",
+      "_meta": {
+        "title": "施加 ControlNet"
+      },
+      "inputs": {
+        "positive": [
+          "4",
+          0
+        ],
+        "negative": [
+          "5",
+          0
+        ],
+        "control_net": [
+          "6",
+          0
+        ],
+        "image": [
+          "2",
+          0
+        ],
+        "strength": 0.8,
+        "start_percent": 0.0,
+        "end_percent": 0.7
+      }
+    },
+    "8": {
+      "class_type": "EmptyLatentImage",
+      "_meta": {
+        "title": "尺寸"
+      },
+      "inputs": {
+        "width": 1024,
+        "height": 1024,
+        "batch_size": 1
+      }
+    },
+    "9": {
+      "class_type": "KSampler",
+      "_meta": {
+        "title": "采样"
+      },
+      "inputs": {
+        "model": [
+          "1",
+          0
+        ],
+        "positive": [
+          "7",
+          0
+        ],
+        "negative": [
+          "7",
+          1
+        ],
+        "latent_image": [
+          "8",
+          0
+        ],
+        "seed": 0,
+        "steps": 28,
+        "cfg": 7.0,
+        "sampler_name": "dpmpp_2m",
+        "scheduler": "karras",
+        "denoise": 1.0
+      }
+    },
+    "10": {
+      "class_type": "VAEDecode",
+      "_meta": {
+        "title": "VAE 解码"
+      },
+      "inputs": {
+        "samples": [
+          "9",
+          0
+        ],
+        "vae": [
+          "1",
+          2
+        ]
+      }
+    },
+    "11": {
+      "class_type": "SaveImage",
+      "_meta": {
+        "title": "保存图片"
+      },
+      "inputs": {
+        "images": [
+          "10",
+          0
+        ],
+        "filename_prefix": "astrbot_control"
+      }
+    }
+  }
+}

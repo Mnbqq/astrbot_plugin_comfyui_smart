@@ -94,6 +94,36 @@
 - `video.i2v_model` → **图生视频**默认模型（Wan 2.2 TI2V-5B 两者共用，可填同一个）
 - 聊天里 `--model xxx` 优先级最高。
 
+## ControlNet 与放大
+
+两个默认关闭的新能力（在「高级 → 生成功能开关」里打开）：
+
+### ControlNet 深度控制（`--control depth`）
+
+```
+/画图 一个女孩站着，手插口袋 --control depth          ← 参考图决定构图与姿势
+/画图 … --control depth --control-strength 0.6        ← 约束弱一点（默认 0.8）
+/画图 … --control depth --control-end 0.5             ← 更早放手（默认 0.7）
+/画图 … --control depth --control-model 别的深度模型.safetensors
+```
+
+- 工作流：参考图 → `DepthAnythingV2Preprocessor` → `ControlNetApplyAdvanced` → 采样；
+- 需要的模型：`models/controlnet/control-depth-sdxl-small-fp16.safetensors`（305MB，已装；也可换 2.3GB 的完整版获得更好质量）与
+  `custom_nodes/comfyui_controlnet_aux/ckpts/depth-anything/Depth-Anything-V2-Small/depth_anything_v2_vits.pth`（95MB，已装）；
+- **必须配 SDXL 系底模**：插件会在没指定 `--model` 时自动挑一个 SDXL 系底模（并跳过 `inpaint`/`instruct`/`inkBase` 这类通道不匹配的变体）；
+- ⚠️ 如果你原来那个 `controlnetxlCNXL_bdsqlszDepth.safetensors` 还在，它是 **ControlNet-LLLite** 格式，标准 `ControlNetLoader` 会报
+  `controlnet file is invalid` —— 用上面新下的标准 ControlNet，或删掉它。
+
+### 放大（`/放大` 与 `--upscale`）
+
+```
+/放大 --scale 2                        ← 把图放大 2 倍（默认 2，最大 4）
+/画图 一只猫 --upscale 2               ← 出图后自动放大一遍
+```
+
+- 工作流：`UpscaleModelLoader` → `ImageUpscaleWithModel`（4x 模型）→ `ImageScaleBy` 缩回目标倍数；
+- 模型：`models/upscale_models/4x-UltraSharp.safetensors`（64MB，已装）。
+
 ## 治理与可控性
 
 | 能力 | 配置项 | 说明 |
@@ -182,6 +212,7 @@
 
 ## 更新日志（最近）
 
+- **v0.25.0** — 新增 **ControlNet 深度控制**（`/画图 … --control depth` + 参考图，自动偏好 SDXL 底模）与**放大**（`/放大 --scale 2`、出图加 `--upscale 2` 自动放大）；后处理类模板支持 `prompt_required: false`
 - **v0.24.0** — 配置面板**文案全量键化 + 中英双语**（185 条：标签/标题/说明/选项/占位符），页语言切换现在整页生效；新增 `data-i18n-html` / `data-i18n-placeholder` 支持与 3 条防回归断言（硬编码中文 / 键缺失 / 中英键集合一致）
 - **v0.23.0** — 工程化：**GitHub Actions CI**（Python 3.10/3.11/3.12 跑逻辑与前端测试 + 上架形态检查 + AstrBot API 面核对）、**tag 自动发布 Release**（附源码包）；新增 `/巡检`（模型资产）与 `/体检`（环境 + **模板依赖自检**）与页 API `/diagnose`
 - **v0.22.0** — 治理三件套：按群/用户**功能白名单**（user > group > default > 全局）、**内容过滤**（默认静默拦截，可附加负面词）、**视频独立配额**（单独限次与冷却）、**审计日志**（`/审计` + `/audit` API，所有生成入口统一记账）

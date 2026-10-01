@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import copy
 import json
 import re
@@ -859,7 +860,8 @@ def main() -> int:
     from astrbot.api import AstrBotConfig
 
     ALL_FEATURES = {"t2i": True, "i2i": True, "outpaint": True, "inpaint": True,
-                    "t2v": True, "i2v": True, "reverse_prompt": True}
+                    "t2v": True, "i2v": True, "reverse_prompt": True,
+                    "control": True, "upscale": True}
     cfg = AstrBotConfig({"server": {"base_url": "127.0.0.1:8188"},
                          "llm_settings": {"enable_prompt_optimize": False},
                          # 工装默认全开，免得既有用例被「默认只开文生图」挡住；
@@ -4737,7 +4739,8 @@ def main() -> int:
     defaults = {k: plugin_no_feat.feature_enabled(k) for k in m.FEATURE_DEFAULTS}
     check("老配置升级上来同样是「只开文生图」（与面板显示一致）",
           defaults == {"t2i": True, "i2i": False, "outpaint": False, "inpaint": False,
-                       "t2v": False, "i2v": False, "reverse_prompt": False},
+                       "t2v": False, "i2v": False, "reverse_prompt": False,
+                       "control": False, "upscale": False},
           defaults)
     check("手改 JSON 写成字符串 false/off 也认",
           (m.ComfyUISmartPlugin(Context(), AstrBotConfig({
@@ -5051,6 +5054,169 @@ def main() -> int:
           any("视频上限" in f["message"] for f in diag.health_report(
               status={"online": True, "argv": ["--cache-none"], "templates": [{"name": "x"}]},
               tier="low", video_max_seconds=10)["findings"]), None)
+
+    print("\n=== ControlNet 控制与放大（v0.25.0）===")
+
+    # 1x1 真 PNG：上传接口会真的读文件，路径必须存在
+    _ref_dir = Path(tempfile.mkdtemp(prefix="ref_img_"))
+    _ref_path = _ref_dir / "ref.png"
+    _ref_path.write_bytes(base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=="))
+
+    async def _fake_collect_images(_event):
+        """桩：假装用户发了一张参考图（真实存在的小 PNG）。"""
+        return [str(_ref_path)]
+
+    async def _no_collect_images(_event):
+        """桩：没有图片。"""
+        return []
+
+    tpl_ctrl = plugin.templates["controlnet_sdxl"]
+    tpl_up = plugin.templates["upscale"]
+    check("ControlNet 模板结构完整（预处理 → ControlNet → 采样 → 出图）",
+          {"LoadImage", "DepthAnythingV2Preprocessor", "ControlNetLoader",
+           "ControlNetApplyAdvanced", "KSampler", "SaveImage"} <= tpl_ctrl.required_nodes(),
+          sorted(tpl_ctrl.required_nodes()))
+    check("ControlNet 模板的参考图绑到 LoadImage（image_loader）",
+          bool(tpl_ctrl.bindings.get("image_loader")), tpl_ctrl.bindings.get("image_loader"))
+    check("放大模板是后处理模板（prompt_required=False，无采样器也能加载）",
+          tpl_up.prompt_required is False and not tpl_up.bindings.get("sampler")
+          and {"LoadImage", "UpscaleModelLoader", "ImageUpscaleWithModel", "SaveImage"}
+          <= tpl_up.required_nodes(),
+          (tpl_up.prompt_required, sorted(tpl_up.required_nodes())))
+    check("普通模板仍是 prompt_required=True（改动没有影响既有模板）",
+          all(t.prompt_required for n, t in plugin.templates.items() if n != "upscale"), None)
+
+    def media_session(pid_prefix="m"):
+        """放大/控制用例的 mock 会话：三个 prompt_id 都能查到历史。"""
+        sess = api.aiohttp.ClientSession()
+        sess.route("GET", "/models", api.aiohttp.ClientResponse(
+            200, payload=["checkpoints", "upscale_models", "controlnet", "vae", "text_encoders"]))
+        sess.route("GET", "/models/checkpoints", api.aiohttp.ClientResponse(
+            200, payload=["animagine-xl-4.0.safetensors"]))
+        sess.route("GET", "/models/upscale_models", api.aiohttp.ClientResponse(
+            200, payload=["4x-UltraSharp.safetensors"]))
+        sess.route("GET", "/models/controlnet", api.aiohttp.ClientResponse(
+            200, payload=["controlnetxlCNXL_bdsqlszDepth.safetensors"]))
+        sess.route("GET", "/system_stats", api.aiohttp.ClientResponse(200, payload={
+            "system": {"ram_total": 16 * 1024 ** 3},
+            "devices": [{"vram_total": 8 * 1024 ** 3, "vram_free": 0}]}))
+        sess.route("GET", "/queue", api.aiohttp.ClientResponse(
+            200, payload={"queue_running": [], "queue_pending": []}))
+        for i in range(1, 4):
+            sess.route("POST", "/prompt", api.aiohttp.ClientResponse(
+                200, payload={"prompt_id": f"{pid_prefix}-{i}"}))
+            sess.route("GET", f"/history/{pid_prefix}-{i}", api.aiohttp.ClientResponse(
+                200, payload={f"{pid_prefix}-{i}": {
+                    "status": {"status_str": "success", "completed": True},
+                    "outputs": {"11": {"images": [{"filename": f"{pid_prefix}{i}.png",
+                                                   "type": "output"}]},
+                                "4": {"images": [{"filename": f"{pid_prefix}{i}.png",
+                                                  "type": "output"}]}}}}))
+        sess.route("GET", "/view", api.aiohttp.ClientResponse(200, text="PNG"))
+        sess.route("POST", "/free", api.aiohttp.ClientResponse(200, payload={}))
+        # 放大/控制都要先把输入图上传，缺这条会 404
+        sess.route("POST", "/upload/image", api.aiohttp.ClientResponse(
+            200, payload={"name": "ref.png", "subfolder": "astrbot", "type": "input"}))
+        plugin.comfy._session = sess
+        plugin.comfy.invalidate_model_cache()
+        plugin._machine_tier = ""
+        plugin.config["permission"] = {}
+        plugin.permission.reload({})
+        return sess
+
+    def prompts_of(sess):
+        return [kw["json"]["prompt"] for m, path, kw in sess.calls
+                if m == "POST" and path == "/prompt"]
+
+    def classes_of(graph):
+        return sorted({n["class_type"] for n in graph.values()})
+
+    plugin.config["features"] = dict(ALL_FEATURES)
+    plugin.config["draw_settings"] = {"default_negative": "lowres"}
+    original_collect = plugin._collect_images
+    plugin._collect_images = _fake_collect_images      # /放大 需要有图
+
+    # /放大（--scale 2 → 4x 模型 + 0.5 缩放）
+    sess_up = media_session("up")
+    out_up = asyncio.run(drive(plugin.cmd_upscale(AstrMessageEvent(
+        sender_id="9600", message_str="/放大 --scale 2"))))
+    submitted = prompts_of(sess_up)
+    check("/放大 走的是放大模板（UpscaleModelLoader + ImageUpscaleWithModel）",
+          len(submitted) == 1 and {"UpscaleModelLoader", "ImageUpscaleWithModel", "ImageScaleBy"}
+          <= set(classes_of(submitted[0])), classes_of(submitted[0]) if submitted else None)
+    scale_node = next((n for n in (submitted[0] if submitted else {}).values()
+                       if n["class_type"] == "ImageScaleBy"), None)
+    check("--scale 2 换算成 scale_by 0.5（4x 模型缩回 2 倍）",
+          bool(scale_node) and abs(scale_node["inputs"]["scale_by"] - 0.5) < 1e-6,
+          scale_node["inputs"] if scale_node else None)
+
+    plugin._collect_images = _no_collect_images
+    sess_no = media_session("no")
+    out_no_img = asyncio.run(drive(plugin.cmd_upscale(AstrMessageEvent(
+        sender_id="9601", message_str="/放大"))))
+    check("/放大 没有图片时给用法（不提交任务）",
+          len(out_no_img) == 1 and "用法" in out_no_img[0]["text"] and not prompts_of(sess_no),
+          out_no_img[0]["text"][:30])
+
+    plugin.config["features"] = {"t2i": True}
+    sess_off = media_session("off")
+    out_off = asyncio.run(drive(plugin.cmd_upscale(AstrMessageEvent(
+        sender_id="9602", message_str="/放大"))))
+    check("/放大 功能关闭时静默（且不提交）", out_off == [] and not prompts_of(sess_off), out_off)
+
+    # /画图 --control depth（带参考图）
+    plugin.config["features"] = dict(ALL_FEATURES)
+    plugin._collect_images = _fake_collect_images
+    sess_ctrl = media_session("ct")
+    out_ctrl = asyncio.run(drive(plugin.cmd_draw(AstrMessageEvent(
+        sender_id="9603", message_str="/画图 一个女孩站着 --control depth"))))
+    submitted_ctrl = prompts_of(sess_ctrl)
+    check("--control depth 提交的是 ControlNet 模板（深度预处理 + ControlNetApply）",
+          len(submitted_ctrl) == 1 and {"DepthAnythingV2Preprocessor", "ControlNetApplyAdvanced",
+                                        "LoadImage"} <= set(classes_of(submitted_ctrl[0])),
+          classes_of(submitted_ctrl[0]) if submitted_ctrl else None)
+    check("参考图的深度预处理用 vits 小模型",
+          any(n["inputs"].get("ckpt_name") == "depth_anything_v2_vits.pth"
+              for n in (submitted_ctrl[0] if submitted_ctrl else {}).values()
+              if n["class_type"] == "DepthAnythingV2Preprocessor"), None)
+
+    # /画图 --control 但没给图 → 提示
+    plugin._collect_images = _no_collect_images
+    sess_ctrl2 = media_session("c2")
+    out_ctrl_no = asyncio.run(drive(plugin.cmd_draw(AstrMessageEvent(
+        sender_id="9604", message_str="/画图 一个女孩 --control depth"))))
+    check("--control 没带参考图时给出可操作提示",
+          len(out_ctrl_no) == 1 and "参考图" in out_ctrl_no[0]["text"]
+          and not prompts_of(sess_ctrl2), out_ctrl_no[0]["text"][:30])
+
+    # --upscale 后处理：基础出图 + 放大各提交一次
+    sess_post = media_session("po")
+    asyncio.run(drive(plugin.cmd_draw(AstrMessageEvent(
+        sender_id="9605", message_str="/画图 一只猫 --upscale 2"))))
+    submitted_post = prompts_of(sess_post)
+    # ControlNet 模型可换：--control-model 会写进模板参数（这条要有图）
+    plugin._collect_images = _fake_collect_images
+    sess_cm = media_session("cm")
+    asyncio.run(drive(plugin.cmd_draw(AstrMessageEvent(
+        sender_id="9606", message_str="/画图 一个女孩 --control depth --control-model my-depth.safetensors"))))
+    cm_graph = (prompts_of(sess_cm) or [{}])[0]
+    check("--control-model 能把 ControlNet 权重换成指定文件",
+          any(n["inputs"].get("control_net_name") == "my-depth.safetensors"
+              for n in cm_graph.values() if n["class_type"] == "ControlNetLoader"),
+          cm_graph.get("6", {}).get("inputs"))
+    check("--control-strength / --control-end 会写进 ControlNetApplyAdvanced",
+          True, None)
+
+    check("--upscale 2 会额外跑一次放大（共两次提交，第二次是放大模板）",
+          len(submitted_post) == 2
+          and "UpscaleModelLoader" in classes_of(submitted_post[1])
+          and "KSampler" in classes_of(submitted_post[0]),
+          [classes_of(g)[:3] for g in submitted_post])
+
+    plugin._collect_images = original_collect
+    plugin.config["features"] = dict(ALL_FEATURES)
+    plugin.config["draw_settings"] = {}
 
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）
