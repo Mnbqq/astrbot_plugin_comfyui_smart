@@ -78,6 +78,10 @@ def register_pages_routes(plugin) -> bool:
     async def get_stats():
         return json_response(plugin.storage.load_stats())
 
+    async def get_diagnose():
+        """巡检 + 体检报告（配置页「状态 → 诊断报告」用）。"""
+        return json_response(await plugin.get_diagnostics())
+
     async def get_audit(limit: str = "50", user_id: str = ""):
         """审计日志（管理面板可查；出图记录 + 内容过滤拦截）。"""
         try:
@@ -125,6 +129,7 @@ def register_pages_routes(plugin) -> bool:
         (f"/{PLUGIN_NAME}/i18n", get_i18n, ["GET"], "读取插件页文案（多语言）"),
         (f"/{PLUGIN_NAME}/stats", get_stats, ["GET"], "读取统计"),
         (f"/{PLUGIN_NAME}/audit", get_audit, ["GET"], "读取审计日志"),
+        (f"/{PLUGIN_NAME}/diagnose", get_diagnose, ["GET"], "巡检与体检报告"),
         (f"/{PLUGIN_NAME}/inpaint", run_inpaint, ["POST"], "局部重绘（涂抹遮罩）"),
         (f"/{PLUGIN_NAME}/stats/clear", clear_stats, ["POST"], "清空统计"),
         (f"/{PLUGIN_NAME}/images/<filename>", get_image, ["GET"], "读取生成的图片"),

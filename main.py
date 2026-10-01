@@ -17,6 +17,12 @@ from astrbot.api.star import Context, Star, StarTools
 
 from .backend_pool import Backend, BackendPool, is_backend_fault, parse_backend_specs
 from .comfyui_api import ComfyUI, ComfyUIError, media_kind, normalize_base_url
+from .diagnostics import (
+    check_requirements,
+    collect_requirements,
+    health_report,
+    inspect_models,
+)
 from .i18n import build_translator
 from .llm_service import LLMService
 from .pages import register_pages_routes
@@ -37,7 +43,7 @@ from .workflow_templates import (
 
 PLUGIN_NAME = "astrbot_plugin_comfyui_smart"
 # 与 metadata.yaml 的 version 保持一致（tests/test_logic.py 会校验二者不漂移）
-PLUGIN_VERSION = "0.22.0"
+PLUGIN_VERSION = "0.23.0"
 
 # 机器档位：决定分辨率/帧数/步数上限。auto 时按显存判定（内存太小再降一档）。
 MACHINE_PRESETS = {
@@ -645,6 +651,11 @@ class ComfyUISmartPlugin(Star):
         try:
             stats = await self.comfy.ping()
             info["online"] = True
+            system = stats.get("system") or {}
+            info["argv"] = system.get("argv") or []
+            info["ram_total"] = system.get("ram_total", 0)
+            info["ram_free"] = system.get("ram_free", 0)
+            info["version"] = system.get("comfyui_version") or ""
             devices = stats.get("devices") or []
             if devices and isinstance(devices, list):
                 first = devices[0] if isinstance(devices[0], dict) else {}
@@ -659,6 +670,110 @@ class ComfyUISmartPlugin(Star):
         except ComfyUIError as e:
             info["error"] = str(e)
         return info
+
+    # ------------------------------------------------------------------ #
+    # 巡检与体检（诊断报告）
+    # ------------------------------------------------------------------ #
+    def _local_model_sizes(self, folders: list[dict]) -> dict[str, int]:
+        """同机时读权重体积（跨机读不到就返回空）。
+
+        Args:
+            folders: /experiment/models 的结果（含真实路径）。
+
+        Returns:
+            {文件名: 字节数}；一个都读不到时返回 {}。
+        """
+        sizes: dict[str, int] = {}
+        for item in folders or []:
+            for path_str in item.get("folders") or []:
+                folder = Path(str(path_str))
+                if not folder.is_dir():
+                    continue
+                try:
+                    for child in folder.iterdir():
+                        if child.is_file():
+                            sizes[child.name] = child.stat().st_size
+                except OSError:
+                    continue
+        return sizes
+
+    async def get_diagnostics(self) -> dict:
+        """生成巡检 + 体检报告（配置页与 /巡检、/体检 共用）。
+
+        Returns:
+            {"models": {...}, "health": {...}}
+        """
+        catalog = await self.get_catalog()
+        stats = self.storage.load_stats()
+        sizes: dict[str, int] = {}
+        try:
+            sizes = self._local_model_sizes(await self.comfy.experiment_model_paths())
+        except Exception as exc:      # noqa: BLE001 - 拿不到体积不影响巡检
+            logger.debug("读取模型体积失败：%s", exc)
+
+        findings: list[dict] = []
+        try:
+            nodes = await self.comfy.node_classes()
+            requirements = collect_requirements(self.templates)
+            findings = check_requirements(requirements, catalog, nodes)
+        except Exception as exc:      # noqa: BLE001 - ComfyUI 离线时跳过依赖核对
+            logger.debug("模板依赖核对失败：%s", exc)
+
+        machine = await self._machine()
+        health = health_report(
+            status=await self.get_server_status(),
+            catalog=catalog,
+            findings=findings,
+            tier=machine["tier"],
+            video_max_seconds=int((self.config.get("video", {}) or {}).get("max_seconds", 0) or 0),
+            config=self.config,
+        )
+        return {"models": inspect_models(catalog, stats=stats, sizes=sizes), "health": health}
+
+    @staticmethod
+    def _render_findings(title: str, findings: list[dict], limit: int = 12) -> str:
+        """把 findings 渲染成聊天可读的文本。"""
+        icon = {"error": "❌", "warn": "⚠️", "info": "ℹ️"}
+        lines = [title]
+        for item in findings[:limit]:
+            lines.append(f"{icon.get(item.get('severity'), '·')} {item.get('message')}")
+            if item.get("suggestion"):
+                lines.append(f"　 ↳ {item['suggestion']}")
+        if len(findings) > limit:
+            lines.append(f"　…还有 {len(findings) - limit} 条，配置页「状态 → 诊断报告」可看全部")
+        return "\n".join(lines)
+
+    @filter.command("巡检", alias={"inspect", "模型巡检"})
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    async def cmd_inspect(self, event: AstrMessageEvent):
+        """查看模型资产巡检报告（管理员）。"""
+        try:
+            report = await self.get_diagnostics()
+        except ComfyUIError as e:
+            yield event.plain_result(f"💥 {e}")
+            return
+        data = report["models"]
+        head = self.t("cmd.inspect.title", files=data["summary"]["files"],
+                      pools=data["summary"]["pools"], dup=data["summary"]["duplicates"],
+                      misplaced=data["summary"]["misplaced"])
+        yield event.plain_result(self._render_findings(head, data["findings"]))
+
+    @filter.command("体检", alias={"health", "诊断", "自检"})
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    async def cmd_health(self, event: AstrMessageEvent):
+        """查看运行环境体检报告（管理员）。"""
+        try:
+            report = await self.get_diagnostics()
+        except ComfyUIError as e:
+            yield event.plain_result(f"💥 {e}")
+            return
+        data = report["health"]
+        s = data["summary"]
+        head = self.t("cmd.health.title", online=("✅" if s["online"] else "❌"),
+                      device=s["device"] or "-", tier=s["tier"],
+                      vram=s["vram_free_gb"], ram=s["ram_free_gb"],
+                      errors=s["errors"], warnings=s["warnings"])
+        yield event.plain_result(self._render_findings(head, data["findings"]))
 
     # ------------------------------------------------------------------ #
     # 出图核心

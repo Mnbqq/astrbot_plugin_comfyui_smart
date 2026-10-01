@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    name: 逻辑 / 前端测试（Python ${{ matrix.python-version }}）
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: 安装运行时依赖
+        run: pip install -r requirements.txt
+      - name: 逻辑 + mock ComfyUI 全链路
+        run: python tests/test_logic.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: 配置页前端（含 FIELDS ↔ HTML 一致性）
+        run: node tests/test_pages_js.js
+
+  plugin-syntax:
+    name: 上架形态检查（单文件可导入 + JSON/模板自洽）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: 目录形态（根 __init__.py / metadata.yaml / _conf_schema.json 齐全）
+        run: |
+          python - <<'PY'
+          import json, pathlib, sys
+          need = ["__init__.py", "metadata.yaml", "_conf_schema.json", "main.py", "requirements.txt"]
+          missing = [n for n in need if not pathlib.Path(n).exists()]
+          json.loads(pathlib.Path("_conf_schema.json").read_text(encoding="utf-8"))
+          tpls = sorted(pathlib.Path("workflows").glob("*.json"))
+          for t in tpls:
+              json.loads(t.read_text(encoding="utf-8"))
+          print(f"OK：文件齐全，{len(tpls)} 个模板 JSON 均可解析")
+          sys.exit(1 if missing else 0)
+          PY
+
+  api-surface:
+    name: AstrBot API 面核对
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: 拉取 AstrBot 源码（公开仓库）
+        run: git clone --depth 1 https://github.com/AstrBotDevs/AstrBot.git /tmp/AstrBot
+      - name: 核对插件用到的全部 AstrBot API 都存在
+        run: python tests/check_api_surface.py /tmp/AstrBot

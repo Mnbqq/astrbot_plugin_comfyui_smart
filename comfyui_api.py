@@ -515,6 +515,18 @@ class ComfyUI:
     # ------------------------------------------------------------------ #
     # 模型发现
     # ------------------------------------------------------------------ #
+    async def experiment_model_paths(self) -> list[dict]:
+        """读取 /experiment/models：每个目录的真实路径（用于「同机时读体积」）。
+
+        Returns:
+            [{"name": 目录名, "folders": [绝对路径...]}...]；接口不可用返回 []。
+        """
+        try:
+            data = await self._request("GET", "/experiment/models")
+        except ComfyUIError:
+            return []
+        return data if isinstance(data, list) else []
+
     async def list_model_folders(self) -> list[str]:
         """列出服务器实际存在的模型文件夹。
 

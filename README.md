@@ -1,5 +1,7 @@
 ![:name](https://count.getloli.com/@astrbot_plugin_comfyui_smart?name=astrbot_plugin_comfyui_smart&theme=minecraft&padding=6&offset=0&align=top&scale=1&pixelated=1&darkmode=auto)
 
+[![CI](https://github.com/Mnbqq/astrbot_plugin_comfyui_smart/actions/workflows/ci.yml/badge.svg)](https://github.com/Mnbqq/astrbot_plugin_comfyui_smart/actions/workflows/ci.yml)
+
 # AstrBot 的 ComfyUI 智能绘图插件
 
 让 AstrBot 连上你的 ComfyUI：**一句话出图、出视频**，带并发排队、实时进度、取消、多后端、换 VAE/LoRA、中英双语界面。
@@ -52,6 +54,8 @@
 | `/模型列表` `/刷新模型` `/模板列表` | 模型与模板 |
 | `/统计` | 出图次数、模型使用、最近记录 |
 | `/审计` | 审计日志（管理员，可选 `--user 用户ID`） |
+| `/巡检` | 模型资产巡检：重名重复 / 疑似错放 / 从没用过（管理员） |
+| `/体检` | 运行环境体检：启动参数 / 显存内存 / **模板依赖的节点与权重是否齐全**（管理员） |
 | `/帮助` | 用法速查 |
 
 行内参数（可组合）：`--model 底模 --lora 名:0.8 --vae 名 --size 1024x1024 --steps 28 --cfg 7 --seed 123 --ratio 16:9`
@@ -151,6 +155,17 @@
 | `wan22_t2v_gguf` · `wan22_i2v_gguf` | Wan 2.2 TI2V-5B（GGUF，低配首选） |
 | `ltxv_t2v` | LTX-Video 2B（GGUF，最省显存） |
 
+## 巡检与体检
+
+管理员可用两条指令自检，配置页「状态 → 诊断报告」也有同样内容（页 API `/diagnose`）：
+
+| 指令 | 检查内容 |
+|---|---|
+| `/巡检` | 模型资产：**同名重复**（跨目录同模型）、**疑似错放**（VAE/文本编码器/ControlNet/放大模型混在 `checkpoints`、GGUF 丢在 checkpoints）、**从没用过**的底模（结合统计），同机时还会按体积列出最大的几个 |
+| `/体检` | 运行环境：离线与否、**启动参数**（16G 内存没加 `--cache-none` 会提醒）、显存/内存余量、机器档位与视频时长的冲突、模板数量，以及**模板依赖自检** —— 模板用到的节点是否还在、硬编码的权重是否真的存在于对应目录（升级 ComfyUI 后缺节点、模板写着 fp8 的 umt5 而本地只有 GGUF 量化版，这类问题会被提前发现） |
+
+体检把「缺失的模板默认权重」记为 warn（用 `--model`/`--vae` 覆盖即可），把「缺节点」记为 error（模板彻底不可用）。
+
 ## 排错
 
 | 现象 | 处理 |
@@ -166,6 +181,7 @@
 
 ## 更新日志（最近）
 
+- **v0.23.0** — 工程化：**GitHub Actions CI**（Python 3.10/3.11/3.12 跑逻辑与前端测试 + 上架形态检查 + AstrBot API 面核对）、**tag 自动发布 Release**（附源码包）；新增 `/巡检`（模型资产）与 `/体检`（环境 + **模板依赖自检**）与页 API `/diagnose`
 - **v0.22.0** — 治理三件套：按群/用户**功能白名单**（user > group > default > 全局）、**内容过滤**（默认静默拦截，可附加负面词）、**视频独立配额**（单独限次与冷却）、**审计日志**（`/审计` + `/audit` API，所有生成入口统一记账）
 - **v0.21.1** — 关闭的功能**静默忽略**（此前会回「功能未开启」），无指令出图同样静默；提交署名统一为 `Mnbqq`
 - **v0.21.0** — 新增 7 个**功能开关**（`features.*`）：默认**只开文生图**，图生图 / 扩图 / 局部重绘 / 文生视频 / 图生视频 / 反推全部默认关闭；关闭时指令直接提示去哪打开、不占显存，无指令出图（LLM 工具）同样受控；`/帮助`、`/状态`、状态面板都会列出已开启功能

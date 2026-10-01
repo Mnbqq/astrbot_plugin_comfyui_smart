@@ -4952,6 +4952,106 @@ def main() -> int:
     plugin.permission.reload({})
     plugin.config["features"] = dict(ALL_FEATURES)
 
+    print("\n=== 巡检与体检（v0.23.0）===")
+    from astrbot_plugin_comfyui_smart import diagnostics as diag
+
+    CAT = {
+        "checkpoints": ["animagine-xl-4.0.safetensors", "dreamshaper_332BakedVaeClipFix.safetensors",
+                        "sdxl_vae.safetensors", "RealVisXL_V5.0_fp16.safetensors"],
+        "vae": ["vae-ft-mse-840000-ema-pruned.safetensors", "kl-f8-anime2.ckpt"],
+        "text_encoders": ["clip_l.safetensors"],
+        "clip_gguf": ["t5-v1_1-xxl-encoder-Q4_K_M.gguf"],
+        "diffusion_models": [],
+        "unet_gguf": ["Wan2_2-TI2V-5B-Turbo-Q4_K_M.gguf"],
+        "loras": ["a.safetensors"],
+    }
+    dup = diag.find_duplicates({"checkpoints": ["x.safetensors"], "vae": ["x.safetensors"]})
+    check("重名检测：同名文件出现在两个目录会被列出",
+          len(dup) == 1 and dup[0]["stem"] == "x" and len(dup[0]["files"]) == 2, dup)
+    check("重名检测：GGUF 与 safetensors 同名也算同一模型（按主干名）",
+          len(diag.find_duplicates({"diffusion_models": ["wan2.1-t2v-1.3b.safetensors"],
+                                    "unet_gguf": ["wan2.1-t2v-1.3b-Q4_K_M.gguf"]})) == 0
+          and len(diag.find_duplicates({"a": ["m.safetensors"], "b": ["m.gguf"]})) == 1, None)
+
+    misplaced = diag.find_misplaced(CAT)
+    names = [m["name"] for m in misplaced]
+    check("错放检测：独立 VAE 放在 checkpoints 会被指出",
+          "sdxl_vae.safetensors" in names, names)
+    check("误报守卫：自带 VAE 的底模（*BakedVae*）不算错放",
+          "dreamshaper_332BakedVaeClipFix.safetensors" not in names, names)
+    check("错放检测：给出该挪到哪个目录",
+          all(m["suggest"] for m in misplaced), misplaced)
+    check("错放检测：GGUF 放 checkpoints 会被指出",
+          [m["name"] for m in diag.find_misplaced({"checkpoints": ["wan.gguf"]})] == ["wan.gguf"], None)
+
+    unused = diag.find_unused(CAT, {"model_usage": {"checkpoint": {"animagine-xl-4.0.safetensors": 3}}})
+    check("未使用检测：统计里出现过的模型不会被列为「没用过」",
+          all(i["name"] != "animagine-xl-4.0.safetensors" for i in unused), unused[:3])
+    check("未使用检测：没有统计时不下结论（返回空）",
+          diag.find_unused(CAT, {}) == [], None)
+
+    report = diag.inspect_models(CAT, stats={"model_usage": {"checkpoint": {}}})
+    check("巡检报告结构完整（findings + summary，按严重度排序）",
+          isinstance(report["findings"], list) and report["summary"]["files"] == sum(len(v) for v in CAT.values()),
+          report["summary"])
+    check("巡检报告：拿不到体积时给出说明而不是报错",
+          any(f["category"] == "size" and "体积" in f["message"] for f in report["findings"]), None)
+
+    # 模板依赖核对
+    class FakeTpl:
+        graph = {
+            "1": {"class_type": "UnetLoaderGGUF", "inputs": {"unet_name": "Wan2_2-TI2V-5B-Turbo-Q4_K_M.gguf"}},
+            "2": {"class_type": "CLIPLoaderGGUF", "inputs": {"clip_name": "clip_l.safetensors"}},
+            "3": {"class_type": "VAELoader", "inputs": {"vae_name": "wan_2.1_vae.safetensors"}},
+            "4": {"class_type": "CLIPTextEncode", "inputs": {"text": ""}},
+        }
+    reqs = diag.collect_requirements({"tpl": FakeTpl})
+    check("依赖抽取：抓出模板里硬编码的权重与所在目录",
+          {(r["node_type"], r["value"], r["pool"]) for r in reqs} == {
+              ("UnetLoaderGGUF", "Wan2_2-TI2V-5B-Turbo-Q4_K_M.gguf", "unet_gguf"),
+              ("CLIPLoaderGGUF", "clip_l.safetensors", "clip_gguf"),
+              ("VAELoader", "wan_2.1_vae.safetensors", "vae")},
+          reqs)
+    found = diag.check_requirements(reqs, CAT, {"UnetLoaderGGUF", "CLIPLoaderGGUF", "VAELoader"})
+    check("依赖核对：clip_l 在 text_encoders（与 clip_gguf 同映射）不算缺失（别名并集）",
+          not any("clip_l" in f["message"] for f in found), found)
+    check("依赖核对：缺失的权重报 warn（模板默认值缺失是常态，可用 --model 覆盖）",
+          any(f["severity"] == "warn" and "wan_2.1_vae" in f["message"] for f in found), found)
+    node_missing = diag.check_requirements(reqs, CAT, {"UnetLoaderGGUF"})
+    check("依赖核对：缺节点报 error（这才是模板彻底跑不起来）",
+          any(f["severity"] == "error" and "CLIPLoaderGGUF" in f["message"] for f in node_missing),
+          node_missing)
+    check("依赖核对：占位值（astrbot/xxx）不参与核对",
+          diag.collect_requirements({"t": type("T", (), {"graph": {
+              "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "astrbot/placeholder.safetensors"}}}})}) == [],
+          None)
+
+    # 体检
+    offline = diag.health_report(status={"base_url": "http://x", "online": False, "error": "连不上"},
+                                 tier="low", video_max_seconds=10)
+    check("体检：离线报 error 并提示「重启后 ComfyUI 不会自动起来」",
+          any(f["severity"] == "error" and "连不上" in f["message"] for f in offline["findings"])
+          and any("计划任务" in (f.get("suggestion") or "") for f in offline["findings"])
+          and offline["ok"] is False, offline["findings"][0])
+    no_cache = diag.health_report(status={"online": True, "argv": ["main.py", "--listen"],
+                                          "ram_total": 16 * 1024 ** 3,
+                                          "templates": [{"name": "sd_checkpoint"}]},
+                                  tier="low", video_max_seconds=6, config={"server": {}})
+    check("体检：16G 内存没加 --cache-none 会提醒",
+          any(f["category"] == "flags" and "--cache-none" in f["message"] for f in no_cache["findings"]),
+          [f["category"] for f in no_cache["findings"]])
+    ok_status = diag.health_report(status={"online": True, "argv": ["main.py", "--cache-none"],
+                                           "ram_total": 16 * 1024 ** 3, "vram_free": 6 * 1024 ** 3,
+                                           "ram_free": 9 * 1024 ** 3, "templates": [{"name": "x"}]},
+                                   tier="low", video_max_seconds=6,
+                                   config={"server": {"free_before_switch": True}})
+    check("体检：健康的机器没有 error / warn（ok=True）",
+          ok_status["ok"] is True and ok_status["summary"]["warnings"] == 0, ok_status["summary"])
+    check("体检：低配档把视频上限开到 10 秒会警告",
+          any("视频上限" in f["message"] for f in diag.health_report(
+              status={"online": True, "argv": ["--cache-none"], "templates": [{"name": "x"}]},
+              tier="low", video_max_seconds=10)["findings"]), None)
+
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）
     field_re = _re.compile(

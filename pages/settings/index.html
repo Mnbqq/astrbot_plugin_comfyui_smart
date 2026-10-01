@@ -587,6 +587,13 @@
           <div id="status-container"><p class="muted">切换到本页时自动读取。</p></div>
         </article>
         <article class="card">
+          <div class="card-header space-between">
+            <div><h3>诊断报告</h3><p>模型资产巡检（重名重复 / 疑似错放 / 从没用过）与运行环境体检（启动参数 / 显存内存 / <strong>模板依赖的节点与权重是否齐全</strong>）。</p></div>
+            <button data-action="run-diagnose" class="btn-secondary" type="button">运行巡检</button>
+          </div>
+          <div id="diagnose-container"><p class="muted">点「运行巡检」生成报告。</p></div>
+        </article>
+        <article class="card">
           <div class="card-header"><div><h3>工作流模板</h3><p>内置模板按架构自动选择；把 API 格式的 JSON 放进自定义目录即可新增模板。</p></div></div>
           <div id="templates-container"><p class="muted">切换到本页时自动读取。</p></div>
         </article>

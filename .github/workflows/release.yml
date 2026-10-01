@@ -1,0 +1,29 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: 打包并发布 Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: 构建源码包（与仓库快照同名）
+        run: |
+          NAME="astrbot_plugin_comfyui_smart_${GITHUB_REF_NAME}"
+          mkdir -p "dist/${NAME}"
+          git archive HEAD | tar -x -C "dist/${NAME}"
+          (cd dist && tar -czf "${NAME}.tar.gz" "${NAME}")
+          ls -la dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.tar.gz
+          generate_release_notes: true
+          draft: false

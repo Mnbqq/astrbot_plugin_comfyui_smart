@@ -137,7 +137,7 @@
   "ui.action.inpaint_run": "开始局部重绘",
   "ui.action.inpaint_clear": "清空遮罩",
   "ui.action.inpaint_brush": "画笔 / 橡皮",
-  "cmd.help.body": "🎨 ComfyUI 智能绘图\n━━━━━━━━━━━━━━\n/画图 <描述>　用一句中文出图\n　行内参数：16:9 / --size 1024x1536 / --seed 42\n　　　　　　--steps 30 / --cfg 6 / --lora 名字:0.8\n　　　　　　--model 关键词 / --batch 2 / --negative \"...\"\n　　　　　　--llm 强制让 AI 改写提示词 / --no-llm 本次不改写\n/图生图　　以图为底按描述重绘（别名 /改图，--denoise 控制幅度）\n/扩图　　　把画面往外扩，补全构图（--left/--right/--top/--bottom 像素）\n/视频　　　按描述生成短视频（--seconds 时长 / --fps 帧率 / --length 帧数）\n/图生视频　让一张图动起来（发两张图=首帧→尾帧，别名 /i2v）\n/反推　　　看图反推提示词（发图或回复图片，加 --画 直接出图）\n/模型列表　查看可用模型\n/模板列表　查看工作流模板（可放自定义模板）\n/状态　　　查看 ComfyUI 连接与队列\n/取消　　　取消自己正在排队或正在出图的任务（管理员：/取消 全部）\n/统计　　　查看出图统计\n/审计　　　查看审计日志（管理员，可选 --user 用户ID）\n/刷新模型　重新读取模型清单（管理员）\n/帮助　　　显示本帮助",
+  "cmd.help.body": "🎨 ComfyUI 智能绘图\n━━━━━━━━━━━━━━\n/画图 <描述>　用一句中文出图\n　行内参数：16:9 / --size 1024x1536 / --seed 42\n　　　　　　--steps 30 / --cfg 6 / --lora 名字:0.8\n　　　　　　--model 关键词 / --batch 2 / --negative \"...\"\n　　　　　　--llm 强制让 AI 改写提示词 / --no-llm 本次不改写\n/图生图　　以图为底按描述重绘（别名 /改图，--denoise 控制幅度）\n/扩图　　　把画面往外扩，补全构图（--left/--right/--top/--bottom 像素）\n/视频　　　按描述生成短视频（--seconds 时长 / --fps 帧率 / --length 帧数）\n/图生视频　让一张图动起来（发两张图=首帧→尾帧，别名 /i2v）\n/反推　　　看图反推提示词（发图或回复图片，加 --画 直接出图）\n/模型列表　查看可用模型\n/模板列表　查看工作流模板（可放自定义模板）\n/状态　　　查看 ComfyUI 连接与队列\n/取消　　　取消自己正在排队或正在出图的任务（管理员：/取消 全部）\n/统计　　　查看出图统计\n/审计　　　查看审计日志（管理员，可选 --user 用户ID）\n/巡检　　　模型资产巡检：重名/错放/没用过（管理员）\n/体检　　　运行环境体检：启动参数/显存/模板依赖（管理员）\n/刷新模型　重新读取模型清单（管理员）\n/帮助　　　显示本帮助",
   "llm.optimize_system": "你是 ComfyUI 绘图提示词工程师。把用户的中文描述改写成高质量英文提示词，并从给定的可用模型清单里挑选最合适的模型。\n规则：\n1. 只使用清单里**原样出现**的模型文件名，不要编造、不要改写大小写或路径。\n2. 不确定 LoRA 是否合适时，lora 字段留空字符串。\n3. 提示词用英文逗号分隔的 tag 风格，不要加入解释性文字。\n4. negative（负面提示词）必须包含手部与肢体畸形的常用规避词，至少覆盖：bad hands、extra fingers、fewer fingers、fused fingers、extra digits、missing fingers、mutated hands、malformed limbs、bad anatomy。\n5. 正向提示词要写清手部状态（例如 hands on hips、holding a cup、arms crossed），让人物手部有明确动作可画，这比事后加负面词更有效。\n6. 严格只输出一个 JSON 对象，不要 markdown 代码块，不要任何其他文字。\n输出格式：{\"positive\": \"...\", \"negative\": \"...\", \"checkpoint\": \"...\", \"lora\": \"...\", \"lora_strength\": 1.0, \"vae\": \"\", \"width\": 0, \"height\": 0}",
   "llm.optimize_user": "用户描述：{desc}\n\n默认负面提示词：{negative}\n尺寸说明：插件会按所选底模的架构自动决定分辨率，你只需在需要时用 width/height 表达**画面比例意图**（例如横构图 1344x768、竖构图 768x1344），不确定就都填 0。\n\n可用模型清单：\n{catalog}",
   "llm.reverse_system": "你是动画/插画提示词反推助手。看图片，输出可直接用于 Stable Diffusion 的英文 tag 提示词。\n规则：\n1. 只描述**画面里真实存在**的内容，看不清的服装纹样、配饰不要编造。\n2. positive 用英文逗号分隔的 Danbooru 风格 tag，按这个顺序组织：\n   人物数量（solo / 1girl / 2girls）→ 外貌（发色发型、瞳色）→ 服装 → 动作与**手部状态**（如 hands on hips、holding a cup）→ 视角与构图（from above、upper body、full body）→ 场景背景 → 光线氛围 → 画风（anime style、watercolor 等）。\n3. negative 给出 8~15 个与画面缺陷相关的常用规避词（含手部与肢体：bad hands、extra fingers、fused fingers、missing fingers、malformed limbs）。\n4. summary 用一句中文概括画面。\n5. 严格只输出一个 JSON 对象，不要 markdown 代码块，不要任何其他文字。\n格式：{\"positive\": \"...\", \"negative\": \"...\", \"summary\": \"...\"}",
@@ -159,5 +159,7 @@
   "cmd.audit.line": "{time}｜{name}({uid})｜{purpose}｜{model}｜{seconds}s｜{ok}",
   "cmd.audit.ok": "成功",
   "cmd.audit.fail": "失败",
-  "audit.blocked_nsfw": "被内容过滤拦截"
+  "audit.blocked_nsfw": "被内容过滤拦截",
+  "cmd.inspect.title": "🔍 模型巡检：{files} 个权重 / {pools} 个目录｜同名重复 {dup}｜疑似错放 {misplaced}",
+  "cmd.health.title": "🩺 环境体检：ComfyUI {online}｜{device}｜档位 {tier}｜显存空闲 {vram}G / 内存空闲 {ram}G｜错误 {errors}｜警告 {warnings}"
 }

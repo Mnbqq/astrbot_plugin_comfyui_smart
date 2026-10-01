@@ -609,6 +609,44 @@ async function loadStatus() {
   }
 }
 
+function renderFindings(title, findings, summary) {
+  const icon = { error: '❌', warn: '⚠️', info: 'ℹ️' };
+  let html = '<p class="muted">' + esc(title) + '</p>';
+  if (!findings || !findings.length) {
+    return html + '<p class="muted">没有发现问题 ✅</p>';
+  }
+  html += '<table class="stat-table"><thead><tr><th></th><th>问题</th><th>建议</th></tr></thead><tbody>'
+    + findings.map((f) => '<tr><td>' + (icon[f.severity] || '·') + '</td><td>'
+      + esc(f.message) + '</td><td>' + esc(f.suggestion || '') + '</td></tr>').join('')
+    + '</tbody></table>';
+  return html;
+}
+
+async function loadDiagnose() {
+  const box = $('#diagnose-container');
+  if (!box) return;
+  box.innerHTML = '<p class="muted">巡检中…（要问 ComfyUI 要节点与模型清单，稍等几秒）</p>';
+  try {
+    const data = await bridge.apiGet('diagnose');
+    const models = data.models || { findings: [], summary: {} };
+    const health = data.health || { findings: [], summary: {} };
+    const ms = models.summary || {};
+    const hs = health.summary || {};
+    let html = '<h4>模型资产</h4>' + renderFindings(
+      '共 ' + (ms.files || 0) + ' 个权重 / ' + (ms.pools || 0) + ' 个目录｜同名重复 '
+      + (ms.duplicates || 0) + '｜疑似错放 ' + (ms.misplaced || 0),
+      models.findings, ms);
+    html += '<h4 style="margin-top:16px">运行环境</h4>' + renderFindings(
+      'ComfyUI ' + (hs.online ? '在线' : '离线') + '｜' + (hs.device || '-')
+      + '｜档位 ' + (hs.tier || '-') + '｜显存空闲 ' + (hs.vram_free_gb || 0) + 'G / 内存空闲 '
+      + (hs.ram_free_gb || 0) + 'G｜错误 ' + (hs.errors || 0) + '｜警告 ' + (hs.warnings || 0),
+      health.findings, hs);
+    box.innerHTML = html;
+  } catch (error) {
+    box.innerHTML = '<p class="muted">诊断失败：' + esc(error.message) + '</p>';
+  }
+}
+
 async function loadTemplates() {
   const box = $('#templates-container');
   if (!box) return;
@@ -878,6 +916,9 @@ function bindEvents() {
   if (reloadStats) reloadStats.addEventListener('click', loadStats);
   const reloadStatus = $('[data-action="reload-status"]');
   if (reloadStatus) reloadStatus.addEventListener('click', () => { loadStatus(); loadTemplates(); });
+
+  const runDiagnose = $('[data-action="run-diagnose"]');
+  if (runDiagnose) runDiagnose.addEventListener('click', loadDiagnose);
 
   FIELDS.forEach((field) => {
     const el = document.getElementById(field.id);
