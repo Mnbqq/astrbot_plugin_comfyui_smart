@@ -393,6 +393,21 @@ vm.runInContext(source, sandbox, { filename: 'app.js' });
   paneServer.setAttribute('data-i18n-title', 'ui.tab.server');
 
   vm.runInContext("applyI18n({'ui.nav.server': 'Server', 'ui.tab.server': 'Server settings'})", sandbox);
+  // 新增属性类型：innerHTML（带内联标签的说明）与 placeholder
+  const htmlEl = getEl('i18n-html-test');
+  htmlEl.setAttribute('data-i18n-html', 'ui.text.test');
+  htmlEl.innerHTML = '带 <code>标记</code> 的中文';
+  const phInput = getEl('i18n-ph-test');
+  phInput.setAttribute('data-i18n-placeholder', 'ui.ph.test');
+  phInput.setAttribute('placeholder', '中文占位');
+  vm.runInContext(
+    "applyI18n({'ui.text.test': 'with <code>markup</code>', 'ui.ph.test': 'english placeholder'})",
+    sandbox);
+  check('data-i18n-html 走 innerHTML（保留内联标签）',
+    htmlEl.innerHTML.includes('<code>') && htmlEl.innerHTML.includes('markup'), htmlEl.innerHTML);
+  check('data-i18n-placeholder 会替换 placeholder 属性',
+    phInput.getAttribute('placeholder') === 'english placeholder', phInput.getAttribute('placeholder'));
+
   check('data-i18n 的元素文本被替换成当前语言',
         navServer.textContent === 'Server', navServer.textContent);
   check('data-i18n-title 替换的是 data-title（标签页标题）',
@@ -413,7 +428,37 @@ vm.runInContext(source, sandbox, { filename: 'app.js' });
   await vm.runInContext("copyField('modal-positive', '正向提示词')", sandbox);
   check('剪贴板不可用时退化为选中文本', getEl('modal-positive').selected === true);
   await vm.runInContext('closeDetail()', sandbox);
-  /* ---------- 配置面板与字段定义必须同步（真出过：FIELDS 加了、HTML 没加控件） ---------- */
+  
+/* ---------- 面板文案必须键化，且键在中英目录里都存在 ---------- */
+const panelHtml = fs.readFileSync(path.join(__dirname, '..', 'pages', 'settings', 'index.html'), 'utf8');
+const STRUCT_TAGS = /<(label|h3|h4|p|button|option)\b[^>]*>([\s\S]*?)<\/\1>/g;
+const CJK_RE = /[\u4e00-\u9fff]/;
+const hardcoded = [];
+for (const m of panelHtml.matchAll(STRUCT_TAGS)) {
+  const whole = m[0];
+  const inner = m[2];
+  if (!CJK_RE.test(inner)) continue;
+  if (/data-i18n(-html|-placeholder|-title)?=/.test(whole)) continue;
+  hardcoded.push(m[1] + ':' + inner.replace(/<[^>]+>/g, '').trim().slice(0, 24));
+}
+check('面板结构性文案全部键化（没有硬编码中文）', hardcoded.length === 0, hardcoded.slice(0, 5));
+
+const zhCatalog = JSON.parse(fs.readFileSync(
+  path.join(__dirname, '..', '.astrbot-plugin', 'i18n', 'zh-CN.json'), 'utf8'));
+const enCatalog = JSON.parse(fs.readFileSync(
+  path.join(__dirname, '..', '.astrbot-plugin', 'i18n', 'en-US.json'), 'utf8'));
+const usedKeys = [...panelHtml.matchAll(/data-i18n(?:-html|-placeholder|-title)?="([^"]+)"/g)]
+  .map((m) => m[1]);
+const missingZh = usedKeys.filter((k) => !(k in zhCatalog));
+const missingEn = usedKeys.filter((k) => !(k in enCatalog));
+check('data-i18n 用到的键在中英目录里都有（' + usedKeys.length + ' 个）',
+  missingZh.length === 0 && missingEn.length === 0, { missingZh, missingEn });
+check('中英语言目录键集合一致（不会出现只翻一半）',
+  Object.keys(zhCatalog).length === Object.keys(enCatalog).length
+  && Object.keys(zhCatalog).every((k) => k in enCatalog),
+  { zh: Object.keys(zhCatalog).length, en: Object.keys(enCatalog).length });
+
+/* ---------- 配置面板与字段定义必须同步（真出过：FIELDS 加了、HTML 没加控件） ---------- */
 const htmlSource = fs.readFileSync(
   path.join(__dirname, '..', 'pages', 'settings', 'index.html'), 'utf8');
 const fieldIds = [...source.matchAll(/\{ id: '([^']+)'/g)].map((m) => m[1]);

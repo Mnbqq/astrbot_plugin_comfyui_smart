@@ -256,6 +256,16 @@ function applyI18n(strings) {
     const text = pageStrings[key];
     if (text) el.textContent = text;
   });
+  $$('[data-i18n-html]').forEach((el) => {
+    const key = el.getAttribute('data-i18n-html');
+    const text = pageStrings[key];
+    if (text) el.innerHTML = text;
+  });
+  $$('[data-i18n-placeholder]').forEach((el) => {
+    const key = el.getAttribute('data-i18n-placeholder');
+    const text = pageStrings[key];
+    if (text) el.setAttribute('placeholder', text);
+  });
   $$('[data-i18n-title]').forEach((el) => {
     const key = el.getAttribute('data-i18n-title');
     const text = pageStrings[key];

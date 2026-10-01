@@ -49,52 +49,52 @@
       <section id="tab-server" class="tab-pane active" data-title="服务器配置" data-i18n-title="ui.tab.server">
         <article class="card">
           <div class="card-header">
-            <div><h3>ComfyUI 连接</h3><p>AstrBot 所在机器能访问到的 ComfyUI 地址。</p></div>
+            <div><h3 data-i18n="ui.title.001">ComfyUI 连接</h3><p data-i18n="ui.text.001">AstrBot 所在机器能访问到的 ComfyUI 地址。</p></div>
           </div>
           <div class="form-grid">
             <div class="form-group full-width">
-              <label for="server_base_url">服务地址</label>
+              <label data-i18n="ui.label.001" for="server_base_url">服务地址</label>
               <input type="text" id="server_base_url" class="input-modern" placeholder="http://127.0.0.1:8188" />
             </div>
             <div class="form-group">
-              <label for="server_timeout">出图等待上限（秒）</label>
+              <label data-i18n="ui.label.002" for="server_timeout">出图等待上限（秒）</label>
               <input type="number" id="server_timeout" class="input-modern" min="30" />
             </div>
             <div class="form-group">
-              <label for="server_poll_interval">进度轮询间隔（秒）</label>
+              <label data-i18n="ui.label.003" for="server_poll_interval">进度轮询间隔（秒）</label>
               <input type="number" id="server_poll_interval" class="input-modern" step="0.1" min="0.5" />
             </div>
             <div class="form-group">
-              <label for="server_max_tasks_ahead">排队补偿上限（前方任务数）</label>
+              <label data-i18n="ui.label.004" for="server_max_tasks_ahead">排队补偿上限（前方任务数）</label>
               <input type="number" id="server_max_tasks_ahead" class="input-modern" min="0" />
             </div>
           </div>
           <div class="setting-row">
-            <div><h3>换大模型前先卸载上一套</h3><p>切换底模家族（例如视频模型 ↔ SDXL）之前，先让 ComfyUI 释放显存与内存。16G 内存的机器上能避免切换时崩 <code>os error 1455</code>。默认开启。</p></div>
+            <div><h3 data-i18n="ui.title.002">换大模型前先卸载上一套</h3><p data-i18n-html="ui.text.002">切换底模家族（例如视频模型 ↔ SDXL）之前，先让 ComfyUI 释放显存与内存。16G 内存的机器上能避免切换时崩 <code>os error 1455</code>。默认开启。</p></div>
             <label class="switch-wrapper"><input type="checkbox" id="server_free_before_switch" class="ios-switch" /></label>
           </div>
         </article>
 
         <article class="card">
           <div class="card-header">
-            <div><h3>多后端调度</h3><p>有多个 ComfyUI 时按「谁闲给谁」自动分配，某台失败会临时熔断并跳过。单后端留空即可。</p></div>
+            <div><h3 data-i18n="ui.title.003">多后端调度</h3><p data-i18n="ui.text.003">有多个 ComfyUI 时按「谁闲给谁」自动分配，某台失败会临时熔断并跳过。单后端留空即可。</p></div>
           </div>
           <div class="form-grid">
             <div class="form-group full-width">
-              <label for="backends_endpoints">其他 ComfyUI 地址（每行一个，可写「地址|名称」）</label>
+              <label data-i18n="ui.label.005" for="backends_endpoints">其他 ComfyUI 地址（每行一个，可写「地址|名称」）</label>
               <textarea id="backends_endpoints" class="input-modern" rows="3"
-                        placeholder="http://192.168.1.20:8188|二号线"></textarea>
+                        placeholder="http://192.168.1.20:8188|二号线" data-i18n-placeholder="ui.ph.001"></textarea>
             </div>
             <div class="form-group">
-              <label for="backends_strategy">调度策略</label>
+              <label data-i18n="ui.label.006" for="backends_strategy">调度策略</label>
               <select id="backends_strategy" class="input-modern">
-                <option value="least_queue">谁闲给谁（least_queue）</option>
-                <option value="round_robin">轮流派（round_robin）</option>
-                <option value="primary">只用主后端（primary）</option>
+                <option data-i18n="ui.opt.001" value="least_queue">谁闲给谁（least_queue）</option>
+                <option data-i18n="ui.opt.002" value="round_robin">轮流派（round_robin）</option>
+                <option data-i18n="ui.opt.003" value="primary">只用主后端（primary）</option>
               </select>
             </div>
             <div class="form-group">
-              <label for="backends_fail_cooldown">失败熔断时长（秒）</label>
+              <label data-i18n="ui.label.007" for="backends_fail_cooldown">失败熔断时长（秒）</label>
               <input type="number" id="backends_fail_cooldown" class="input-modern" min="0" />
             </div>
           </div>
@@ -102,19 +102,19 @@
 
         <article class="card">
           <div class="card-header">
-            <div><h3>出图队列与并发</h3><p>限制同时出图的数量，超出的先排队并告知位次，避免多人同时出图把显存打满。</p></div>
+            <div><h3 data-i18n="ui.title.004">出图队列与并发</h3><p data-i18n="ui.text.004">限制同时出图的数量，超出的先排队并告知位次，避免多人同时出图把显存打满。</p></div>
           </div>
           <div class="form-grid">
             <div class="form-group">
-              <label for="queue_max_concurrent">同时出图上限</label>
+              <label data-i18n="ui.label.008" for="queue_max_concurrent">同时出图上限</label>
               <input type="number" id="queue_max_concurrent" class="input-modern" min="1" />
             </div>
             <div class="form-group">
-              <label for="queue_per_user_limit">单人同时出图上限</label>
+              <label data-i18n="ui.label.009" for="queue_per_user_limit">单人同时出图上限</label>
               <input type="number" id="queue_per_user_limit" class="input-modern" min="0" />
             </div>
             <div class="form-group">
-              <label for="queue_wait_timeout">排队等待上限（秒）</label>
+              <label data-i18n="ui.label.010" for="queue_wait_timeout">排队等待上限（秒）</label>
               <input type="number" id="queue_wait_timeout" class="input-modern" min="0" />
             </div>
           </div>
@@ -125,13 +125,13 @@
       <section id="tab-model" class="tab-pane" data-title="模型清单" data-i18n-title="ui.tab.model">
         <article class="card">
           <div class="card-header space-between">
-            <div><h3>ComfyUI 里的真实模型</h3><p>直接读取 ComfyUI 的模型目录，不依赖手动填写。出图只会使用这里列出的模型。</p></div>
+            <div><h3 data-i18n="ui.title.005">ComfyUI 里的真实模型</h3><p data-i18n="ui.text.005">直接读取 ComfyUI 的模型目录，不依赖手动填写。出图只会使用这里列出的模型。</p></div>
             <div>
               <button data-action="refresh-models" class="btn-primary" type="button" data-i18n="ui.action.refresh_models">刷新模型</button>
               <button data-action="reload-models" class="btn-secondary" type="button" data-i18n="ui.action.reload_models">重新读取</button>
             </div>
           </div>
-          <div id="models-container"><p class="muted">切换到本页时自动读取。</p></div>
+          <div id="models-container"><p data-i18n="ui.text.006" class="muted">切换到本页时自动读取。</p></div>
         </article>
       </section>
 
@@ -139,31 +139,31 @@
       <section id="tab-llm" class="tab-pane" data-title="LLM 设置" data-i18n-title="ui.tab.llm">
         <article class="card">
           <div class="card-header">
-            <div><h3>提示词优化与选型</h3><p>用 LLM 把中文描述改写成提示词，并从真实模型清单里挑选底模与 LoRA。</p></div>
+            <div><h3 data-i18n="ui.title.006">提示词优化与选型</h3><p data-i18n="ui.text.007">用 LLM 把中文描述改写成提示词，并从真实模型清单里挑选底模与 LoRA。</p></div>
           </div>
           <div class="setting-row">
-            <div><h3>启用提示词优化与智能选型</h3><p>关闭后直接用你的原话当提示词、用第一个可用底模，完全不需要 LLM。</p></div>
+            <div><h3 data-i18n="ui.title.007">启用提示词优化与智能选型</h3><p data-i18n="ui.text.008">关闭后直接用你的原话当提示词、用第一个可用底模，完全不需要 LLM。</p></div>
             <label class="switch-wrapper"><input type="checkbox" id="llm_enable_optimize" class="ios-switch" /></label>
           </div>
           <div class="setting-row">
-            <div><h3>视频提示词也交给 AI 改写</h3><p>打开后 <code>/视频</code> 与 <code>/图生视频</code> 会先把描述改写成「视频提示词」：补全<strong>动作</strong>（缓缓回头、轻轻晃动）、<strong>镜头运动</strong>（固定 / 推近 / 平移）与光影氛围，并保持你原本的语言（中文就输出中文，Wan 原生懂中文）。与图片那套不同——图片是英文 tag，视频要自然语言的动作描述。视频用哪个模型由下面的「文生视频 / 图生视频默认模型」决定，AI 只改提示词。聊天里可用 <code>--llm</code> / <code>--no-llm</code> 临时覆盖。</p></div>
+            <div><h3 data-i18n="ui.title.008">视频提示词也交给 AI 改写</h3><p data-i18n-html="ui.text.009">打开后 <code>/视频</code> 与 <code>/图生视频</code> 会先把描述改写成「视频提示词」：补全<strong>动作</strong>（缓缓回头、轻轻晃动）、<strong>镜头运动</strong>（固定 / 推近 / 平移）与光影氛围，并保持你原本的语言（中文就输出中文，Wan 原生懂中文）。与图片那套不同——图片是英文 tag，视频要自然语言的动作描述。视频用哪个模型由下面的「文生视频 / 图生视频默认模型」决定，AI 只改提示词。聊天里可用 <code>--llm</code> / <code>--no-llm</code> 临时覆盖。</p></div>
             <label class="switch-wrapper"><input type="checkbox" id="llm_optimize_for_video" class="ios-switch" /></label>
           </div>
           <div class="form-grid">
             <div class="form-group">
-              <label for="llm_provider">LLM 提供商 ID</label>
-              <input type="text" id="llm_provider" class="input-modern" placeholder="留空则用当前会话模型" />
+              <label data-i18n="ui.label.011" for="llm_provider">LLM 提供商 ID</label>
+              <input type="text" id="llm_provider" class="input-modern" placeholder="留空则用当前会话模型" data-i18n-placeholder="ui.ph.002" />
             </div>
             <div class="form-group">
-              <label for="llm_model">自定义接口的模型名</label>
+              <label data-i18n="ui.label.012" for="llm_model">自定义接口的模型名</label>
               <input type="text" id="llm_model" class="input-modern" placeholder="gpt-4o-mini" />
             </div>
             <div class="form-group full-width">
-              <label for="llm_base_url">自定义 OpenAI 兼容接口地址</label>
+              <label data-i18n="ui.label.013" for="llm_base_url">自定义 OpenAI 兼容接口地址</label>
               <input type="text" id="llm_base_url" class="input-modern" placeholder="https://api.openai.com/v1" />
             </div>
             <div class="form-group full-width">
-              <label for="llm_api_key">自定义接口的 API Key</label>
+              <label data-i18n="ui.label.014" for="llm_api_key">自定义接口的 API Key</label>
               <input type="password" id="llm_api_key" class="input-modern" placeholder="sk-..." />
             </div>
           </div>
@@ -174,23 +174,23 @@
       <section id="tab-vision" class="tab-pane" data-title="反推专用模型" data-i18n-title="ui.tab.vision">
         <article class="card">
           <div class="card-header">
-            <div><h3>反推专用模型</h3><p><code>/反推</code> 必须用<b>支持看图</b>的模型。若当前对话模型不支持看图，AstrBot 会把图片替换成「[Image]」，模型就会一本正经地编内容 —— 这就是「反推结果全错」的成因。</p></div>
+            <div><h3 data-i18n="ui.title.009">反推专用模型</h3><p data-i18n-html="ui.text.010"><code>/反推</code> 必须用<b>支持看图</b>的模型。若当前对话模型不支持看图，AstrBot 会把图片替换成「[Image]」，模型就会一本正经地编内容 —— 这就是「反推结果全错」的成因。</p></div>
           </div>
           <div class="form-grid">
             <div class="form-group full-width">
-              <label for="vision_provider">AstrBot 提供商 ID（推荐）</label>
-              <input type="text" id="vision_provider" class="input-modern" placeholder="留空=用当前会话的对话模型" />
-              <p class="field-hint">在 AstrBot「服务提供商」里添加一个支持看图的模型（如 <code>qwen-vl-max</code>、<code>glm-4v</code>、<code>gpt-4o</code>），把它的 ID 填在这里。</p>
+              <label data-i18n="ui.label.015" for="vision_provider">AstrBot 提供商 ID（推荐）</label>
+              <input type="text" id="vision_provider" class="input-modern" placeholder="留空=用当前会话的对话模型" data-i18n-placeholder="ui.ph.003" />
+              <p data-i18n-html="ui.text.011" class="field-hint">在 AstrBot「服务提供商」里添加一个支持看图的模型（如 <code>qwen-vl-max</code>、<code>glm-4v</code>、<code>gpt-4o</code>），把它的 ID 填在这里。</p>
             </div>
           </div>
-          <div class="card-header"><div><h3>或：直连自定义接口</h3><p>填了接口地址就不再走上面的提供商。</p></div></div>
+          <div class="card-header"><div><h3 data-i18n="ui.title.010">或：直连自定义接口</h3><p data-i18n="ui.text.012">填了接口地址就不再走上面的提供商。</p></div></div>
           <div class="form-grid">
             <div class="form-group full-width">
-              <label for="vision_base_url">接口地址</label>
+              <label data-i18n="ui.label.016" for="vision_base_url">接口地址</label>
               <input type="text" id="vision_base_url" class="input-modern" placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1" />
             </div>
             <div class="form-group">
-              <label for="vision_model">模型名</label>
+              <label data-i18n="ui.label.017" for="vision_model">模型名</label>
               <input type="text" id="vision_model" class="input-modern" placeholder="qwen-vl-max" />
             </div>
             <div class="form-group">
@@ -198,7 +198,7 @@
               <input type="password" id="vision_api_key" class="input-modern" placeholder="sk-..." />
             </div>
           </div>
-          <p class="field-hint">临时试别的模型可以不改配置：<code>/反推 --provider &lt;id&gt;</code>。用 <code>/状态</code> 可以看到当前用的是哪个看图模型、以及它是否支持看图。</p>
+          <p data-i18n-html="ui.text.013" class="field-hint">临时试别的模型可以不改配置：<code>/反推 --provider &lt;id&gt;</code>。用 <code>/状态</code> 可以看到当前用的是哪个看图模型、以及它是否支持看图。</p>
         </article>
       </section>
 
@@ -206,115 +206,115 @@
       <section id="tab-draw" class="tab-pane" data-title="出图参数" data-i18n-title="ui.tab.draw">
         <article class="card">
           <div class="card-header">
-            <div><h3>默认出图参数</h3><p>插件会按底模架构（SD1.5 / SDXL / Pony / Flux）自动适配分辨率、CFG 与采样器。</p></div>
+            <div><h3 data-i18n="ui.title.011">默认出图参数</h3><p data-i18n="ui.text.014">插件会按底模架构（SD1.5 / SDXL / Pony / Flux）自动适配分辨率、CFG 与采样器。</p></div>
           </div>
           <div class="setting-row">
-            <div><h3>强制使用下面的参数</h3><p>关闭时下面各项只在架构无法识别时兜底，避免把 SD1.5 的参数误用到 SDXL 或 Flux 上。</p></div>
+            <div><h3 data-i18n="ui.title.012">强制使用下面的参数</h3><p data-i18n="ui.text.015">关闭时下面各项只在架构无法识别时兜底，避免把 SD1.5 的参数误用到 SDXL 或 Flux 上。</p></div>
             <label class="switch-wrapper"><input type="checkbox" id="draw_override_arch" class="ios-switch" /></label>
           </div>
           <div class="form-grid">
             <div class="form-group">
-              <label for="draw_width">兜底宽度</label>
+              <label data-i18n="ui.label.018" for="draw_width">兜底宽度</label>
               <input type="number" id="draw_width" class="input-modern" min="64" max="4096" step="8" />
             </div>
             <div class="form-group">
-              <label for="draw_height">兜底高度</label>
+              <label data-i18n="ui.label.019" for="draw_height">兜底高度</label>
               <input type="number" id="draw_height" class="input-modern" min="64" max="4096" step="8" />
             </div>
             <div class="form-group">
-              <label for="draw_steps">兜底步数</label>
+              <label data-i18n="ui.label.020" for="draw_steps">兜底步数</label>
               <input type="number" id="draw_steps" class="input-modern" min="1" max="150" />
             </div>
             <div class="form-group">
-              <label for="draw_cfg">兜底 CFG</label>
+              <label data-i18n="ui.label.021" for="draw_cfg">兜底 CFG</label>
               <input type="number" id="draw_cfg" class="input-modern" step="0.5" min="1" max="30" />
             </div>
             <div class="form-group">
-              <label for="draw_arch_override">强制指定架构（留空自动识别）</label>
+              <label data-i18n="ui.label.022" for="draw_arch_override">强制指定架构（留空自动识别）</label>
               <input type="text" id="draw_arch_override" class="input-modern" placeholder="sd15 / sdxl / pony / flux / sd3" />
             </div>
             <div class="form-group">
-              <label for="draw_sampler">兜底采样器</label>
+              <label data-i18n="ui.label.023" for="draw_sampler">兜底采样器</label>
               <input type="text" id="draw_sampler" class="input-modern" placeholder="dpmpp_2m" />
             </div>
           </div>
           <div class="setting-row">
-            <div><h3>按架构自动补质量词</h3><p>SD1.5 / Pony 系自动加质量词；SDXL / Flux 不加（加了可能反而变差）。</p></div>
+            <div><h3 data-i18n="ui.title.013">按架构自动补质量词</h3><p data-i18n="ui.text.016">SD1.5 / Pony 系自动加质量词；SDXL / Flux 不加（加了可能反而变差）。</p></div>
             <label class="switch-wrapper"><input type="checkbox" id="draw_quality_tags" class="ios-switch" /></label>
           </div>
           <div class="form-group full-width">
-            <label for="draw_negative_mode">负面提示词策略</label>
+            <label data-i18n="ui.label.024" for="draw_negative_mode">负面提示词策略</label>
             <select id="draw_negative_mode" class="input-modern">
-              <option value="merge">merge —— 合并全部（默认词 + 手部规避词 + 架构词 + LLM 词，最稳）</option>
-              <option value="guard_only">guard_only —— 只用我的词 + 手部规避词，不采纳 LLM 的负面词</option>
-              <option value="custom_only">custom_only —— 只用我自己的词，不追加任何内容（自动合并重复写法）</option>
-              <option value="raw">raw —— 严格原样，连去重都不做，一个字符都不改</option>
+              <option data-i18n="ui.opt.004" value="merge">merge —— 合并全部（默认词 + 手部规避词 + 架构词 + LLM 词，最稳）</option>
+              <option data-i18n="ui.opt.005" value="guard_only">guard_only —— 只用我的词 + 手部规避词，不采纳 LLM 的负面词</option>
+              <option data-i18n="ui.opt.006" value="custom_only">custom_only —— 只用我自己的词，不追加任何内容（自动合并重复写法）</option>
+              <option data-i18n="ui.opt.007" value="raw">raw —— 严格原样，连去重都不做，一个字符都不改</option>
             </select>
-            <p class="field-hint">行内 <code>--negative "..."</code> 在任何档位都会生效。</p>
+            <p data-i18n-html="ui.text.017" class="field-hint">行内 <code>--negative "..."</code> 在任何档位都会生效。</p>
           </div>
           <div class="form-group full-width">
-            <label for="draw_force_vae">强制使用指定 VAE（留空用底模自带）</label>
-            <input type="text" id="draw_force_vae" class="input-modern" placeholder="出图偏色发灰时可填，如 vae-ft-mse-840000-ema-pruned.safetensors" />
+            <label data-i18n="ui.label.025" for="draw_force_vae">强制使用指定 VAE（留空用底模自带）</label>
+            <input type="text" id="draw_force_vae" class="input-modern" placeholder="出图偏色发灰时可填，如 vae-ft-mse-840000-ema-pruned.safetensors" data-i18n-placeholder="ui.ph.004" />
           </div>
           <div class="form-group full-width">
-            <label for="draw_negative">默认负面提示词</label>
+            <label data-i18n="ui.label.026" for="draw_negative">默认负面提示词</label>
             <textarea id="draw_negative" rows="4" class="input-modern"></textarea>
           </div>
         </article>
         <article class="card">
-          <div class="card-header"><div><h3>图生图（以图为底重绘）</h3><p>把图发给机器人并带上描述，就会以这张图为底重绘；也可以直接发图给 /图生图（别名 /改图）。</p></div></div>
+          <div class="card-header"><div><h3 data-i18n="ui.title.014">图生图（以图为底重绘）</h3><p data-i18n="ui.text.018">把图发给机器人并带上描述，就会以这张图为底重绘；也可以直接发图给 /图生图（别名 /改图）。</p></div></div>
           <div class="setting-row">
-            <div><h3>在 /画图 里带图时自动走图生图</h3><p>关闭后带图也按文生图处理，仍可用 /图生图 显式调用。</p></div>
+            <div><h3 data-i18n="ui.title.015">在 /画图 里带图时自动走图生图</h3><p data-i18n="ui.text.019">关闭后带图也按文生图处理，仍可用 /图生图 显式调用。</p></div>
             <label class="switch-wrapper"><input type="checkbox" id="i2i_enable" class="ios-switch" /></label>
           </div>
           <div class="form-grid">
             <div class="form-group">
-              <label for="i2i_denoise">默认重绘幅度</label>
+              <label data-i18n="ui.label.027" for="i2i_denoise">默认重绘幅度</label>
               <input type="number" id="i2i_denoise" class="input-modern" step="0.05" min="0.05" max="1" />
             </div>
             <div class="form-group">
-              <label for="i2i_max_side">输入图最长边上限（像素，0 不限）</label>
+              <label data-i18n="ui.label.028" for="i2i_max_side">输入图最长边上限（像素，0 不限）</label>
               <input type="number" id="i2i_max_side" class="input-modern" min="0" />
             </div>
             <div class="form-group">
-              <label for="i2i_subfolder">上传到 ComfyUI 的子目录</label>
+              <label data-i18n="ui.label.029" for="i2i_subfolder">上传到 ComfyUI 的子目录</label>
               <input type="text" id="i2i_subfolder" class="input-modern" placeholder="astrbot" />
             </div>
           </div>
-          <p class="field-hint">重绘幅度：<code>--denoise 0.3</code> 只修细节、<code>0.6</code>（默认）改画风、<code>0.8+</code> 接近重画。目标尺寸按原图比例计算，并对齐到 8 的倍数。</p>
+          <p data-i18n-html="ui.text.020" class="field-hint">重绘幅度：<code>--denoise 0.3</code> 只修细节、<code>0.6</code>（默认）改画风、<code>0.8+</code> 接近重画。目标尺寸按原图比例计算，并对齐到 8 的倍数。</p>
         </article>
 
         <article class="card">
-          <div class="card-header"><div><h3>Hires Fix（放大重绘）</h3><p>先出小图，再放大重绘一遍。改善手部、人脸与细节最有效的手段之一，代价是出图时间大致翻倍。</p></div></div>
+          <div class="card-header"><div><h3 data-i18n="ui.title.016">Hires Fix（放大重绘）</h3><p data-i18n="ui.text.021">先出小图，再放大重绘一遍。改善手部、人脸与细节最有效的手段之一，代价是出图时间大致翻倍。</p></div></div>
           <div class="setting-row">
-            <div><h3>文生图自动启用</h3><p>每次 <code>/画图</code>（文生图）都自动放大重绘一遍。</p></div>
+            <div><h3 data-i18n="ui.title.017">文生图自动启用</h3><p data-i18n-html="ui.text.022">每次 <code>/画图</code>（文生图）都自动放大重绘一遍。</p></div>
             <label class="switch-wrapper"><input type="checkbox" id="hires_enable" class="ios-switch" /></label>
           </div>
           <div class="setting-row">
-            <div><h3>图生图也自动启用</h3><p>需与上面的「文生图自动启用」同时打开才生效。</p></div>
+            <div><h3 data-i18n="ui.title.018">图生图也自动启用</h3><p data-i18n="ui.text.023">需与上面的「文生图自动启用」同时打开才生效。</p></div>
             <label class="switch-wrapper"><input type="checkbox" id="hires_enable_i2i" class="ios-switch" /></label>
           </div>
           <div class="setting-row">
-            <div><h3>允许单次指令覆盖</h3><p>打开后用户可以自行发 <code>--hires 1.5</code> 或 <code>--hires 0</code>；关掉则一律按这里的配置执行。</p></div>
+            <div><h3 data-i18n="ui.title.019">允许单次指令覆盖</h3><p data-i18n-html="ui.text.024">打开后用户可以自行发 <code>--hires 1.5</code> 或 <code>--hires 0</code>；关掉则一律按这里的配置执行。</p></div>
             <label class="switch-wrapper"><input type="checkbox" id="hires_allow_inline" class="ios-switch" /></label>
           </div>
           <div class="form-grid">
             <div class="form-group">
-              <label for="hires_scale">放大倍数</label>
+              <label data-i18n="ui.label.030" for="hires_scale">放大倍数</label>
               <input type="number" id="hires_scale" class="input-modern" step="0.1" min="1" max="3" />
             </div>
             <div class="form-group">
-              <label for="hires_denoise">第二轮重绘幅度</label>
+              <label data-i18n="ui.label.031" for="hires_denoise">第二轮重绘幅度</label>
               <input type="number" id="hires_denoise" class="input-modern" step="0.05" min="0" max="1" />
             </div>
             <div class="form-group">
-              <label for="hires_steps">第二轮步数（0 = 与首轮相同）</label>
+              <label data-i18n="ui.label.032" for="hires_steps">第二轮步数（0 = 与首轮相同）</label>
               <input type="number" id="hires_steps" class="input-modern" min="0" max="150" />
             </div>
             <div class="form-group">
-              <label for="hires_method">放大算法</label>
+              <label data-i18n="ui.label.033" for="hires_method">放大算法</label>
               <select id="hires_method" class="input-modern">
-                <option value="bislerp">bislerp（推荐）</option>
+                <option data-i18n="ui.opt.008" value="bislerp">bislerp（推荐）</option>
                 <option value="bilinear">bilinear</option>
                 <option value="bicubic">bicubic</option>
                 <option value="area">area</option>
@@ -322,79 +322,79 @@
               </select>
             </div>
           </div>
-          <p class="field-hint">放大后尺寸 = 原尺寸 × 倍数，且会对齐到 8 的倍数。显存较小（如 8GB）时建议倍数不要超过 1.5。</p>
+          <p data-i18n="ui.text.025" class="field-hint">放大后尺寸 = 原尺寸 × 倍数，且会对齐到 8 的倍数。显存较小（如 8GB）时建议倍数不要超过 1.5。</p>
         </article>
 
         <article class="card">
-          <div class="card-header"><div><h3>视频（文生视频 / 图生视频）</h3><p>用 /视频 按描述生成短视频；需要 ComfyUI 里已装好视频模型与节点（如 Wan 2.x）。</p></div></div>
+          <div class="card-header"><div><h3 data-i18n="ui.title.020">视频（文生视频 / 图生视频）</h3><p data-i18n="ui.text.026">用 /视频 按描述生成短视频；需要 ComfyUI 里已装好视频模型与节点（如 Wan 2.x）。</p></div></div>
           <div class="form-grid">
             <div class="form-group">
-              <label for="video_default_seconds">默认时长（秒）</label>
+              <label data-i18n="ui.label.034" for="video_default_seconds">默认时长（秒）</label>
               <input type="number" id="video_default_seconds" class="input-modern" min="1" />
             </div>
             <div class="form-group">
-              <label for="video_default_fps">默认帧率</label>
+              <label data-i18n="ui.label.035" for="video_default_fps">默认帧率</label>
               <input type="number" id="video_default_fps" class="input-modern" min="1" />
             </div>
             <div class="form-group">
-              <label for="video_max_seconds">时长上限（秒）</label>
+              <label data-i18n="ui.label.036" for="video_max_seconds">时长上限（秒）</label>
               <input type="number" id="video_max_seconds" class="input-modern" min="0" />
             </div>
             <div class="form-group">
-              <label for="video_machine">机器档位</label>
+              <label data-i18n="ui.label.037" for="video_machine">机器档位</label>
               <select id="video_machine" class="input-modern">
-                <option value="auto">自动（按显存判定）</option>
-                <option value="low">低配：≤10G 显存 / ≤16G 内存</option>
-                <option value="mid">标配：12~20G 显存 / 32G 内存</option>
-                <option value="high">高配：≥24G 显存 / ≥64G 内存</option>
+                <option data-i18n="ui.opt.009" value="auto">自动（按显存判定）</option>
+                <option data-i18n="ui.opt.010" value="low">低配：≤10G 显存 / ≤16G 内存</option>
+                <option data-i18n="ui.opt.011" value="mid">标配：12~20G 显存 / 32G 内存</option>
+                <option data-i18n="ui.opt.012" value="high">高配：≥24G 显存 / ≥64G 内存</option>
               </select>
             </div>
             <div class="form-group">
-              <label for="video_t2v_model">文生视频默认模型</label>
+              <label data-i18n="ui.label.038" for="video_t2v_model">文生视频默认模型</label>
               <input type="text" id="video_t2v_model" class="input-modern"
-                     placeholder="留空=自动挑（低配优先加速版）；例：Wan2_2-TI2V-5B-Turbo-Q4_K_M.gguf" />
+                     placeholder="留空=自动挑（低配优先加速版）；例：Wan2_2-TI2V-5B-Turbo-Q4_K_M.gguf" data-i18n-placeholder="ui.ph.005" />
             </div>
             <div class="form-group">
-              <label for="video_i2v_model">图生视频默认模型</label>
+              <label data-i18n="ui.label.039" for="video_i2v_model">图生视频默认模型</label>
               <input type="text" id="video_i2v_model" class="input-modern"
-                     placeholder="Wan 2.2 TI2V-5B 文生图生共用一个模型，可与上面填同一个" />
+                     placeholder="Wan 2.2 TI2V-5B 文生图生共用一个模型，可与上面填同一个" data-i18n-placeholder="ui.ph.006" />
             </div>
           </div>
-          <p class="field-hint">档位决定分辨率 / 帧数 / 步数上限：低配 480p · ≤97 帧 · ≤12 步；标配 720p · ≤121 帧 · ≤30 步；高配 720p · ≤161 帧 · ≤50 步。自动档按显存判定，内存不足 20G 再降一档。<br />
+          <p data-i18n-html="ui.text.027" class="field-hint">档位决定分辨率 / 帧数 / 步数上限：低配 480p · ≤97 帧 · ≤12 步；标配 720p · ≤121 帧 · ≤30 步；高配 720p · ≤161 帧 · ≤50 步。自动档按显存判定，内存不足 20G 再降一档。<br />
           低配 / 标配档下没指定模型时，会优先挑文件名带 <code>turbo</code> / <code>lightning</code> / <code>distill</code> / <code>schnell</code> 的加速版权重（实测 Turbo 4 步 74 秒 vs 原版 20 步 281 秒）；填了上面的模型名就以你填的为准。</p>
           <div class="setting-row">
-            <div><h3>直接把视频发到聊天</h3><p>关掉后只在聊天里给出本地保存路径（有些平台发不了视频时用）。</p></div>
+            <div><h3 data-i18n="ui.title.021">直接把视频发到聊天</h3><p data-i18n="ui.text.028">关掉后只在聊天里给出本地保存路径（有些平台发不了视频时用）。</p></div>
             <label class="switch-wrapper"><input type="checkbox" id="video_send_video" class="ios-switch" /></label>
           </div>
         </article>
 
         <article class="card">
-          <div class="card-header"><div><h3>结果发送与图片保留</h3><p>图片按时间与数量双重上限清理，避免磁盘被撑满。</p></div></div>
+          <div class="card-header"><div><h3 data-i18n="ui.title.022">结果发送与图片保留</h3><p data-i18n="ui.text.029">图片按时间与数量双重上限清理，避免磁盘被撑满。</p></div></div>
           <div class="setting-row">
-            <div><h3>群聊出图时 @ 触发人</h3><p>在群里出图时艾特发起人。</p></div>
+            <div><h3 data-i18n="ui.title.023">群聊出图时 @ 触发人</h3><p data-i18n="ui.text.030">在群里出图时艾特发起人。</p></div>
             <label class="switch-wrapper"><input type="checkbox" id="out_mention" class="ios-switch" /></label>
           </div>
           <div class="setting-row">
-            <div><h3>随图片附带参数信息</h3><p>显示模板名、底模、分辨率、种子与耗时，方便复现。</p></div>
+            <div><h3 data-i18n="ui.title.024">随图片附带参数信息</h3><p data-i18n="ui.text.031">显示模板名、底模、分辨率、种子与耗时，方便复现。</p></div>
             <label class="switch-wrapper"><input type="checkbox" id="out_show_params" class="ios-switch" /></label>
           </div>
           <div class="setting-row">
-            <div><h3>出图过程中发送实时进度</h3><p>通过 ComfyUI 的 WebSocket 推送显示「第 n / 总步数」；连不上时自动退回轮询，不影响出图。</p></div>
+            <div><h3 data-i18n="ui.title.025">出图过程中发送实时进度</h3><p data-i18n="ui.text.032">通过 ComfyUI 的 WebSocket 推送显示「第 n / 总步数」；连不上时自动退回轮询，不影响出图。</p></div>
             <label class="switch-wrapper"><input type="checkbox" id="out_show_progress" class="ios-switch" /></label>
           </div>
           <div class="form-grid">
             <div class="form-group">
-              <label for="out_progress_interval">进度提示最小间隔（秒）</label>
+              <label data-i18n="ui.label.040" for="out_progress_interval">进度提示最小间隔（秒）</label>
               <input type="number" id="out_progress_interval" class="input-modern" min="0" />
             </div>
           </div>
           <div class="form-grid">
             <div class="form-group">
-              <label for="out_keep_images">本地最多保留图片数</label>
+              <label data-i18n="ui.label.041" for="out_keep_images">本地最多保留图片数</label>
               <input type="number" id="out_keep_images" class="input-modern" min="0" />
             </div>
             <div class="form-group">
-              <label for="out_image_age">本地图片保留天数</label>
+              <label data-i18n="ui.label.042" for="out_image_age">本地图片保留天数</label>
               <input type="number" id="out_image_age" class="input-modern" min="0" />
             </div>
           </div>
@@ -405,30 +405,30 @@
       <section id="tab-inpaint" class="tab-pane" data-title="局部重绘" data-i18n-title="ui.tab.inpaint">
         <article class="card">
           <div class="card-header">
-            <div><h3>涂抹要重画的区域</h3><p>上传图片 → 用画笔涂掉想改的地方（红色）→ 写一句描述 → 开始重绘。遮罩只在你的浏览器里生成并随请求提交，不会存进聊天记录。</p></div>
+            <div><h3 data-i18n="ui.title.026">涂抹要重画的区域</h3><p data-i18n="ui.text.033">上传图片 → 用画笔涂掉想改的地方（红色）→ 写一句描述 → 开始重绘。遮罩只在你的浏览器里生成并随请求提交，不会存进聊天记录。</p></div>
           </div>
           <div class="form-grid">
             <div class="form-group">
-              <label for="inpaint_file">选择图片</label>
+              <label data-i18n="ui.label.043" for="inpaint_file">选择图片</label>
               <input type="file" id="inpaint_file" class="input-modern" accept="image/*" />
             </div>
             <div class="form-group">
-              <label for="inpaint_brush">画笔大小（像素）</label>
+              <label data-i18n="ui.label.044" for="inpaint_brush">画笔大小（像素）</label>
               <input type="range" id="inpaint_brush" min="4" max="200" step="2" value="48" />
             </div>
             <div class="form-group">
-              <label for="inpaint_denoise">重绘幅度</label>
+              <label data-i18n="ui.label.045" for="inpaint_denoise">重绘幅度</label>
               <input type="number" id="inpaint_denoise" class="input-modern" step="0.05" min="0.05" max="1" value="1" />
             </div>
             <div class="form-group">
-              <label for="inpaint_grow">遮罩外扩（像素）</label>
+              <label data-i18n="ui.label.046" for="inpaint_grow">遮罩外扩（像素）</label>
               <input type="number" id="inpaint_grow" class="input-modern" min="0" max="64" value="6" />
             </div>
           </div>
           <div class="form-group full-width">
-            <label for="inpaint_prompt">想改成什么</label>
+            <label data-i18n="ui.label.047" for="inpaint_prompt">想改成什么</label>
             <textarea id="inpaint_prompt" class="input-modern" rows="2"
-                      placeholder="例如：换成红色的裙子，保持光影和周围一致"></textarea>
+                      placeholder="例如：换成红色的裙子，保持光影和周围一致" data-i18n-placeholder="ui.ph.007"></textarea>
           </div>
           <div class="inpaint-stage">
             <canvas id="inpaint_canvas" class="inpaint-canvas"></canvas>
@@ -440,7 +440,7 @@
             <button id="inpaint_clear" class="btn-secondary" type="button" data-i18n="ui.action.inpaint_clear">清空遮罩</button>
             <button id="inpaint_run" class="btn-primary" type="button" data-i18n="ui.action.inpaint_run">开始局部重绘</button>
           </div>
-          <div id="inpaint_result"><p class="muted">还没有结果。上传图片并涂抹后点「开始局部重绘」。</p></div>
+          <div id="inpaint_result"><p data-i18n="ui.text.034" class="muted">还没有结果。上传图片并涂抹后点「开始局部重绘」。</p></div>
         </article>
       </section>
 
@@ -448,67 +448,67 @@
       <section id="tab-perm" class="tab-pane" data-title="权限与配额" data-i18n-title="ui.tab.perm">
         <article class="card">
           <div class="card-header">
-            <div><h3>权限与配额</h3><p>管理员身份沿用 AstrBot 自带的管理员设置，这里只需维护名单与限额。</p></div>
+            <div><h3 data-i18n="ui.title.027">权限与配额</h3><p data-i18n="ui.text.035">管理员身份沿用 AstrBot 自带的管理员设置，这里只需维护名单与限额。</p></div>
           </div>
           <div class="form-grid">
             <div class="form-group full-width">
-              <label for="perm_whitelist">用户白名单（一行一个，留空不限制）</label>
+              <label data-i18n="ui.label.048" for="perm_whitelist">用户白名单（一行一个，留空不限制）</label>
               <textarea id="perm_whitelist" rows="4" class="input-modern"></textarea>
             </div>
             <div class="form-group full-width">
-              <label for="perm_blacklist">用户黑名单（优先级最高）</label>
+              <label data-i18n="ui.label.049" for="perm_blacklist">用户黑名单（优先级最高）</label>
               <textarea id="perm_blacklist" rows="4" class="input-modern"></textarea>
             </div>
             <div class="form-group">
-              <label for="perm_daily_limit">每人每日上限（0 不限）</label>
+              <label data-i18n="ui.label.050" for="perm_daily_limit">每人每日上限（0 不限）</label>
               <input type="number" id="perm_daily_limit" class="input-modern" min="0" />
             </div>
             <div class="form-group">
-              <label for="perm_cooldown">冷却时间（秒）</label>
+              <label data-i18n="ui.label.051" for="perm_cooldown">冷却时间（秒）</label>
               <input type="number" id="perm_cooldown" class="input-modern" min="0" />
             </div>
           </div>
           <div class="setting-row">
-            <div><h3>管理员豁免白名单、冷却与限额</h3><p>关闭后管理员同样受限（黑名单始终最高优先级）。</p></div>
+            <div><h3 data-i18n="ui.title.028">管理员豁免白名单、冷却与限额</h3><p data-i18n="ui.text.036">关闭后管理员同样受限（黑名单始终最高优先级）。</p></div>
             <label class="switch-wrapper"><input type="checkbox" id="perm_admin_bypass" class="ios-switch" /></label>
           </div>
           <div class="setting-row">
-            <div><h3>记录审计日志</h3><p>记录每次生成（谁/何时/用途/模型/耗时/提示词前 60 字）与内容过滤拦截；管理员用 <code>/审计</code> 查看。</p></div>
+            <div><h3 data-i18n="ui.title.029">记录审计日志</h3><p data-i18n-html="ui.text.037">记录每次生成（谁/何时/用途/模型/耗时/提示词前 60 字）与内容过滤拦截；管理员用 <code>/审计</code> 查看。</p></div>
             <label class="switch-wrapper"><input type="checkbox" id="perm_audit_log" class="ios-switch" /></label>
           </div>
           <div class="form-grid">
             <div class="form-group full-width">
-              <label for="perm_feature_rules">按群/用户的功能白名单（一行一条）</label>
+              <label data-i18n="ui.label.052" for="perm_feature_rules">按群/用户的功能白名单（一行一条）</label>
               <textarea id="perm_feature_rules" rows="4" class="input-modern"
                         placeholder="user:123456=t2i,i2v&#10;group:987654=t2i&#10;default=t2i,i2i"></textarea>
             </div>
             <div class="form-group">
-              <label for="perm_video_daily_limit">每人每日视频上限（0 不限）</label>
+              <label data-i18n="ui.label.053" for="perm_video_daily_limit">每人每日视频上限（0 不限）</label>
               <input type="number" id="perm_video_daily_limit" class="input-modern" min="0" />
             </div>
             <div class="form-group">
-              <label for="perm_video_cooldown">视频冷却时间（秒，0 不限）</label>
+              <label data-i18n="ui.label.054" for="perm_video_cooldown">视频冷却时间（秒，0 不限）</label>
               <input type="number" id="perm_video_cooldown" class="input-modern" min="0" />
             </div>
           </div>
-          <p class="field-hint">功能名：<code>t2i</code> / <code>i2i</code> / <code>outpaint</code> / <code>inpaint</code> / <code>t2v</code> / <code>i2v</code> / <code>reverse_prompt</code>，也可写 <code>all</code> / <code>none</code>。优先级：user &gt; group &gt; default &gt;「高级 → 生成功能开关」。</p>
+          <p data-i18n-html="ui.text.038" class="field-hint">功能名：<code>t2i</code> / <code>i2i</code> / <code>outpaint</code> / <code>inpaint</code> / <code>t2v</code> / <code>i2v</code> / <code>reverse_prompt</code>，也可写 <code>all</code> / <code>none</code>。优先级：user &gt; group &gt; default &gt;「高级 → 生成功能开关」。</p>
           <div class="setting-row">
-            <div><h3>内容过滤（拦截露骨描述）</h3><p>命中词表的描述直接拦下；用户原话与 AI 改写后的提示词都会检查。</p></div>
+            <div><h3 data-i18n="ui.title.030">内容过滤（拦截露骨描述）</h3><p data-i18n="ui.text.039">命中词表的描述直接拦下；用户原话与 AI 改写后的提示词都会检查。</p></div>
             <label class="switch-wrapper"><input type="checkbox" id="perm_nsfw_filter" class="ios-switch" /></label>
           </div>
           <div class="form-grid">
             <div class="form-group full-width">
-              <label for="perm_nsfw_words">内容过滤词表（一行一个，留空用内置）</label>
+              <label data-i18n="ui.label.055" for="perm_nsfw_words">内容过滤词表（一行一个，留空用内置）</label>
               <textarea id="perm_nsfw_words" rows="3" class="input-modern"
-                        placeholder="留空使用内置通用词表；填写后以内置 + 你填的为准"></textarea>
+                        placeholder="留空使用内置通用词表；填写后以内置 + 你填的为准" data-i18n-placeholder="ui.ph.008"></textarea>
             </div>
             <div class="form-group full-width">
-              <label for="perm_nsfw_negative">过滤开启时附加的负面词</label>
+              <label data-i18n="ui.label.056" for="perm_nsfw_negative">过滤开启时附加的负面词</label>
               <input type="text" id="perm_nsfw_negative" class="input-modern" placeholder="nsfw, nude, explicit" />
             </div>
           </div>
           <div class="setting-row">
-            <div><h3>拦截时提示用户</h3><p>默认关闭（静默忽略，与功能开关一致）；打开后回一句「被内容过滤拦下」。</p></div>
+            <div><h3 data-i18n="ui.title.031">拦截时提示用户</h3><p data-i18n="ui.text.040">默认关闭（静默忽略，与功能开关一致）；打开后回一句「被内容过滤拦下」。</p></div>
             <label class="switch-wrapper"><input type="checkbox" id="perm_nsfw_notify" class="ios-switch" /></label>
           </div>
         </article>
@@ -518,14 +518,14 @@
       <section id="tab-agent" class="tab-pane" data-title="高级" data-i18n-title="ui.tab.agent">
         <article class="card">
           <div class="card-header">
-            <div><h3 data-i18n="ui.general.title">通用</h3><p>插件页语言与聊天文案都跟着这里走。</p></div>
+            <div><h3 data-i18n="ui.general.title">通用</h3><p data-i18n="ui.text.041">插件页语言与聊天文案都跟着这里走。</p></div>
           </div>
           <div class="form-grid">
             <div class="form-group">
               <label for="general_language" data-i18n="ui.general.language">语言</label>
               <select id="general_language" class="input-modern">
                 <option value="auto">auto</option>
-                <option value="zh-CN">中文</option>
+                <option data-i18n="ui.opt.013" value="zh-CN">中文</option>
                 <option value="en-US">English</option>
               </select>
             </div>
@@ -534,44 +534,44 @@
 
         <article class="card">
           <div class="card-header">
-            <div><h3>生成功能开关</h3><p><strong>默认只开文生图</strong>，其余按需打开。关闭的功能会被<strong>静默忽略</strong>（插件不做任何回复），也不占显存；无指令出图也只受这里控制。</p></div>
+            <div><h3 data-i18n="ui.title.032">生成功能开关</h3><p data-i18n-html="ui.text.042"><strong>默认只开文生图</strong>，其余按需打开。关闭的功能会被<strong>静默忽略</strong>（插件不做任何回复），也不占显存；无指令出图也只受这里控制。</p></div>
           </div>
           <div class="setting-row">
-            <div><h3>文生图（/画图）</h3><p>基本出图能力，默认开启。</p></div>
+            <div><h3 data-i18n="ui.title.033">文生图（/画图）</h3><p data-i18n="ui.text.043">基本出图能力，默认开启。</p></div>
             <label class="switch-wrapper"><input type="checkbox" id="features_t2i" class="ios-switch" /></label>
           </div>
           <div class="setting-row">
-            <div><h3>图生图（/图生图、/改图）</h3><p>以图生图比较吃显存，也可能被用来改别人的图，按需开放。</p></div>
+            <div><h3 data-i18n="ui.title.034">图生图（/图生图、/改图）</h3><p data-i18n="ui.text.044">以图生图比较吃显存，也可能被用来改别人的图，按需开放。</p></div>
             <label class="switch-wrapper"><input type="checkbox" id="features_i2i" class="ios-switch" /></label>
           </div>
           <div class="setting-row">
-            <div><h3>扩图（/扩图）</h3><p>往外扩画面，显存占用随扩展量上升。</p></div>
+            <div><h3 data-i18n="ui.title.035">扩图（/扩图）</h3><p data-i18n="ui.text.045">往外扩画面，显存占用随扩展量上升。</p></div>
             <label class="switch-wrapper"><input type="checkbox" id="features_outpaint" class="ios-switch" /></label>
           </div>
           <div class="setting-row">
-            <div><h3>局部重绘（本页「局部重绘」标签页）</h3><p>涂抹遮罩后重绘局部，关闭时该标签页会提示不可用。</p></div>
+            <div><h3 data-i18n="ui.title.036">局部重绘（本页「局部重绘」标签页）</h3><p data-i18n="ui.text.046">涂抹遮罩后重绘局部，关闭时该标签页会提示不可用。</p></div>
             <label class="switch-wrapper"><input type="checkbox" id="features_inpaint" class="ios-switch" /></label>
           </div>
           <div class="setting-row">
-            <div><h3>文生视频（/视频）</h3><p>最吃显存与时间：8G 机器上一条 74~281 秒。</p></div>
+            <div><h3 data-i18n="ui.title.037">文生视频（/视频）</h3><p data-i18n="ui.text.047">最吃显存与时间：8G 机器上一条 74~281 秒。</p></div>
             <label class="switch-wrapper"><input type="checkbox" id="features_t2v" class="ios-switch" /></label>
           </div>
           <div class="setting-row">
-            <div><h3>图生视频（/图生视频）</h3><p>让一张图动起来（发两张图=首尾帧），同样吃显存。</p></div>
+            <div><h3 data-i18n="ui.title.038">图生视频（/图生视频）</h3><p data-i18n="ui.text.048">让一张图动起来（发两张图=首尾帧），同样吃显存。</p></div>
             <label class="switch-wrapper"><input type="checkbox" id="features_i2v" class="ios-switch" /></label>
           </div>
           <div class="setting-row">
-            <div><h3>看图反推提示词（/反推）</h3><p>严格说不是生成功能，但同样会调用视觉模型，所以一并做成开关。</p></div>
+            <div><h3 data-i18n="ui.title.039">看图反推提示词（/反推）</h3><p data-i18n="ui.text.049">严格说不是生成功能，但同样会调用视觉模型，所以一并做成开关。</p></div>
             <label class="switch-wrapper"><input type="checkbox" id="features_reverse_prompt" class="ios-switch" /></label>
           </div>
         </article>
 
         <article class="card">
           <div class="card-header">
-            <div><h3>无指令出图</h3><p>让对话模型在用户说「帮我画一张…」时直接调用绘图能力，无需输入指令。</p></div>
+            <div><h3 data-i18n="ui.title.040">无指令出图</h3><p data-i18n="ui.text.050">让对话模型在用户说「帮我画一张…」时直接调用绘图能力，无需输入指令。</p></div>
           </div>
           <div class="setting-row">
-            <div><h3>启用无指令出图（LLM 工具）</h3><p>需要所用模型支持工具调用；开启后会把绘图工具暴露给对话模型。</p></div>
+            <div><h3 data-i18n="ui.title.041">启用无指令出图（LLM 工具）</h3><p data-i18n="ui.text.051">需要所用模型支持工具调用；开启后会把绘图工具暴露给对话模型。</p></div>
             <label class="switch-wrapper"><input type="checkbox" id="agent_enable_tool" class="ios-switch" /></label>
           </div>
         </article>
@@ -581,21 +581,21 @@
       <section id="tab-status" class="tab-pane" data-title="运行状态" data-i18n-title="ui.tab.status">
         <article class="card">
           <div class="card-header space-between">
-            <div><h3>ComfyUI 状态</h3><p>连接、设备与队列情况。</p></div>
+            <div><h3 data-i18n="ui.title.042">ComfyUI 状态</h3><p data-i18n="ui.text.052">连接、设备与队列情况。</p></div>
             <button data-action="reload-status" class="btn-secondary" type="button" data-i18n="ui.action.reload">刷新</button>
           </div>
-          <div id="status-container"><p class="muted">切换到本页时自动读取。</p></div>
+          <div id="status-container"><p data-i18n="ui.text.006" class="muted">切换到本页时自动读取。</p></div>
         </article>
         <article class="card">
           <div class="card-header space-between">
-            <div><h3>诊断报告</h3><p>模型资产巡检（重名重复 / 疑似错放 / 从没用过）与运行环境体检（启动参数 / 显存内存 / <strong>模板依赖的节点与权重是否齐全</strong>）。</p></div>
-            <button data-action="run-diagnose" class="btn-secondary" type="button">运行巡检</button>
+            <div><h3 data-i18n="ui.title.043">诊断报告</h3><p data-i18n-html="ui.text.053">模型资产巡检（重名重复 / 疑似错放 / 从没用过）与运行环境体检（启动参数 / 显存内存 / <strong>模板依赖的节点与权重是否齐全</strong>）。</p></div>
+            <button data-i18n="ui.btn.run_diagnose" data-action="run-diagnose" class="btn-secondary" type="button">运行巡检</button>
           </div>
-          <div id="diagnose-container"><p class="muted">点「运行巡检」生成报告。</p></div>
+          <div id="diagnose-container"><p data-i18n="ui.text.054" class="muted">点「运行巡检」生成报告。</p></div>
         </article>
         <article class="card">
-          <div class="card-header"><div><h3>工作流模板</h3><p>内置模板按架构自动选择；把 API 格式的 JSON 放进自定义目录即可新增模板。</p></div></div>
-          <div id="templates-container"><p class="muted">切换到本页时自动读取。</p></div>
+          <div class="card-header"><div><h3 data-i18n="ui.title.044">工作流模板</h3><p data-i18n="ui.text.055">内置模板按架构自动选择；把 API 格式的 JSON 放进自定义目录即可新增模板。</p></div></div>
+          <div id="templates-container"><p data-i18n="ui.text.006" class="muted">切换到本页时自动读取。</p></div>
         </article>
       </section>
 
@@ -603,10 +603,10 @@
       <section id="tab-stats" class="tab-pane" data-title="使用统计" data-i18n-title="ui.tab.stats">
         <article class="card">
           <div class="card-header space-between">
-            <div><h3>使用统计与画廊</h3><p>出图次数、模型调用与作品回看。</p></div>
+            <div><h3 data-i18n="ui.title.045">使用统计与画廊</h3><p data-i18n="ui.text.056">出图次数、模型调用与作品回看。</p></div>
             <button data-action="reload-stats" class="btn-secondary" type="button" data-i18n="ui.action.reload_stats">刷新</button>
           </div>
-          <div id="stats-container"><p class="muted">切换到本页时自动读取。</p></div>
+          <div id="stats-container"><p data-i18n="ui.text.006" class="muted">切换到本页时自动读取。</p></div>
         </article>
       </section>
     </main>
@@ -616,7 +616,7 @@
   <div id="image-modal" class="modal-backdrop" hidden>
     <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="modal-title">
       <div class="modal-head">
-        <h3 id="modal-title">作品详情</h3>
+        <h3 data-i18n="ui.title.046" id="modal-title">作品详情</h3>
         <button class="modal-close" data-action="close-modal" type="button" aria-label="关闭">×</button>
       </div>
       <div class="modal-body">
@@ -624,15 +624,15 @@
           <img id="modal-image" alt="" />
         </figure>
         <div class="modal-side">
-          <h4 class="modal-section">出图参数</h4>
+          <h4 data-i18n="ui.subtitle.001" class="modal-section">出图参数</h4>
           <div id="modal-params"></div>
-          <label class="modal-label" for="modal-positive">正向提示词</label>
+          <label data-i18n="ui.label.057" class="modal-label" for="modal-positive">正向提示词</label>
           <textarea id="modal-positive" class="input-modern" rows="5" readonly></textarea>
-          <label class="modal-label" for="modal-negative">负面提示词</label>
+          <label data-i18n="ui.label.058" class="modal-label" for="modal-negative">负面提示词</label>
           <textarea id="modal-negative" class="input-modern" rows="4" readonly></textarea>
           <div class="modal-actions">
-            <button class="btn-secondary" data-action="copy-positive" type="button">复制正向</button>
-            <button class="btn-secondary" data-action="copy-negative" type="button">复制负面</button>
+            <button data-i18n="ui.btn.copy_positive" class="btn-secondary" data-action="copy-positive" type="button">复制正向</button>
+            <button data-i18n="ui.btn.copy_negative" class="btn-secondary" data-action="copy-negative" type="button">复制负面</button>
           </div>
         </div>
       </div>
