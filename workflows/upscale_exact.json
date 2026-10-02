@@ -1,0 +1,85 @@
+{
+  "name": "upscale_exact",
+  "purpose": "upscale",
+  "arch": "generic",
+  "loader": "checkpoint",
+  "description": "放大到精确尺寸：LoadImage → UpscaleModelLoader（4x-UltraSharp）→ ImageUpscaleWithModel → ImageScale（缩到指定宽高）→ SaveImage。params 暴露 width/height，`/放大 --scale-to 1920x1088` 走这个模板。比按倍数更实用：壁纸、头像、视频封面要的是**固定尺寸**，而不是固定倍数（4x 再乘 0.5 未必落回你要的宽高）。",
+  "bindings": {
+    "save": {
+      "node": "5"
+    },
+    "image_loader": {
+      "node": "1"
+    }
+  },
+  "params": {
+    "width": "4",
+    "height": "4"
+  },
+  "graph": {
+    "1": {
+      "class_type": "LoadImage",
+      "_meta": {
+        "title": "要放大的图"
+      },
+      "inputs": {
+        "image": "astrbot/upscale.png"
+      }
+    },
+    "2": {
+      "class_type": "UpscaleModelLoader",
+      "_meta": {
+        "title": "放大模型"
+      },
+      "inputs": {
+        "model_name": "4x-UltraSharp.safetensors"
+      }
+    },
+    "3": {
+      "class_type": "ImageUpscaleWithModel",
+      "_meta": {
+        "title": "放大"
+      },
+      "inputs": {
+        "upscale_model": [
+          "2",
+          0
+        ],
+        "image": [
+          "1",
+          0
+        ]
+      }
+    },
+    "4": {
+      "class_type": "ImageScale",
+      "_meta": {
+        "title": "缩到目标尺寸"
+      },
+      "inputs": {
+        "image": [
+          "3",
+          0
+        ],
+        "upscale_method": "lanczos",
+        "width": 1920,
+        "height": 1088,
+        "crop": "disabled"
+      }
+    },
+    "5": {
+      "class_type": "SaveImage",
+      "_meta": {
+        "title": "保存图片"
+      },
+      "inputs": {
+        "images": [
+          "4",
+          0
+        ],
+        "filename_prefix": "astrbot_upscale"
+      }
+    }
+  },
+  "prompt_required": false
+}

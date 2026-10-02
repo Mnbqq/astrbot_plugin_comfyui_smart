@@ -124,6 +124,7 @@
   "result.hires_fixed": "\n🔍 Hires Fix：{width}x{height}",
   "result.hires_scale": "\n🔍 Hires Fix：×{scale}",
   "result.i2i": "\n🖼 图生图：重绘幅度 {denoise}",
+  "result.i2i_levels": "\n🖼 图生图：重绘幅度 {levels}（多档对比，按顺序）",
   "result.i2v_frames": "\n🖼 图生视频：首帧 → 尾帧",
   "result.i2v_start": "\n🖼 图生视频：以首帧为起点",
   "result.lora": "\n🎯 LoRA：{lora}",

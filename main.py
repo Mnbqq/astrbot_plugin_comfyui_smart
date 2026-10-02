@@ -16,7 +16,15 @@ from astrbot.api.message_components import At, Image, Plain, Reply, Video
 from astrbot.api.star import Context, Star, StarTools
 
 from .backend_pool import Backend, BackendPool, is_backend_fault, parse_backend_specs
-from .comfyui_api import ComfyUI, ComfyUIError, media_kind, normalize_base_url
+from .comfyui_api import (
+    PROBE_FAILED,
+    PROBE_OK,
+    PROBE_UNKNOWN,
+    ComfyUI,
+    ComfyUIError,
+    media_kind,
+    normalize_base_url,
+)
 from .diagnostics import (
     check_requirements,
     collect_requirements,
@@ -40,10 +48,28 @@ from .workflow_templates import (
     load_templates,
     pick_template,
 )
+from .error_hints import (
+    build_probe_graph,
+    describe_probe_failure,
+    find_probe_targets,
+    is_missing_weight_error,
+    probe_cache_key,
+    probe_summary,
+)
 
 PLUGIN_NAME = "astrbot_plugin_comfyui_smart"
 # 与 metadata.yaml 的 version 保持一致（tests/test_logic.py 会校验二者不漂移）
-PLUGIN_VERSION = "0.25.0"
+PLUGIN_VERSION = "0.26.0"
+
+# ControlNet 的深度预处理器权重是「按需下载」的（不在 models/ 下），
+# 探测结果按（后端 + 节点 + 权重名）缓存这么久，避免每次出图都多一次往返。
+PROBE_TTL_SECONDS = 600.0
+# 深度预处理器不可用时，降级成图生图用的重绘幅度。
+# 0.4~0.45 是「保住原图色调与构图、只重绘细节」的区间（真机实测：
+# 0.40 色调几乎不变，0.55 开始换画风，0.7 以上接近重画）。
+CONTROL_FALLBACK_DENOISE = 0.45
+# 单次最多出几档 denoise（多档是串行跑的，档数直接乘等待时间）
+MAX_DENOISE_LEVELS = 4
 
 # 机器档位：决定分辨率/帧数/步数上限。auto 时按显存判定（内存太小再降一档）。
 MACHINE_PRESETS = {
@@ -175,6 +201,10 @@ PARAM_ALIASES = {
     "control-end": "control_end", "control_end": "control_end", "控制结束": "control_end",
     "scale": "scale", "倍数": "scale", "放大倍数": "scale",
     "upscale": "upscale", "放大": "upscale",
+    # 放大到精确宽高（比按倍数更常用：壁纸/头像要的是固定尺寸）
+    "scale-to": "scale_to", "scale_to": "scale_to", "放大到": "scale_to", "目标尺寸": "scale_to",
+    # 体检加 --probe：把「按需下载权重」的预处理器真跑一遍
+    "probe": "probe", "探测": "probe",
     # 扩图（outpaint）：左右上下扩展量与羽化
     "left": "left", "左": "left", "左边": "left",
     "right": "right", "右": "right", "右边": "right",
@@ -354,6 +384,8 @@ class ComfyUISmartPlugin(Star):
         self._job_cancel: dict[str, asyncio.Event] = {}
         # 每个在途任务落在哪个后端：多后端时取消/中断必须找对那台
         self._job_backend: dict[str, Backend] = {}
+        # 预处理器探测结果：(后端, 节点类, 权重名) -> (时间戳, 是否可用, 失败原因)
+        self._probe_cache: dict[tuple, tuple[float, bool, str]] = {}
 
         # 注册插件 Pages 的后端 API。
         # 注意：必须在 __init__ 里调用——漏掉的话，配置页/模型页/状态页的每个请求
@@ -773,7 +805,11 @@ class ComfyUISmartPlugin(Star):
     @filter.command("体检", alias={"health", "诊断", "自检"})
     @filter.permission_type(filter.PermissionType.ADMIN)
     async def cmd_health(self, event: AstrMessageEvent):
-        """查看运行环境体检报告（管理员）。"""
+        """查看运行环境体检报告（管理员）。
+
+        加 `--probe` 会把「按需下载权重的预处理器」真跑一遍 —— 这是常规体检的盲区：
+        /object_info 的下拉列表是节点源码写死的候选名，不代表服务器上真有那个文件。
+        """
         try:
             report = await self.get_diagnostics()
         except ComfyUIError as e:
@@ -786,6 +822,20 @@ class ComfyUISmartPlugin(Star):
                       vram=s["vram_free_gb"], ram=s["ram_free_gb"],
                       errors=s["errors"], warnings=s["warnings"])
         yield event.plain_result(self._render_findings(head, data["findings"]))
+
+        raw = _extract_command_payload(event, "体检", "health", "诊断", "自检")
+        _desc, opts = parse_inline_params(raw)
+        if str(opts.get("probe") or "").strip().lower() in ("", "0", "off", "false", "none"):
+            return
+        backend = await self.pool.pick()
+        comfy = backend.client or self.comfy
+        yield event.plain_result("🔬 正在探测预处理器权重（要在 ComfyUI 上真跑一次，稍等）…")
+        try:
+            results = await self._probe_preprocessors(comfy, backend)
+        except ComfyUIError as e:
+            yield event.plain_result(f"💥 探测失败：{e}")
+            return
+        yield event.plain_result("🔬 预处理器探测\n" + probe_summary(results))
 
     # ------------------------------------------------------------------ #
     # 出图核心
@@ -1041,8 +1091,12 @@ class ComfyUISmartPlugin(Star):
             "pool": pool,
         }
 
-    def _resolve_upscale_selection(self) -> dict:
+    def _resolve_upscale_selection(self, *, exact: bool = False) -> dict:
         """放大用途的「选型」：不需要底模，只要 upscale 模板。
+
+        Args:
+            exact: True 选「缩到精确宽高」的模板（--scale-to），
+                False 选「按倍数缩放」的模板（--scale）。
 
         Returns:
             与 _resolve_selection 同构的字典（model 等为空）。
@@ -1050,15 +1104,99 @@ class ComfyUISmartPlugin(Star):
         Raises:
             ComfyUIError: 没有可用的放大模板。
         """
-        template, arch = pick_template(
-            self.templates, model_name="", model_folder="", purpose="upscale"
-        )
+        want = "upscale_exact" if exact else "upscale"
+        template = self.templates.get(want)
+        if template is None or getattr(template, "purpose", "") != "upscale":
+            # 模板被改名/删掉时退回按用途挑，别让整个放大功能跟着不可用
+            template, _ = pick_template(
+                self.templates, model_name="", model_folder="", purpose="upscale"
+            )
         if template is None:
             raise ComfyUIError(
                 "没有可用的放大模板。请确认插件 workflows 目录里有 upscale.json"
             )
         return {"model": "", "folder": "", "lora": "", "vae": "",
-                "template": template, "arch": arch or "generic", "pool": ""}
+                "template": template, "arch": "generic", "pool": ""}
+
+    async def _probe_one(
+        self, comfy: ComfyUI, target: dict, backend: Backend
+    ) -> tuple[str, str]:
+        """探测一个「按需下载权重」的节点，结果带 TTL 缓存。
+
+        Returns:
+            (状态, 说明)，状态取 PROBE_OK / PROBE_FAILED / PROBE_UNKNOWN。
+        """
+        key = probe_cache_key(target, backend.name)
+        now = time.time()
+        cached = self._probe_cache.get(key)
+        if cached and now - cached[0] < PROBE_TTL_SECONDS:
+            return cached[1], cached[2]
+        state, detail = await comfy.probe(build_probe_graph(target))
+        self._probe_cache[key] = (now, state, detail)
+        return state, detail
+
+    async def _probe_preprocessors(self, comfy: ComfyUI, backend: Backend) -> list[dict]:
+        """探测所有模板里「按需下载权重」的节点（`/体检 --probe` 用）。
+
+        Returns:
+            [{"class_type", "weight", "state", "ok", "error"}]；同一份权重只探一次。
+        """
+        seen: dict[tuple, dict] = {}
+        for template in self.templates.values():
+            for target in find_probe_targets(getattr(template, "graph", {}) or {}):
+                seen.setdefault(probe_cache_key(target, backend.name), target)
+        results: list[dict] = []
+        for target in seen.values():
+            try:
+                state, detail = await self._probe_one(comfy, target, backend)
+            except ComfyUIError as exc:
+                state, detail = PROBE_FAILED, str(exc)
+            results.append({
+                "class_type": target.get("class_type"),
+                "weight": target.get("weight"),
+                "state": state,
+                "ok": state == PROBE_OK,
+                "error": detail,
+            })
+        return results
+
+    async def _control_fallback_note(
+        self, comfy: ComfyUI, template: WorkflowTemplate, backend: Backend
+    ) -> str:
+        """ControlNet 提交前的探测：预处理器跑不起来就返回给用户看的说明。
+
+        为什么要探测而不是直接提交：这类节点的权重不在 models/ 下，是自定义节点
+        第一次用到时从 HuggingFace 下载的。节点在、/体检 也全绿，但服务器连不上
+        HF 时会「跑到一半才炸」——而且**要退避重试约 3.5 分钟**才抛出
+        LocalEntryNotFoundError，用户干等一场还拿不到图。
+
+        Returns:
+            空串表示可以照常出图；非空表示应当降级，内容是给用户的原因说明。
+        """
+        for target in find_probe_targets(getattr(template, "graph", {}) or {}):
+            try:
+                state, detail = await self._probe_one(comfy, target, backend)
+            except ComfyUIError as exc:
+                # 探测连提交都失败：说明服务器另有问题，让真正的出图去报错更准确
+                logger.warning("预处理器探测未能提交，跳过探测：%s", exc)
+                return ""
+            if state == PROBE_OK:
+                continue
+            if state == PROBE_UNKNOWN:
+                # 一直没轮到执行（服务器忙）：没有结论，不能据此改用途
+                logger.info("预处理器探测无结论，照常出图：%s", detail)
+                continue
+            if not is_missing_weight_error(detail) and "探测超时" not in detail:
+                # 既不是「权重/联网」也不是「卡住不返回」：结论不足以否决出图
+                # （例如 EmptyImage 被裁掉），照常提交由服务端裁决
+                logger.info("预处理器探测失败但原因与权重无关，按无结论处理：%s", detail)
+                continue
+            return describe_probe_failure(
+                str(target.get("class_type") or ""),
+                str(target.get("weight") or ""),
+                detail,
+            )
+        return ""
 
     def feature_enabled(self, name: str, event=None) -> bool:
         """该功能是否开启。
@@ -1419,7 +1557,10 @@ class ComfyUISmartPlugin(Star):
             end_ref = await comfy.upload_image(end_image, subfolder=end_sub)
 
         if purpose_preview == "upscale":
-            selection = self._resolve_upscale_selection()
+            # --scale-to 走「缩到精确宽高」的模板，--scale 走「按倍数」
+            selection = self._resolve_upscale_selection(
+                exact=bool(str(opts.get("scale_to") or "").strip())
+            )
         else:
             selection = await self._resolve_selection(
             catalog, opt, opts, purpose=purpose, client=comfy
@@ -1485,15 +1626,40 @@ class ComfyUISmartPlugin(Star):
                 video_info["fps"], video_info["seconds"],
             )
         if purpose == "upscale":
-            # 放大：倍数换算成「4x 模型 + 缩放」（scale_by = 目标倍数 / 4）
-            try:
-                scale = float(str(opts.get("scale") or 2).strip() or 2)
-            except ValueError:
-                scale = 2.0
-            scale = min(4.0, max(1.0, scale))
-            template_params = {"scale_by": round(scale / 4.0, 4)}
-            logger.info("放大｜输入 %s｜目标倍数 %.1fx（模型 4x，缩放 %.3f）",
-                        image_ref, scale, scale / 4.0)
+            scale_to = str(opts.get("scale_to") or "").strip().lower()
+            if scale_to:
+                # 精确尺寸：交给 upscale_exact 模板的 ImageScale。
+                # 为什么需要：4x 模型再乘 0.5 只保证「倍数」，落不到你要的宽高
+                # （1920x1088 这种非 4 的整数倍尺寸尤其对不上）。
+                matched = re.match(r"^(\d{2,5})\s*[x*×]\s*(\d{2,5})$", scale_to)
+                if not matched:
+                    raise ComfyUIError(
+                        f"--scale-to 要写成「宽x高」，例如 --scale-to 1920x1088"
+                        f"（收到的是 {scale_to!r}）"
+                    )
+                if "width" not in getattr(template, "params", {}):
+                    raise ComfyUIError(
+                        "当前放大模板不支持指定精确尺寸（缺 width/height 参数）。"
+                        "请确认插件 workflows 目录里有 upscale_exact.json，"
+                        "或改用 --scale 按倍数放大"
+                    )
+                out_w, out_h = _clamp_dimensions(
+                    int(matched.group(1)), int(matched.group(2))
+                )
+                template_params = {"width": out_w, "height": out_h}
+                sampling["width"], sampling["height"] = out_w, out_h
+                logger.info("放大｜输入 %s｜目标尺寸 %sx%s（4x 模型 → Lanczos 归一）",
+                            image_ref, out_w, out_h)
+            else:
+                # 放大：倍数换算成「4x 模型 + 缩放」（scale_by = 目标倍数 / 4）
+                try:
+                    scale = float(str(opts.get("scale") or 2).strip() or 2)
+                except ValueError:
+                    scale = 2.0
+                scale = min(4.0, max(1.0, scale))
+                template_params = {"scale_by": round(scale / 4.0, 4)}
+                logger.info("放大｜输入 %s｜目标倍数 %.1fx（模型 4x，缩放 %.3f）",
+                            image_ref, scale, scale / 4.0)
         elif purpose in ("i2i", "inpaint"):
             i2i_conf = self.config.get("i2i", {}) or {}
             if purpose == "inpaint":
@@ -1652,6 +1818,42 @@ class ComfyUISmartPlugin(Star):
         seed = random.randint(0, 2**31 - 1)
         if opts.get("seed") and str(opts["seed"]).lstrip("-").isdigit():
             seed = int(opts["seed"]) % (2**31)
+
+        # ControlNet 的深度预处理器权重不在 models/ 下，是自定义节点按需从 HuggingFace
+        # 下载的：节点在、/体检 全绿，但服务器连不上 HF 时会「跑到一半才炸」，报错还是
+        # 一段英文 LocalEntryNotFoundError（真机踩过：节点默认档 vitl 没下过，只装了 vits）。
+        # 所以提交前先探一次，探不通就降级成图生图保构图，而不是把注定失败的活儿排进队列。
+        if purpose == "control":
+            fallback_note = await self._control_fallback_note(comfy, template, backend)
+            if fallback_note:
+                if not self.feature_enabled("i2i", event):
+                    raise ComfyUIError(
+                        f"{fallback_note}\n　· 图生图功能没开（features.i2i），无法自动降级；"
+                        f"请先修好深度预处理器权重，或打开图生图"
+                    )
+                fallback_opts = dict(opts)
+                # 用户显式写过 --denoise 就尊重他，否则用「保色调保构图」的默认幅度
+                if not str(fallback_opts.get("denoise") or "").strip():
+                    fallback_opts["denoise"] = f"{CONTROL_FALLBACK_DENOISE:g}"
+                fallback_opts.pop("control", None)
+                logger.warning(
+                    "ControlNet 不可用，已降级为图生图（denoise %s）：%s",
+                    fallback_opts.get("denoise"), fallback_note.replace("\n", " "),
+                )
+                # preset 直接把已经算好的正/负提示词传过去：降级不该再花一次 LLM 调用
+                degraded = await self.generate(
+                    user_desc=user_desc,
+                    opts=fallback_opts,
+                    event=event,
+                    on_queued=on_queued,
+                    on_wait=on_wait,
+                    on_progress=on_progress,
+                    preset={"positive": positive, "negative": negative},
+                    source_image=source_image,
+                    force_purpose="i2i",
+                )
+                degraded["control_fallback"] = fallback_note
+                return degraded
 
         graph = template.build(
             positive=positive,
@@ -1841,21 +2043,29 @@ class ComfyUISmartPlugin(Star):
         # 可选放大后处理：--upscale 2（需要「放大」功能开启）。
         # 复用 generate() 的 upscale 用途：上传产物 → 4x 模型 → 缩回目标倍数。
         upscale_note = ""
-        if (purpose != "upscale" and pictures
-                and str(opts.get("upscale") or "").strip()
+        upscale_arg = str(opts.get("upscale") or "").strip()
+        if (purpose != "upscale" and pictures and upscale_arg
                 and self.feature_enabled("upscale", event)):
-            try:
-                scale = float(str(opts["upscale"]).strip())
-            except ValueError:
-                scale = 2.0
+            # --upscale 2 按倍数；--upscale 1920x1088 出精确尺寸
+            sub_opts: dict = {}
+            if re.match(r"^\d{2,5}\s*[x*×]\s*\d{2,5}$", upscale_arg):
+                sub_opts["scale_to"] = upscale_arg
+                scale_label = f"已放大到 {upscale_arg}"
+            else:
+                try:
+                    scale = float(upscale_arg)
+                except ValueError:
+                    scale = 2.0
+                sub_opts["scale"] = f"{scale:g}"
+                scale_label = f"已 {scale:g}x 放大"
             try:
                 sub_result = await self.generate(
-                    user_desc="", opts={"scale": f"{scale:g}"}, event=event,
+                    user_desc="", opts=sub_opts, event=event,
                     force_purpose="upscale", source_image=str(pictures[0]),
                 )
                 if sub_result.get("images"):
                     pictures = sub_result["images"]
-                    upscale_note = f"已 {scale:g}x 放大"
+                    upscale_note = scale_label
             except (ComfyUIError, TemplateError) as exc:
                 logger.warning("放大后处理失败，保留原图：%s", exc)
                 upscale_note = "放大失败，已返回原图"
@@ -2109,7 +2319,7 @@ class ComfyUISmartPlugin(Star):
         on_wait, on_queued, on_progress = self._queue_notifiers(event)
 
         try:
-            result = await self.generate(
+            result = await self._generate_variants(
                 user_desc=desc,
                 opts=opts,
                 event=event,
@@ -2404,6 +2614,47 @@ class ComfyUISmartPlugin(Star):
             logger.warning("写入失败工作流时出错：%s", e)
         return path
 
+    async def _generate_variants(
+        self, *, event: AstrMessageEvent | None = None, opts: dict, **kwargs
+    ) -> dict:
+        """一次出多档重绘幅度：`--denoise 0.4,0.55,0.7`。
+
+        只有图生图这条路上才有意义 —— denoise 是图生图独有的旋钮，文生图、
+        放大、视频都没有它；给这些用途传多档会得到一堆一模一样的图，所以这里
+        先判断用途，不是图生图就原样交给 generate()。
+
+        Returns:
+            generate() 的结果字典；多档时 images 是各档产物的合并，
+            denoise_levels 记录跑过哪几档（消息里会列出来）。
+        """
+        force = str(kwargs.get("force_purpose") or "")
+        is_i2i = force == "i2i" or (not force and bool(kwargs.get("source_image")))
+        levels = parse_denoise_levels(opts.get("denoise")) if is_i2i else []
+        if len(levels) <= 1:
+            return await self.generate(event=event, opts=opts, **kwargs)
+
+        results: list[dict] = []
+        for index, level in enumerate(levels):
+            sub_opts = dict(opts)
+            sub_opts["denoise"] = f"{level:g}"
+            if index and results:
+                # 第一档已经算好的提示词直接复用：多档对比不该多花 N-1 次 LLM 调用
+                kwargs["preset"] = {
+                    "positive": results[0]["positive"],
+                    "negative": results[0]["negative"],
+                }
+            results.append(await self.generate(event=event, opts=sub_opts, **kwargs))
+
+        merged = dict(results[0])
+        merged["images"] = [path for item in results for path in item["images"]]
+        merged["denoise_levels"] = levels
+        merged["seconds"] = sum(float(item.get("seconds") or 0) for item in results)
+        logger.info(
+            "一次出 %d 档 denoise：%s（共 %d 张）",
+            len(levels), "、".join(f"{x:g}" for x in levels), len(merged["images"]),
+        )
+        return merged
+
     def _compose_result_chain(self, event: AstrMessageEvent, uid: str, result: dict):
         """拼装出图结果消息链。
 
@@ -2432,8 +2683,16 @@ class ComfyUISmartPlugin(Star):
                 detail += self.t("result.lora", lora=result["lora"])
             if result.get("llm_note"):
                 detail += self.t("result.note", note=result["llm_note"])
-            if result.get("i2i"):
+            if result.get("denoise_levels"):
+                detail += self.t(
+                    "result.i2i_levels",
+                    levels="、".join(f"{x:g}" for x in result["denoise_levels"]),
+                )
+            elif result.get("i2i"):
                 detail += self.t("result.i2i", denoise=result.get("denoise", 0.6))
+            if result.get("control_fallback"):
+                # ControlNet 探测失败自动降级时，必须说清「为什么没用 ControlNet」
+                detail += self.t("result.warning", text=result["control_fallback"])
             if result.get("outpaint"):
                 _op = result["outpaint"]
                 _pads = _op.get("pads") or {}
@@ -2745,7 +3004,7 @@ class ComfyUISmartPlugin(Star):
         on_wait, on_queued, on_progress = self._queue_notifiers(event)
 
         try:
-            result = await self.generate(
+            result = await self._generate_variants(
                 user_desc=desc,
                 opts=opts,
                 event=event,
@@ -3469,6 +3728,36 @@ def fit_to_limit(width: int, height: int, max_side: int) -> tuple[int, int]:
     width = max(DIM_ALIGN, width - width % DIM_ALIGN)
     height = max(DIM_ALIGN, height - height % DIM_ALIGN)
     return width, height
+
+
+def parse_denoise_levels(raw) -> list[float]:
+    """把 `--denoise` 的值解析成一档或多档。
+
+    为什么支持多档：denoise 是图生图里唯一一个「说不清该给多少」的参数。
+    实测口径是 0.40 几乎只换细节、0.55 开始换画风、0.70 以上接近重画，
+    但这个分界随底模与图片而变。与其来回试，不如一次跑三档挑一张。
+
+    Args:
+        raw: 行内参数原值，例如 "0.4" 或 "0.4,0.55,0.7"（也认中文逗号）。
+
+    Returns:
+        升序去重后的档位列表；非法输入返回 []（调用方据此回退到配置默认值）。
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return []
+    levels: list[float] = []
+    for chunk in text.replace("，", ",").split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        try:
+            value = float(chunk)
+        except ValueError:
+            # 有一段读不懂就整段作废：宁可回到默认幅度，也别猜用户想要哪档
+            return []
+        levels.append(min(1.0, max(0.05, value)))
+    return sorted(set(levels))[:MAX_DENOISE_LEVELS]
 
 
 def merge_tags(*chunks: str) -> str:

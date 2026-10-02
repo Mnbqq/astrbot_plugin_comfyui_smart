@@ -3,6 +3,60 @@
 > 从 v0.1.0 到最新的逐版本记录（主 README 只保留最近几条）。
 
 ## 更新日志
+**v0.26.0** — 补上「节点在、体检全绿、一跑就炸」这个盲区（预处理器探测 + 自动降级）
+
+- **起因（真机实测）**：`--control depth` 提交后跑到一半报 `LocalEntryNotFoundError`：
+  `An error happened while trying to locate the file on the Hub and we cannot find the
+  requested files in the local cache`。而 `/体检` 是**全绿**的。
+- **根因**：`DepthAnythingV2Preprocessor` 这类预处理器的权重**不在 `models/` 下** ——
+  是自定义节点（`comfyui_controlnet_aux`）第一次用到时从 HuggingFace 下载的。
+  `diagnostics.check_requirements()` 的核对方式是「拿模板里写死的权重名去 `/object_info`
+  的下拉列表里比对」，**而下拉列表是节点源码写死的候选名，不代表服务器上真有这个文件**，
+  所以这一类问题它永远发现不了。更坑的是 `DepthAnythingV2` 的**默认档是 `vitl`（约 1.3G）**，
+  多数机器只下过 `vits`（约 95M）：**用默认值就炸，显式指定 vits 就没事**。
+- **新增 `error_hints.py`**：
+  - `find_probe_targets()` / `build_probe_graph()`：从工作流里挑出「按需下载权重」的节点，
+    包成 `EmptyImage(64×64) → 预处理器 → SaveImage` 的最小探测图
+    （用 `EmptyImage` 而不是 `LoadImage`：探测发生在参考图上传之前，也不占上传配额）；
+  - `is_missing_weight_error()`：判别「权重没下载 / 连不上 HF」。判据**不能拿域名当必要条件**
+    —— 只拿到 `exception_message` 时常见的是「trying to locate the file on the Hub … local cache」
+    这一句，按域名判会漏（写完测试才发现，已改）；
+  - `explain()`：把这类报错翻成中文并给出三条出路（联网下权重 / 换上已装档位 /
+    去掉 `--control` 改用 `--denoise 0.4` 图生图保构图）。已接到 `format_submit_error()` 与
+    `_describe_history_error()` 两个错误出口，幂等（同一条错误不会叠两遍）。
+- **新增 `ComfyUI.probe()`**：提交探测图并轮询 `/history`。**不做重试、不计入后端健康统计** ——
+  探测失败往往只是权重没下，不代表这台 ComfyUI 挂了，不能被 `backend_pool` 拉黑。
+  结果按（后端 + 节点类 + 权重名）缓存 10 分钟，一次出图周期只多一次往返。
+- **探测超时要分两种情况（真机实测后补的）**：连不上 HuggingFace 时**不会立刻报错**，
+  huggingface_hub 会反复退避重试 —— 单发一次约 **42 秒**，连着发多个最久见过 **3.5 分钟**。
+  干等显然不行，所以探测 60 秒到点就判；但「到点」有两种含义，必须分开：
+  任务已经在 `queue_running` 里（真在跑却不出结果 → 判 `failed`，可以降级），
+  还是仍在 `queue_pending`（只是排在别人的大任务后面 → 判 `unknown`，**不能**拿它改用途）。
+  实测确认：vitl 探测**提交后立刻进入 `queue_running`**，42 秒后抛出
+  `LocalEntryNotFoundError`，`is_missing_weight_error()` 判真 —— 正常路径能直接拿到错误，
+  60 秒超时只是兜底。
+- **自动降级**：`generate()` 在 `purpose == "control"`、图尚未构建时探测；探得通才走 ControlNet，
+  探不通就**改用图生图**（`--denoise 0.45`；用户显式写过 `--denoise` 就按用户的），
+  并把原因带回消息链说清。**只有确认是「权重/联网」类问题才降级** —— 探测因别的原因失败
+  （例如 `EmptyImage` 被裁掉）按「无结论」处理，照常提交由服务端裁决。
+  降级时把已算好的正/负提示词用 `preset` 传过去，**不再花一次 LLM 调用**。
+  另外：`features.i2i` 没开时不擅自降级，而是把原因连同「图生图功能没开」一起报出来。
+- **`/体检 --probe`**：把预处理器真跑一遍并逐项汇报（✅/❌ + 第一行原因）。
+  依赖自检（`collect_requirements` / `check_requirements`）把这类权重单列为 **info**
+  （`on_demand_weight`，提示「清单核不出来，要探测」），不再当 `missing_model` 误报 warn。
+- **放大支持精确尺寸**：新增 `upscale_exact` 模板（`ImageScale` + Lanczos），
+  `/放大 --scale-to 1920x1088`、`/画图 … --upscale 1920x1088`。
+  为什么需要：`--scale` 只保证「倍数」，4x 模型再乘 0.5 未必落回你要的宽高
+  （1920×1088 这种非 4 的整数倍尤其对不上）。写法不对会给出示例，而不是静默按倍数放大。
+- **`--denoise` 多档一次出多张**：`--denoise 0.4,0.55,0.7` → 串行出三张直接对比
+  （升序去重、夹到 0.05~1.0、最多 4 档；认中文逗号；有一段读不懂就整段作废回退配置默认值）。
+  实测口径也写进了 README：0.30~0.40 只换细节、0.40~0.50 保构图保色调、0.55~0.65 换画风、
+  0.70~1.00 接近重画。多档会复用第一档的提示词，**不多花 N-1 次 LLM 调用**；
+  只对图生图生效（文生图/放大/视频没有 denoise 这个旋钮，给多档只会得到一堆一模一样的图）。
+- 测试：+24 项断言（报错翻译与严格判据、探测图结构、缓存键、探测失败→降级说明、降级接线与
+  0.45 幅度、原因回显、denoise 解析四则、三档串行出图、`--scale-to` 精确宽高与错误写法、
+  依赖自检 info、`/体检 --probe` 汇报），Python 678 / 前端 51 / API 面 55 全绿。
+
 **v0.16.0** — 支持 LTX-Video 2B（8G 显存最省的一档视频模型）
 
 - **新增 `ltxv_t2v` 模板**：`UnetLoaderGGUF`（LTXV GGUF）+ `CLIPLoaderGGUF(type=ltxv)`

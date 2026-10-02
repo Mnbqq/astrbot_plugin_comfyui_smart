@@ -50,13 +50,13 @@
         "description": "ControlNet 深度控制（/画图 --control depth）",
         "type": "bool",
         "default": false,
-        "hint": "默认关闭。附一张参考图 + --control depth，用深度图约束构图与姿势。需要 ControlNet 模型（controlnetxlCNXL_bdsqlszDepth）与深度预处理模型（depth_anything_v2_vits.pth，已放在 controlnet_aux 的 ckpts 里）。强度用 --control-strength（默认 0.8）、结束时机 --control-end（默认 0.7）。"
+        "hint": "默认关闭。附一张参考图 + --control depth，用深度图约束构图与姿势。需要 ControlNet 模型（control-depth-sdxl-small-fp16）与深度预处理权重（depth_anything_v2_vits.pth，在 controlnet_aux 的 ckpts 里）。强度用 --control-strength（默认 0.8）、结束时机 --control-end（默认 0.7）。⚠️ 预处理权重不在 models/ 下，是按需从 HuggingFace 下载的，缺了会跑到一半才报错；插件会在提交前探测，探不通就自动改用图生图保构图（denoise 0.45），可用 `/体检 --probe` 手动确认。"
       },
       "upscale": {
         "description": "放大（/放大、--upscale）",
         "type": "bool",
         "default": false,
-        "hint": "默认关闭。`/放大 --scale 2` 用 4x 模型放大再缩回目标倍数（默认 2，最大 4）；出图时加 `--upscale 2` 会自动把结果放大一遍。模型：upscale_models/4x-UltraSharp.safetensors。"
+        "hint": "默认关闭。`/放大 --scale 2` 用 4x 模型放大再缩回目标倍数（默认 2，最大 4）；`/放大 --scale-to 1920x1088` 直接出精确宽高（要固定尺寸时用这个）；出图时加 `--upscale 2` 或 `--upscale 1920x1088` 会自动把结果放大一遍。模型：upscale_models/4x-UltraSharp.safetensors。"
       }
     }
   },
@@ -374,7 +374,7 @@
       "denoise": {
         "description": "默认重绘幅度",
         "type": "float",
-        "hint": "0.3 微调细节、0.5~0.6 改画风、0.8 以上接近重画。行内 --denoise 可对单次覆盖。",
+        "hint": "实测口径：0.30~0.40 只换细节、0.40~0.50 保构图保色调、0.55~0.65 开始换画风、0.70 以上接近重画。行内 --denoise 可对单次覆盖，也能一次给多档直接对比（--denoise 0.4,0.55,0.7，升序去重、最多 4 档）。",
         "default": 0.6
       },
       "max_side": {

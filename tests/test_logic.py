@@ -5084,8 +5084,9 @@ def main() -> int:
           and {"LoadImage", "UpscaleModelLoader", "ImageUpscaleWithModel", "SaveImage"}
           <= tpl_up.required_nodes(),
           (tpl_up.prompt_required, sorted(tpl_up.required_nodes())))
-    check("普通模板仍是 prompt_required=True（改动没有影响既有模板）",
-          all(t.prompt_required for n, t in plugin.templates.items() if n != "upscale"), None)
+    check("普通模板仍是 prompt_required=True（只有后处理模板不需要提示词）",
+          all(t.prompt_required for n, t in plugin.templates.items()
+              if n not in ("upscale", "upscale_exact")), None)
 
     def media_session(pid_prefix="m"):
         """放大/控制用例的 mock 会话：三个 prompt_id 都能查到历史。"""
@@ -5121,13 +5122,20 @@ def main() -> int:
         plugin.comfy._session = sess
         plugin.comfy.invalidate_model_cache()
         plugin._machine_tier = ""
+        # 探测结果有 TTL 缓存：每个场景都要从干净状态开始，否则「探测失败」的
+        # 用例会被上一个用例的成功结论短路掉
+        plugin._probe_cache.clear()
         plugin.config["permission"] = {}
         plugin.permission.reload({})
         return sess
 
+    def is_probe(call):
+        """探测用的小工作流（EmptyImage → 预处理器 → SaveImage）不算「出图提交」。"""
+        return bool(((call[2].get("json") or {}).get("extra_data") or {}).get("astrbot_probe"))
+
     def prompts_of(sess):
         return [kw["json"]["prompt"] for m, path, kw in sess.calls
-                if m == "POST" and path == "/prompt"]
+                if m == "POST" and path == "/prompt" and not is_probe((m, path, kw))]
 
     def classes_of(graph):
         return sorted({n["class_type"] for n in graph.values()})
@@ -5213,6 +5221,202 @@ def main() -> int:
           and "UpscaleModelLoader" in classes_of(submitted_post[1])
           and "KSampler" in classes_of(submitted_post[0]),
           [classes_of(g)[:3] for g in submitted_post])
+
+    print("\n=== 预处理器探测 / 精确放大 / 多档 denoise（v0.26.0）===")
+    from astrbot_plugin_comfyui_smart import diagnostics as diag26
+    from astrbot_plugin_comfyui_smart import error_hints as hints
+
+    def texts_of(out):
+        """把 plain_result 与 chain_result 里的纯文本都摊平出来。
+
+        出图结果走的是 chain_result，正文在 chain 里的 Plain 组件上，
+        只翻 item["text"] 会漏掉（踩过一次）。
+        """
+        chunks: list[str] = []
+        for item in out:
+            if item.get("text"):
+                chunks.append(str(item["text"]))
+            for comp in item.get("chain") or []:
+                text = getattr(comp, "text", None)
+                if text:
+                    chunks.append(str(text))
+        return "\n".join(chunks)
+
+    # ① 报错翻译：HuggingFace 拉不到权重时必须说清「节点在 ≠ 权重在」，并给出出路
+    hf_error = ("An error happened while trying to locate the file on the Hub and we cannot "
+                "find the requested files in the local cache.")
+    explained = hints.explain(hf_error)
+    check("HF 权重拉取失败被翻译成中文提示（含 --denoise 的出路）",
+          "HuggingFace" in explained and "--denoise" in explained, explained[:60])
+    check("只有「权重/联网」类报错才够格触发降级",
+          hints.is_missing_weight_error(hf_error)
+          and not hints.is_missing_weight_error("CUDA out of memory")
+          and not hints.is_missing_weight_error(""), None)
+    check("认不出来的报错不硬凑提示", hints.explain("totally unknown failure") == "", None)
+    check("提示是幂等的（同一条错误不会叠两遍）",
+          hints.attach_hint(hints.attach_hint("x " + hf_error)).count("HuggingFace") == 1, None)
+
+    # ② 探测图：用 64x64 空白图代替参考图（探测发生在参考图上传之前）
+    ctrl_tpl = plugin.templates["controlnet_sdxl"]
+    probe_targets = hints.find_probe_targets(ctrl_tpl.graph)
+    probe_graph = hints.build_probe_graph(probe_targets[0])
+    check("探测图是「空白图 → 预处理器 → 保存」",
+          set(classes_of(probe_graph)) == {"EmptyImage", "DepthAnythingV2Preprocessor", "SaveImage"}
+          and probe_graph["1"]["inputs"]["width"] == 64
+          and probe_graph["2"]["inputs"]["ckpt_name"] == "depth_anything_v2_vits.pth",
+          classes_of(probe_graph))
+    check("探测目标的缓存键含节点与权重名",
+          hints.probe_cache_key(probe_targets[0], "b1")
+          == ("b1", "DepthAnythingV2Preprocessor", "depth_anything_v2_vits.pth"),
+          hints.probe_cache_key(probe_targets[0], "b1"))
+
+    # ③ 探测失败 → 生成一段给用户看的降级说明（不跑完整流程，避免 mock 的
+    #    固定 prompt_id 让「探测」与「真正的出图」落到同一条历史上）
+    sess_pf = media_session("pf")
+    sess_pf.route("GET", "/history/pf-3", api.aiohttp.ClientResponse(200, payload={"pf-3": {
+        "status": {"status_str": "error", "completed": False,
+                   "messages": [["execution_error", {
+                       "node_type": "DepthAnythingV2Preprocessor",
+                       "exception_message": hf_error}]]},
+        "outputs": {}}}))
+
+    async def _probe_note():
+        be = await plugin.pool.pick()
+        return await plugin._control_fallback_note(
+            be.client or plugin.comfy, plugin.templates["controlnet_sdxl"], be)
+
+    note = asyncio.run(_probe_note())
+    check("探测到预处理器权重缺失时给出降级说明",
+          "ControlNet" in note and "图生图" in note and "/体检 --probe" in note, note[:70])
+
+    # ④ 降级接线：把探测结论注入成「不可用」，看 /画图 --control 是否改走图生图
+    original_fallback = plugin._control_fallback_note
+
+    async def _force_degrade(comfy, template, backend):
+        return "ControlNet 深度预处理跑不起来（测试注入）"
+
+    plugin._control_fallback_note = _force_degrade
+    plugin._collect_images = _fake_collect_images
+    sess_deg = media_session("dg")
+    try:
+        out_deg = asyncio.run(drive(plugin.cmd_draw(AstrMessageEvent(
+            sender_id="9610", message_str="/画图 一个女孩 --control depth"))))
+    finally:
+        plugin._control_fallback_note = original_fallback
+    deg_prompts = prompts_of(sess_deg)
+    deg_classes = classes_of(deg_prompts[0]) if deg_prompts else []
+    deg_text = texts_of(out_deg)
+    check("ControlNet 不可用时自动降级为图生图（不再提交 ControlNet）",
+          len(deg_prompts) == 1 and "VAEEncode" in deg_classes
+          and "ControlNetApplyAdvanced" not in deg_classes
+          and "DepthAnythingV2Preprocessor" not in deg_classes, deg_classes)
+    check("降级用的重绘幅度是保构图的 0.45",
+          any(abs(float(n["inputs"].get("denoise", -1)) - 0.45) < 1e-6
+              for n in deg_prompts[0].values() if n["class_type"] == "KSampler"),
+          [n["inputs"].get("denoise") for n in deg_prompts[0].values()
+           if n["class_type"] == "KSampler"])
+    check("降级会把原因告诉用户", "ControlNet" in deg_text and "图生图" in deg_text, deg_text[:60])
+
+    # ⑤ denoise 解析：多档、中文逗号、写错整段作废
+    check("--denoise 支持多档并升序去重",
+          m.parse_denoise_levels("0.7,0.4,0.55,0.7") == [0.4, 0.55, 0.7], None)
+    check("--denoise 认中文逗号", m.parse_denoise_levels("0.4，0.55") == [0.4, 0.55], None)
+    check("--denoise 写错时整段作废（回退配置默认值）",
+          m.parse_denoise_levels("0.4,abc") == [] and m.parse_denoise_levels("") == [], None)
+    check("--denoise 会夹到 0.05~1.0 并限制档数",
+          m.parse_denoise_levels("9") == [1.0] and m.parse_denoise_levels("0") == [0.05]
+          and len(m.parse_denoise_levels("0.1,0.2,0.3,0.4,0.5,0.6")) == m.MAX_DENOISE_LEVELS, None)
+
+    # ⑥ 多档 denoise 真的一次出多张（三档 → 三次提交）
+    sess_md = media_session("md")
+    out_md = asyncio.run(drive(plugin.cmd_img2img(AstrMessageEvent(
+        sender_id="9611", message_str="/图生图 改成夜景 --denoise 0.4,0.55,0.7"))))
+    md_prompts = prompts_of(sess_md)
+    md_denoise = [n["inputs"].get("denoise") for g in md_prompts for n in g.values()
+                  if n["class_type"] == "KSampler"]
+    check("--denoise 0.4,0.55,0.7 串行出三张（三次采样，幅度按档位）",
+          len(md_prompts) == 3 and md_denoise == [0.4, 0.55, 0.7], md_denoise)
+    md_text = texts_of(out_md)
+    check("多档结果会把用过的幅度列出来",
+          "0.4" in md_text and "0.55" in md_text and "0.7" in md_text, md_text[:80])
+
+    # ⑦ 精确放大：--scale-to 走 upscale_exact，落到 ImageScale 的精确宽高
+    plugin._collect_images = _fake_collect_images
+    sess_st = media_session("st")
+    asyncio.run(drive(plugin.cmd_upscale(AstrMessageEvent(
+        sender_id="9612", message_str="/放大 --scale-to 1920x1088"))))
+    st_graph = (prompts_of(sess_st) or [{}])[0]
+    st_scale = next((n for n in st_graph.values() if n["class_type"] == "ImageScale"), None)
+    check("--scale-to 用 upscale_exact 并写进精确宽高",
+          bool(st_scale) and st_scale["inputs"]["width"] == 1920
+          and st_scale["inputs"]["height"] == 1088
+          and "ImageScaleBy" not in classes_of(st_graph),
+          st_scale["inputs"] if st_scale else classes_of(st_graph))
+
+    sess_bad = media_session("bd")
+    out_bad = asyncio.run(drive(plugin.cmd_upscale(AstrMessageEvent(
+        sender_id="9613", message_str="/放大 --scale-to 大图"))))
+    bad_text = texts_of(out_bad)
+    check("--scale-to 写法不对时给出示例且不提交",
+          "1920x1088" in bad_text and not prompts_of(sess_bad), bad_text[:60])
+
+    # ⑧ 体检补上「按需下载权重」这一类：清单核不出来，但要显式提示
+    reqs = diag26.collect_requirements(plugin.templates)
+    probe_reqs = [r for r in reqs if r.get("probe")]
+    check("依赖抽取把「按需下载权重」的预处理器单列出来",
+          any(r["node_type"] == "DepthAnythingV2Preprocessor" and r["pool"] == ""
+              for r in probe_reqs), [r["node_type"] for r in probe_reqs])
+    req_findings = diag26.check_requirements(reqs, catalog={}, available_nodes=None)
+    check("这类权重给 info 提示（要探测，不能当缺失报 warn）",
+          any(f["category"] == "on_demand_weight" and f["severity"] == "info"
+              for f in req_findings)
+          and not any(f["category"] == "missing_model"
+                      and "depth_anything" in f["message"] for f in req_findings),
+          [f["category"] for f in req_findings if f["category"] != "missing_model"][:6])
+
+    # ⑨ /体检 --probe：真跑一遍并汇报
+    sess_pb = media_session("pb")
+
+    async def _run_probe():
+        be = await plugin.pool.pick()
+        return await plugin._probe_preprocessors(be.client or plugin.comfy, be)
+
+    probe_results = asyncio.run(_run_probe())
+    probe_text = hints.probe_summary(probe_results)
+    check("/体检 --probe 会把预处理器真跑一遍并汇报",
+          any(r["class_type"] == "DepthAnythingV2Preprocessor" for r in probe_results)
+          and "DepthAnythingV2Preprocessor" in probe_text, probe_text[:80])
+
+    # ⑩ 探测超时要区分「卡在节点里」与「没排上队」：只有前者能作为降级依据。
+    #    起因：真机实测「连不上 HuggingFace」不会立刻报错，huggingface_hub 会反复
+    #    退避重试约 3.5 分钟才抛出；而权重正常时 64x64 只要几秒。所以探测到点就判，
+    #    但「排队等不到」≠「节点跑不了」，不能拿它改用途。
+    def _probe_session(pid, queue_running, queue_pending):
+        sess = api.aiohttp.ClientSession()
+        sess.route("POST", "/prompt", api.aiohttp.ClientResponse(
+            200, payload={"prompt_id": pid}))
+        sess.route("GET", f"/history/{pid}", api.aiohttp.ClientResponse(200, payload={}))
+        sess.route("GET", "/queue", api.aiohttp.ClientResponse(
+            200, payload={"queue_running": queue_running, "queue_pending": queue_pending}))
+        plugin.comfy._session = sess
+        return sess
+
+    _probe_session("tq-1", [], [["1", "tq-1", {}, {}, []]])
+    state_q, detail_q = asyncio.run(plugin.comfy.probe(probe_graph, timeout=0.3, poll=0.1))
+    check("探测超时且一直没轮到 → 无结论（不能据此降级）",
+          state_q == api.PROBE_UNKNOWN, (state_q, detail_q))
+
+    _probe_session("tr-1", [["1", "tr-1", {}, {}, []]], [])
+    state_r, detail_r = asyncio.run(plugin.comfy.probe(probe_graph, timeout=0.3, poll=0.1))
+    check("探测超时但节点已开始执行 → 判为跑不起来（据此降级）",
+          state_r == api.PROBE_FAILED and "探测超时" in detail_r, (state_r, detail_r))
+    check("超时提示会说清「多半卡在下载权重上」",
+          "3.5 分钟" in hints.explain(detail_r) or "权重" in hints.explain(detail_r), None)
+    check("⚠️ / ❌ 两种状态在体检汇报里分得开",
+          hints.probe_summary([{"class_type": "X", "weight": "w", "state": "unknown",
+                                "ok": False, "error": "x"}]).startswith("⚠️")
+          and hints.probe_summary([{"class_type": "X", "weight": "w", "state": "failed",
+                                    "ok": False, "error": "x"}]).startswith("❌"), None)
 
     plugin._collect_images = original_collect
     plugin.config["features"] = dict(ALL_FEATURES)

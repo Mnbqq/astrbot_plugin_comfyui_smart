@@ -124,6 +124,7 @@
   "result.hires_fixed": "\n🔍 Hires Fix: {width}x{height}",
   "result.hires_scale": "\n🔍 Hires Fix: ×{scale}",
   "result.i2i": "\n🖼 Img2img: denoise {denoise}",
+  "result.i2i_levels": "\n🖼 Img2img: denoise {levels} (multi-level sweep, in order)",
   "result.i2v_frames": "\n🖼 Image-to-video: first frame → last frame",
   "result.i2v_start": "\n🖼 Image-to-video: starting from the first frame",
   "result.lora": "\n🎯 LoRA: {lora}",

@@ -22,6 +22,8 @@ from pathlib import Path
 
 import aiohttp
 
+from .error_hints import attach_hint
+
 # 模型文件夹 -> 探测用的 (节点类, 输入键)。用于无 /models 端点时回退解析 object_info。
 FOLDER_PROBE: dict[str, tuple[str, str]] = {
     "checkpoints": ("CheckpointLoaderSimple", "ckpt_name"),
@@ -46,6 +48,15 @@ PRIMARY_MODEL_FOLDERS: tuple[str, ...] = (
     "text_encoders",
     "controlnet",
 )
+# 探测器（ComfyUI.probe）的三种结论。为什么不是 bool：超时也分两种 ——
+# 卡在节点里（可据此降级）与一直没轮到（只是服务器忙，不能降级）。
+PROBE_OK = "ok"
+PROBE_FAILED = "failed"
+PROBE_UNKNOWN = "unknown"
+# 探测等待上限。真机实测「连不上 HuggingFace」要退避重试才报错：单发一次约 42 秒，
+# 连着发多个时最久见过 3.5 分钟；而权重正常时 64x64 跑一遍只要几秒。
+# 所以到点就判，别让用户干等 —— 超时的减分项见 probe() 里对「在跑」与「排队」的区分。
+PROBE_TIMEOUT = 60.0
 # 其它确实是模型、但插件不直接使用的目录：保留但排在后面
 OTHER_MODEL_FOLDERS: tuple[str, ...] = (
     "clip_vision",
@@ -511,6 +522,72 @@ class ComfyUI:
             if isinstance(class_type, str) and class_type in info:
                 specs.setdefault(class_type, info[class_type])
         return validate_graph_locally(graph, specs)
+
+    async def _prompt_running(self, prompt_id: str) -> bool:
+        """这个 prompt 是否正在执行（而不是排在别人后面）。
+
+        探测超时时必须区分「卡在节点里」与「一直没轮到」：只有前者能作为
+        「这台机器跑不了这个节点」的依据，后者只是服务器忙，不能拿来降级。
+        """
+        try:
+            data = await self._request("GET", "/queue")
+        except ComfyUIError:
+            return False
+        for item in (data or {}).get("queue_running") or []:
+            if isinstance(item, (list, tuple)) and len(item) > 1 and str(item[1]) == prompt_id:
+                return True
+        return False
+
+    async def probe(
+        self, graph: dict, *, timeout: float = PROBE_TIMEOUT, poll: float = 1.0
+    ) -> tuple[str, str]:
+        """跑一张极小的探测工作流，只关心「跑不跑得起来」。
+
+        为什么需要：`/object_info` 里下拉列表是**节点源码写死的候选名**，不代表
+        服务器上真有那个文件。像是 DepthAnythingV2 的权重由自定义节点按需从
+        HuggingFace 下载，于是「节点在、清单全绿、一跑就炸」。这里把
+        「跑到一半才炸」提前到提交前。
+
+        **不做重试、不计入后端健康统计**：探测失败往往只是权重没下载，
+        不代表这台 ComfyUI 挂了，不能被 backend_pool 拉黑。
+
+        超时的判断很关键：真机实测「连不上 HuggingFace」不会立刻报错，而是
+        huggingface_hub 反复退避重试（单发一次约 42 秒，连着发多个最久见过 3.5 分钟）。
+        所以这里不等它，到点就判；但要先确认这个 prompt **已经在执行**
+        （`_prompt_running`）—— 还排在别人后面的话属于「没结论」，不能据此降级。
+
+        Args:
+            graph: API 格式的探测工作流（用 error_hints.build_probe_graph 生成）。
+            timeout: 最长等待秒数。
+            poll: 轮询 /history 的间隔。
+
+        Returns:
+            (状态, 说明)，状态取 PROBE_OK / PROBE_FAILED / PROBE_UNKNOWN。
+
+        Raises:
+            ComfyUIError: 提交阶段就失败（连不上、被拒绝）时照常抛出，由调用方决定。
+        """
+        prompt_id = await self.submit(graph, extra_data={"astrbot_probe": True})
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            entry = await self._request("GET", f"/history/{prompt_id}")
+            if isinstance(entry, dict) and entry:
+                data = entry.get(prompt_id)
+                if not isinstance(data, dict):
+                    data = next((v for v in entry.values() if isinstance(v, dict)), {})
+                status = str((data.get("status") or {}).get("status_str") or "")
+                if status == "error":
+                    return PROBE_FAILED, _describe_history_error(data)
+                if status == "success":
+                    return PROBE_OK, ""
+                # 极老版本不写 status_str：有产物就当成功，否则继续等
+                if not status and data.get("outputs"):
+                    return PROBE_OK, ""
+            await asyncio.sleep(poll)
+        if await self._prompt_running(prompt_id):
+            # 已经在跑却迟迟不出结果：多半就是卡在联网重试上，可以据此降级
+            return PROBE_FAILED, f"探测超时（{timeout:.0f} 秒，节点已开始执行但没结果）"
+        return PROBE_UNKNOWN, f"探测超时（{timeout:.0f} 秒，任务一直排在别人后面，没有结论）"
 
     # ------------------------------------------------------------------ #
     # 模型发现
@@ -1161,7 +1238,8 @@ def _describe_history_error(entry: dict) -> str:
         if kind == "execution_interrupted":
             return f"任务被中断（节点 {node_type}）"
         detail = payload.get("exception_message") or payload.get("exception_type") or ""
-        return f"出图执行失败：节点 {node_type} 报错 {detail}".strip()
+        # 执行期报错九成是「权重没就绪 / 显存不够」这类，补一段中文提示再往上抛
+        return attach_hint(f"出图执行失败：节点 {node_type} 报错 {detail}".strip())
     return "ComfyUI 执行出错（未提供详细信息）"
 
 
@@ -1242,7 +1320,10 @@ def format_submit_error(data: dict, status: int, raw: str = "") -> str:
         lines.append(f"　· 校验期异常：{extra['exception_type']}（详情见 ComfyUI 控制台）")
 
     text = "\n".join(lines)
-    return text if len(text) <= 900 else text[:900] + "…"
+    if len(text) > 900:
+        text = text[:900] + "…"
+    # 提示块放在截断之后拼，否则长 traceback 会把最有用的那几行挤掉
+    return attach_hint(text)
 
 
 def _describe_node_error(node_id: str, payload) -> str:

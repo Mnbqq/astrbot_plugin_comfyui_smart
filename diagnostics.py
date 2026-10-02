@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .error_hints import PROBE_NODES
+
 SEVERITY_ORDER = {"error": 0, "warn": 1, "info": 2}
 
 # 节点类型 -> (在清单里的目录, 输入键名)：用于核对模板引用的权重是否真的存在
@@ -255,6 +257,19 @@ def collect_requirements(templates: dict[str, Any]) -> list[dict]:
     for name, tpl in (templates or {}).items():
         for node in (getattr(tpl, "graph", {}) or {}).values():
             class_type = node.get("class_type")
+            if class_type in PROBE_NODES:
+                # 预处理器的权重**不在 models/ 下**，是自定义节点按需从 HuggingFace
+                # 下载的。拿清单核对注定查不到，只能靠 `/体检 --probe` 真跑一次
+                # （见 error_hints：这正是「节点在、体检全绿、一跑就炸」的来源）。
+                out.append({
+                    "template": name,
+                    "node_type": class_type,
+                    "input": "ckpt_name",
+                    "probe": True,
+                    "value": str((node.get("inputs") or {}).get("ckpt_name") or ""),
+                    "pool": "",
+                })
+                continue
             spec = REQUIREMENT_NODES.get(class_type)
             if not spec:
                 continue
@@ -307,6 +322,18 @@ def check_requirements(
                     "suggestion": "装回对应自定义节点（如 ComfyUI-GGUF），或换用不需要它的模板",
                 })
         pool_files = []
+        if item.get("probe"):
+            # 按需下载的权重不在清单里，只能提示「常规体检查不到，要探测」
+            findings.append({
+                "severity": "info",
+                "category": "on_demand_weight",
+                "message": (
+                    f"模板 {item['template']} 的 {node_type} 用到"
+                    f"「{item['value'] or '内置'}」，它是按需从 HuggingFace 下载的权重"
+                ),
+                "suggestion": "这类权重不在 models/ 里，清单核不出来；用 /体检 --probe 真跑一次确认",
+            })
+            continue
         for pool_name in _pools_of(item["pool"]):
             pool_files += [_basename(x) for x in (catalog or {}).get(pool_name) or []]
         if _basename(item["value"]) not in pool_files:
@@ -381,7 +408,7 @@ def health_report(
             "severity": "error",
             "category": "templates",
             "message": "一个工作流模板都没加载到",
-            "suggestion": "确认 workflows/ 目录里有 JSON（插件自带 13 个）；自定义模板放对位置",
+            "suggestion": "确认 workflows/ 目录里有 JSON（插件自带一批默认模板）；自定义模板放对位置",
         })
     conf = config or {}
     if status.get("online") and not bool((conf.get("server") or {}).get("free_before_switch", True)):
