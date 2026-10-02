@@ -59,7 +59,7 @@ from .error_hints import (
 
 PLUGIN_NAME = "astrbot_plugin_comfyui_smart"
 # 与 metadata.yaml 的 version 保持一致（tests/test_logic.py 会校验二者不漂移）
-PLUGIN_VERSION = "0.28.0"
+PLUGIN_VERSION = "0.29.0"
 
 # ControlNet 的深度预处理器权重是「按需下载」的（不在 models/ 下），
 # 探测结果按（后端 + 节点 + 权重名）缓存这么久，避免每次出图都多一次往返。
@@ -264,41 +264,109 @@ def _clamp_dimensions(width: int, height: int) -> tuple[int, int]:
     return width, height
 
 
-def parse_inline_params(text: str) -> tuple[str, dict]:
-    """解析描述里的行内参数。
+# 行内参数分词：**必须先分词再解析**，不能直接 text.split()。
+# 原因：`--negative lowres, bad anatomy` 这种值里有空格，split() 会把值切成好几段 ——
+# 解析器只拿走第一段（"lowres,"），剩下的全被当成描述，**静默污染正向提示词**。
+# 真机踩过：用户粘一长串负面词，结果正向词里混进了 "bad anatomy, worst quality"。
+# 半角/中文、单双引号都认；`key:"带 空格 的值"` 这种冒号写法也一并支持。
+_QUOTED = r'"[^"]*"|\'[^\']*\'|“[^”]*”|‘[^’]*’'
+_QUOTED_TOKEN_RE = re.compile(
+    r'(?P<key>[^\s:]+):(?P<kv>' + _QUOTED + r')'   # key:"带 空格 的值"
+    r'|(?P<quoted>' + _QUOTED + r')'               # "带 空格 的值"
+    r'|(?P<plain>\S+)'                             # 普通 token
+)
+# 值里天然可能含空格、缺了引号就会被截断的参数。只列这类，
+# 免得把「描述排在开关后面」这种正常写法也报成问题（那会变成狼来了）。
+SPACE_PRONE_KEYS = frozenset({"negative"})
 
-    支持 `--key value` 与 `key:value` 两种写法，支持中文别名，例如：
-        /画图 16:9 一个白裙少女 --seed 42 --steps 30
-        /画图 一个白裙少女 比例:16:9 lora:style/anime.safetensors:0.8
+
+def _unquote(token: str) -> str:
+    """去掉 token 两端成对的引号（半角或中文）。"""
+    if len(token) >= 2 and token[0] in '"\'“‘' and token[-1] in '"\'”’':
+        return token[1:-1]
+    return token
+
+
+def _tokenize_inline(text: str) -> list[tuple[str, bool]]:
+    """把行内参数文本拆成 (token, 是否由引号明确界定)。
+
+    引号内允许空格；残缺的引号（只有开头没有结尾）按普通 token 处理并去掉开头那个引号，
+    不能因为一个手滑的引号就把整条指令吞掉。
 
     Args:
         text: 去掉指令后的原始文本。
 
     Returns:
-        (纯描述, 参数字典)。
+        [(token, quoted)]，顺序与原文一致。`key:"值"` 会合成一个 `key:值` 的 token，
+        并标记为已界定（值不会再有被空格截断的风险）。
+    """
+    out: list[tuple[str, bool]] = []
+    for match in _QUOTED_TOKEN_RE.finditer(text or ""):
+        key = match.group("key")
+        if key is not None:
+            # 合成 key:值，交给后面的 key:value 分支解析；标记 True 表示「值已完整」
+            out.append((f"{key}:{_unquote(match.group('kv') or '')}", True))
+            continue
+        quoted = match.group("quoted")
+        if quoted is not None:
+            out.append((_unquote(quoted), True))
+            continue
+        token = match.group("plain") or ""
+        # 残缺引号：去掉开头那个引号字符，其余照常当 token
+        if token[:1] in ('"', "'", "“", "‘"):
+            token = token[1:]
+        if token:
+            out.append((token, False))
+    return out
+
+
+def _scan_inline(text: str) -> tuple[str, dict, list[str]]:
+    """行内参数解析的唯一实现（parse_inline_params 与 find_space_truncated 共用）。
+
+    Returns:
+        (纯描述, 参数字典, 疑似被空格截断的参数键列表)。
     """
     opts: dict = {}
-    tokens = text.split()
+    tokens = _tokenize_inline(text)
     kept: list[str] = []
+    truncated: list[str] = []
     index = 0
     while index < len(tokens):
-        token = tokens[index]
-        # --key value，以及无值旗标 --flag（例如 --画）
-        if token.startswith("--") and len(token) > 2:
+        token, quoted = tokens[index]
+        # `key:"带 空格 的值"`：值已由引号界定，按 key:value 直接落库，
+        # 不做截断检测（后面跟的只可能是描述）
+        if quoted and ":" in token:
+            head, _, tail = token.partition(":")
+            key = PARAM_ALIASES.get(head.lower())
+            if key and tail:
+                opts[key] = tail
+                index += 1
+                continue
+        # --key value，以及无值旗标 --flag（例如 --画）。
+        # 被引号界定的整段算一个 token，不再当开关解析。
+        if not quoted and token.startswith("--") and len(token) > 2:
             key = PARAM_ALIASES.get(token[2:].lower())
             if key:
                 nxt = tokens[index + 1] if index + 1 < len(tokens) else None
-                if nxt is None or nxt.startswith("--"):
+                if nxt is None or (not nxt[1] and nxt[0].startswith("--")):
                     # 后面没有值（或紧跟下一个参数）：当成开关，标记为 "1"
                     opts[key] = "1"
                     index += 1
                     continue
-                opts[key] = nxt
+                opts[key] = nxt[0]
                 index += 2
+                # 值后面还跟着「不是参数」的内容：多半是值里有空格被截断了。
+                # 只做提示不做改写 —— 悄悄把描述当成值的一部分，同样是一种静默出错。
+                if (key in SPACE_PRONE_KEYS and not nxt[1]
+                        and index < len(tokens)
+                        and not tokens[index][0].startswith("--")):
+                    truncated.append(key)
                 continue
-        # key:value（注意比例 16:9 这类值本身含冒号）
-        if ":" in token:
-            head, _, tail = token.partition(":")
+        # key:value（注意比例 16:9 这类值本身含冒号）。
+        # 全角冒号也认：中文输入法下「比例：16:9」几乎是默认写法，不认就等于参数静默失效。
+        probe = token.replace("：", ":", 1) if "：" in token else token
+        if not quoted and ":" in probe:
+            head, _, tail = probe.partition(":")
             key = PARAM_ALIASES.get(head.lower())
             if key == "ratio" and tail:
                 opts["ratio"] = f"{tail}"
@@ -307,10 +375,82 @@ def parse_inline_params(text: str) -> tuple[str, dict]:
             if key and key != "ratio" and tail:
                 opts[key] = tail
                 index += 1
+                # 冒号写法同理：`negative:lowres, bad anatomy` 也会被空格截断
+                if (key in SPACE_PRONE_KEYS and index < len(tokens)
+                        and not tokens[index][0].startswith("--")):
+                    truncated.append(key)
                 continue
+        # 裸比例：`/画图 16:9 赛博朋克城市` —— 设计文档里就是这么举例的，
+        # 但早先只认 `--ratio` / `比例:`，裸写的值会**静默留在描述里**（等于没设）。
+        # 只吃 RATIO_PRESETS 里的确切取值，所以 `12:30` 这类不会被误当比例。
+        if not quoted and token in RATIO_PRESETS:
+            opts["ratio"] = token
+            index += 1
+            continue
         kept.append(token)
         index += 1
-    return " ".join(kept).strip(), opts
+    return " ".join(kept).strip(), opts, truncated
+
+
+def parse_inline_params(text: str) -> tuple[str, dict]:
+    """解析描述里的行内参数。
+
+    支持 `--key value` 与 `key:value` 两种写法，支持中文别名，例如：
+        /画图 16:9 一个白裙少女 --seed 42 --steps 30
+        /画图 一个白裙少女 比例:16:9 lora:style/anime.safetensors:0.8
+        /画图 一个白裙少女 --negative "lowres, bad anatomy"   ← 值里有空格要用引号
+
+    比例可以直接裸写（`16:9`），也可以 `--ratio 16:9` / `比例:16:9`；全角冒号同样认。
+    含空格的值请用引号（半角或中文引号都行），否则只会取到第一个词。
+
+    Args:
+        text: 去掉指令后的原始文本。
+
+    Returns:
+        (纯描述, 参数字典)。
+    """
+    desc, opts, _truncated = _scan_inline(text)
+    return desc, opts
+
+
+def find_space_truncated(text: str) -> list[str]:
+    """找出「值里有空格、但没用引号」因而被截断的行内参数。
+
+    Args:
+        text: 去掉指令后的原始文本。
+
+    Returns:
+        参数键列表（可能为空）。
+    """
+    _desc, _opts, truncated = _scan_inline(text)
+    return truncated
+
+
+def inline_param_hint(text: str) -> str:
+    """值被空格截断时给用户的提示；没问题时返回空串。
+
+    为什么要提示而不是自动纠正：`--negative bad hands 一个女孩` 无法区分
+    「值里含空格」与「描述写在开关后面」。自动吞掉后面的词会**静默改掉用户想要的画面**，
+    而这一整类问题的共同点就是「悄悄出错」，所以这里只提醒、让用户自己决定。
+    """
+    keys = find_space_truncated(text)
+    if not keys:
+        return ""
+    names = "、".join(f"--{key.replace('_', '-')}" for key in keys)
+    return (
+        f"⚠️ {names} 的值后面还跟着别的内容，多半是值里有空格被截断了。\n"
+        f"　· 含空格的值请用引号括起来，例如：--negative \"lowres, bad anatomy\"\n"
+        f"　· 或者写成不含空格的形式：--negative lowres,bad_anatomy"
+    )
+
+
+def append_inline_hint(text: str, raw: str) -> str:
+    """把「值被空格截断」的提示拼到「已收到」文案后面；没问题就原样返回。
+
+    拼进同一条消息而不是单发一条：用户正盯着那句「收到」，警示跟在它后面最不容易被忽略。
+    """
+    hint = inline_param_hint(raw)
+    return f"{text}\n{hint}" if hint else text
 
 
 def _extract_command_payload(event: AstrMessageEvent, *commands: str) -> str:
@@ -2323,9 +2463,9 @@ class ComfyUISmartPlugin(Star):
             else:
                 yield event.plain_result(self.t("cmd.draw.i2i_disabled"))
 
-        yield event.plain_result(
-            self.t("cmd.draw.received_image") if source_image else self.t("cmd.draw.received")
-        )
+        received = (self.t("cmd.draw.received_image") if source_image
+                    else self.t("cmd.draw.received"))
+        yield event.plain_result(append_inline_hint(received, raw))
 
         on_wait, on_queued, on_progress = self._queue_notifiers(event)
 
@@ -3094,7 +3234,7 @@ class ComfyUISmartPlugin(Star):
             yield event.plain_result(self.t("cmd.img2img.need_desc"))
             return
 
-        yield event.plain_result(self.t("cmd.img2img.received"))
+        yield event.plain_result(append_inline_hint(self.t("cmd.img2img.received"), raw))
 
         on_wait, on_queued, on_progress = self._queue_notifiers(event)
 
@@ -3157,7 +3297,7 @@ class ComfyUISmartPlugin(Star):
             # 不给描述也能用：给一句通用的「往外延伸」，交给 LLM 改写（若开启）
             desc = self.t("cmd.outpaint.default_prompt")
 
-        yield event.plain_result(self.t("cmd.outpaint.received"))
+        yield event.plain_result(append_inline_hint(self.t("cmd.outpaint.received"), raw))
         on_wait, on_queued, on_progress = self._queue_notifiers(event)
 
         try:
@@ -3222,7 +3362,7 @@ class ComfyUISmartPlugin(Star):
         start_image = images[0]
         end_image = images[1] if len(images) > 1 else ""
         tip_key = "cmd.i2v.received_frames" if end_image else "cmd.i2v.received"
-        yield event.plain_result(self.t(tip_key))
+        yield event.plain_result(append_inline_hint(self.t(tip_key), raw))
 
         on_wait, on_queued, on_progress = self._queue_notifiers(event)
         try:
@@ -3287,7 +3427,7 @@ class ComfyUISmartPlugin(Star):
             ))
             return
 
-        yield event.plain_result(self.t("cmd.video.received"))
+        yield event.plain_result(append_inline_hint(self.t("cmd.video.received"), raw))
         on_wait, on_queued, on_progress = self._queue_notifiers(event)
 
         try:

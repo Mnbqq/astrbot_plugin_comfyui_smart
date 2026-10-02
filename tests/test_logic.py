@@ -569,6 +569,59 @@ def main() -> int:
     check("--negative 取值", opts2.get("negative") == "blur", opts2)
     check("描述被正确剥离", desc == "赛博朋克城市", repr(desc))
 
+    # 引号与「值被空格截断」（v0.29.0）
+    # 起因：`--negative lowres, bad anatomy` 里值含空格，原来的 text.split() 只把
+    # 第一段当值，剩下的全跑进描述 —— 正向提示词被静默污染，用户完全看不出来。
+    _LONG_NEG = "lowres, bad anatomy, worst quality"
+    _d, _o = m.parse_inline_params(f'一个女孩 --negative "{_LONG_NEG}"')
+    check("引号包住的含空格值能完整取到", _o.get("negative") == _LONG_NEG, _o.get("negative"))
+    check("引号取值不会污染描述", _d == "一个女孩", repr(_d))
+    _d, _o = m.parse_inline_params(f"一个女孩 --negative '{_LONG_NEG}'")
+    check("单引号同样生效", _o.get("negative") == _LONG_NEG, _o.get("negative"))
+    _d, _o = m.parse_inline_params(f"一个女孩 --negative “{_LONG_NEG}”")
+    check("中文引号也认（手机输入法打得出）", _o.get("negative") == _LONG_NEG, _o.get("negative"))
+    _d, _o = m.parse_inline_params(f'一个女孩 negative:"{_LONG_NEG}"')
+    check("冒号写法也支持引号", _o.get("negative") == _LONG_NEG and _d == "一个女孩",
+          (_o.get("negative"), repr(_d)))
+    _d, _o = m.parse_inline_params('"一个 白裙 少女" --steps 30')
+    check("引号也能包住带空格的描述", _d == "一个 白裙 少女" and _o.get("steps") == "30", repr(_d))
+    _d, _o = m.parse_inline_params("一个女孩 --negative lowres,bad_anatomy")
+    check("不含空格的老写法不受影响", _o.get("negative") == "lowres,bad_anatomy", _o.get("negative"))
+    _d, _o = m.parse_inline_params("16:9 少女 --lora style/a.safetensors:0.8 --steps 30")
+    check("ratio / lora 强度 / 开关都不受引号改动影响",
+          _o.get("ratio") == "16:9" and _o.get("lora") == "style/a.safetensors:0.8"
+          and _o.get("steps") == "30" and _d == "少女", (_o, repr(_d)))
+
+    # 裸比例与全角冒号（v0.29.0）：设计文档里就写着 `/画图 16:9 赛博朋克城市`，
+    # 但早先只认 `--ratio` / `比例:`，裸写的值会静默留在描述里 —— 等于参数没生效。
+    _d, _o = m.parse_inline_params("16:9 赛博朋克城市")
+    check("裸写比例能被识别（文档里的示例写法）",
+          _o.get("ratio") == "16:9" and _d == "赛博朋克城市", (_o, repr(_d)))
+    _d, _o = m.parse_inline_params("一个白裙少女 比例：16:9")
+    check("中文全角冒号也认（输入法默认就是全角）",
+          _o.get("ratio") == "16:9" and _d == "一个白裙少女", (_o, repr(_d)))
+    _d, _o = m.parse_inline_params("一个 12:30 的钟表")
+    check("不是预设取值的「数字:数字」留在描述里（不误吃）",
+          _o.get("ratio") is None and _d == "一个 12:30 的钟表", (_o, repr(_d)))
+    _d, _o = m.parse_inline_params('"16:9" 只是描述里的引号内容')
+    check("引号包住的不会被当参数吃掉",
+          _o.get("ratio") is None and _d == "16:9 只是描述里的引号内容", (_o, repr(_d)))
+
+    # 截断检测：只提示、不改写（自动吞词同样是一种静默出错）
+    check("裸粘含空格的负面词会被识别为截断",
+          m.find_space_truncated(f"一个女孩 --negative {_LONG_NEG}") == ["negative"], None)
+    check("冒号写法同样能识别", m.find_space_truncated(f"一个女孩 negative:{_LONG_NEG}") == ["negative"], None)
+    check("正常用法不误报（值后面是参数或结束）",
+          m.find_space_truncated("一个女孩 --negative lowres --seed 1") == []
+          and m.find_space_truncated("一个女孩 --negative lowres") == [], None)
+    _hint = m.inline_param_hint(f"一个女孩 --negative {_LONG_NEG}")
+    check("提示里给了两种正确写法",
+          "引号" in _hint and "lowres,bad_anatomy" in _hint, _hint[:50])
+    check("没问题时不产生提示", m.inline_param_hint('一个女孩 --negative "lowres, bad"') == "", None)
+    check("提示拼进「已收到」文案，不会多出一条消息",
+          m.append_inline_hint("🎨 收到", "x --negative a, b").startswith("🎨 收到\n⚠️")
+          and m.append_inline_hint("🎨 收到", "x --negative a") == "🎨 收到", None)
+
     print("\n=== 尺寸对齐 ===")
     w, h = m._clamp_dimensions(1023, 1025)
     check("对齐到 8 的倍数", w % 8 == 0 and h % 8 == 0, (w, h))
