@@ -460,6 +460,18 @@
         "hint": "显示模板名、底模、分辨率、种子与耗时，方便复现。",
         "default": true
       },
+      "merge_forward": {
+        "description": "合并成一条转发消息",
+        "type": "bool",
+        "hint": "把参数文字与图片打包成**一条「合并转发」消息**发送，出多张图时不再刷屏（QQ 个人号 / OneBot v11 专用）。⚠️ 图片会被转成 base64 内嵌，所以三种情况会自动改回普通发送：平台不是 aiocqhttp、结果是视频、图片总量超过 20MB。",
+        "default": false
+      },
+      "merge_forward_name": {
+        "description": "转发卡片上的昵称",
+        "type": "string",
+        "hint": "合并转发卡片里显示的发送者昵称；留空用「ComfyUI 智能绘图」。",
+        "default": ""
+      },
       "show_progress": {
         "description": "出图过程中发送实时进度",
         "type": "bool",

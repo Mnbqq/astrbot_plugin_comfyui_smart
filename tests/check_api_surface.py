@@ -33,8 +33,13 @@ MEMBER_TARGETS: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
      ("save_config",)),
     ("AstrMessageEvent", "astrbot/core/platform/astr_message_event.py", "AstrMessageEvent",
      ("is_admin", "get_sender_id", "get_sender_name", "get_group_id",
+      # 合并转发要用：get_platform_name 判平台（只有 aiocqhttp 支持），
+      # get_self_id 取机器人自身 id 当转发卡片的 uin
+      "get_platform_name", "get_self_id",
       "plain_result", "chain_result", "send", "unified_msg_origin")),
     ("消息组件 Image", "astrbot/core/message/components.py", "Image", ("fromFileSystem",)),
+    ("消息组件 Node", "astrbot/core/message/components.py", "Node",
+     ("content", "name", "uin", "to_dict")),
     ("Pages 请求代理", "astrbot/api/web.py", "PluginRequest",
      ("json", "form", "files", "body", "query", "path_params", "username",
       "plugin_name", "method")),

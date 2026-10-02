@@ -12,7 +12,7 @@ from pathlib import Path
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.message_components import At, Image, Plain, Reply, Video
+from astrbot.api.message_components import At, Image, Node, Plain, Reply, Video
 from astrbot.api.star import Context, Star, StarTools
 
 from .backend_pool import Backend, BackendPool, is_backend_fault, parse_backend_specs
@@ -59,7 +59,7 @@ from .error_hints import (
 
 PLUGIN_NAME = "astrbot_plugin_comfyui_smart"
 # 与 metadata.yaml 的 version 保持一致（tests/test_logic.py 会校验二者不漂移）
-PLUGIN_VERSION = "0.27.0"
+PLUGIN_VERSION = "0.28.0"
 
 # ControlNet 的深度预处理器权重是「按需下载」的（不在 models/ 下），
 # 探测结果按（后端 + 节点 + 权重名）缓存这么久，避免每次出图都多一次往返。
@@ -70,6 +70,17 @@ PROBE_TTL_SECONDS = 600.0
 CONTROL_FALLBACK_DENOISE = 0.45
 # 单次最多出几档 denoise（多档是串行跑的，档数直接乘等待时间）
 MAX_DENOISE_LEVELS = 4
+
+# 合并转发（OneBot v11 的「群合并转发消息」）：
+# - 只有 aiocqhttp（QQ 个人号）支持，其它平台发了会直接报错，所以先判平台；
+# - Node.to_dict() 会把图片转成 base64 内嵌（体积 +33%），一条几十 MB 的消息
+#   很可能发送失败、把结果整个丢掉，所以给一个总量上限，超了就改回普通发送；
+# - 视频在 Node 里走的是同步 toDict()（把 file:// URI 原样塞进节点），
+#   适配器不保证能解析，同样不合并。
+MERGE_FORWARD_PLATFORMS = frozenset({"aiocqhttp"})
+MERGE_FORWARD_MAX_BYTES = 20 * 1024 * 1024
+# 转发卡片上的默认昵称（配置留空时用它）
+MERGE_FORWARD_DEFAULT_NAME = "ComfyUI 智能绘图"
 
 # 机器档位：决定分辨率/帧数/步数上限。auto 时按显存判定（内存太小再降一档）。
 MACHINE_PRESETS = {
@@ -2655,6 +2666,138 @@ class ComfyUISmartPlugin(Star):
         )
         return merged
 
+    def _result_detail_text(self, result: dict) -> str:
+        """拼出「随图附带的参数信息」那一段文字（show_params 关闭时调用方不调它）。"""
+        detail = self.t(
+            "result.params",
+            template=result["template"], arch=result.get("arch", "?"),
+            model=result["model"], width=result["width"], height=result["height"],
+            seed=result["seed"], seconds=result["seconds"],
+        )
+        if result.get("lora"):
+            detail += self.t("result.lora", lora=result["lora"])
+        if result.get("llm_note"):
+            detail += self.t("result.note", note=result["llm_note"])
+        if result.get("denoise_levels"):
+            detail += self.t(
+                "result.i2i_levels",
+                levels="、".join(f"{x:g}" for x in result["denoise_levels"]),
+            )
+        elif result.get("i2i"):
+            detail += self.t("result.i2i", denoise=result.get("denoise", 0.6))
+        if result.get("control_fallback"):
+            # ControlNet 探测失败自动降级时，必须说清「为什么没用 ControlNet」
+            detail += self.t("result.warning", text=result["control_fallback"])
+        if result.get("outpaint"):
+            _op = result["outpaint"]
+            _pads = _op.get("pads") or {}
+            _src = _op.get("source") or (0, 0)
+            detail += self.t(
+                "result.outpaint",
+                sw=_src[0], sh=_src[1], width=_op.get("width"), height=_op.get("height"),
+                left=_pads.get("left", 0), right=_pads.get("right", 0),
+                top=_pads.get("top", 0), bottom=_pads.get("bottom", 0),
+            )
+        if result.get("hires"):
+            _hw = result["hires"].get("width")
+            _hh = result["hires"].get("height")
+            if _hw and _hh:
+                detail += self.t("result.hires_fixed", width=_hw, height=_hh)
+            else:
+                # 尺寸由工作流自己决定，只说倍数，避免编一个尺寸出来
+                detail += self.t("result.hires_scale", scale=result["hires"].get("scale", ""))
+        if result.get("hires_note"):
+            detail += self.t("result.warning", text=result["hires_note"])
+        if result.get("upscale_note"):
+            detail += self.t("result.note", note=result["upscale_note"])
+        if result.get("prompt_note"):
+            detail += self.t("result.note", note=result["prompt_note"])
+        if result.get("i2v"):
+            detail += self.t(
+                "result.i2v_frames" if result.get("end_frame") else "result.i2v_start"
+            )
+        if result.get("backend"):
+            detail += self.t("result.backend", name=result["backend"])
+        if result.get("queued_seconds"):
+            # 排队时间与出图时间分开报，否则「这次怎么这么慢」说不清
+            detail += self.t("result.queued", seconds=result["queued_seconds"])
+        return detail
+
+    def _merge_forward_chain(
+        self, event: AstrMessageEvent, uid: str, result: dict, detail: str
+    ):
+        """把结果打包成一条「合并转发」消息；不适用时返回 None。
+
+        只有 OneBot v11（QQ 个人号 / aiocqhttp）支持合并转发，其它平台发了会直接报错，
+        所以先在本地判平台。另外两种情况也退回普通发送：
+
+        - **结果是视频**：`Node.to_dict()` 只对图片/语音做 base64 内嵌，视频会走同步
+          `toDict()`、把 `file://` URI 原样塞进节点，适配器不保证能解析；
+        - **图片总量过大**：图片同样要 base64 内嵌（体积 +33%），一条几十 MB 的消息
+          很可能发送失败从而把结果整个丢掉 —— 宁可拆成普通消息发出去。
+
+        Returns:
+            消息组件列表；None 表示「用普通方式发送」。
+        """
+        output_conf = self.config.get("output", {}) or {}
+        if not output_conf.get("merge_forward", False):
+            return None
+        platform = ""
+        getter = getattr(event, "get_platform_name", None)
+        if callable(getter):
+            try:
+                platform = str(getter() or "")
+            except Exception:       # noqa: BLE001 - 平台信息拿不到就当作不支持
+                platform = ""
+        if platform not in MERGE_FORWARD_PLATFORMS:
+            logger.info("当前平台 %s 不支持合并转发，按普通消息发送", platform or "未知")
+            return None
+        if result.get("videos"):
+            logger.info("结果是视频，合并转发对视频支持不可靠，按普通消息发送")
+            return None
+        images = [path for path in (result.get("images") or [])]
+        total = 0
+        for path in images:
+            try:
+                total += Path(path).stat().st_size
+            except OSError:
+                continue
+        if total > MERGE_FORWARD_MAX_BYTES:
+            logger.warning(
+                "图片总量 %.1f MB 超过合并转发上限 %.0f MB，按普通消息发送",
+                total / 1024 ** 2, MERGE_FORWARD_MAX_BYTES / 1024 ** 2,
+            )
+            return None
+
+        content: list = []
+        if detail:
+            content.append(Plain(detail + "\n"))
+        for path in images:
+            content.append(Image.fromFileSystem(str(path)))
+        if not content:
+            return None
+        name = str(output_conf.get("merge_forward_name") or "").strip() \
+            or MERGE_FORWARD_DEFAULT_NAME
+        uin = ""
+        self_id = getattr(event, "get_self_id", None)
+        if callable(self_id):
+            try:
+                uin = str(self_id() or "")
+            except Exception:       # noqa: BLE001 - 拿不到就用触发者 id 顶上
+                uin = ""
+        node = Node(content=content, name=name, uin=uin or str(uid))
+        chain = []
+        is_group = bool(getattr(event, "get_group_id", lambda: None)())
+        if is_group and output_conf.get("mention_trigger_user", True):
+            # @ 留在节点外面：塞进转发卡片里就起不到提醒作用了
+            chain.append(At(qq=uid))
+            chain.append(Plain(" "))
+        chain.append(node)
+        logger.info(
+            "合并转发｜%d 张图（%.1f MB）｜卡片昵称 %s", len(images), total / 1024 ** 2, name
+        )
+        return chain
+
     def _compose_result_chain(self, event: AstrMessageEvent, uid: str, result: dict):
         """拼装出图结果消息链。
 
@@ -2667,65 +2810,17 @@ class ComfyUISmartPlugin(Star):
             message component 列表。
         """
         output_conf = self.config.get("output", {}) or {}
+        detail = self._result_detail_text(result) if output_conf.get("show_params", True) else ""
+        # 合并转发优先：适用时整段结果（文字 + 图片）打包成一条转发消息
+        merged = self._merge_forward_chain(event, uid, result, detail)
+        if merged is not None:
+            return merged
         chain = []
         is_group = bool(getattr(event, "get_group_id", lambda: None)())
         if is_group and output_conf.get("mention_trigger_user", True):
             chain.append(At(qq=uid))
             chain.append(Plain(" "))
-        if output_conf.get("show_params", True):
-            detail = self.t(
-                "result.params",
-                template=result["template"], arch=result.get("arch", "?"),
-                model=result["model"], width=result["width"], height=result["height"],
-                seed=result["seed"], seconds=result["seconds"],
-            )
-            if result.get("lora"):
-                detail += self.t("result.lora", lora=result["lora"])
-            if result.get("llm_note"):
-                detail += self.t("result.note", note=result["llm_note"])
-            if result.get("denoise_levels"):
-                detail += self.t(
-                    "result.i2i_levels",
-                    levels="、".join(f"{x:g}" for x in result["denoise_levels"]),
-                )
-            elif result.get("i2i"):
-                detail += self.t("result.i2i", denoise=result.get("denoise", 0.6))
-            if result.get("control_fallback"):
-                # ControlNet 探测失败自动降级时，必须说清「为什么没用 ControlNet」
-                detail += self.t("result.warning", text=result["control_fallback"])
-            if result.get("outpaint"):
-                _op = result["outpaint"]
-                _pads = _op.get("pads") or {}
-                _src = _op.get("source") or (0, 0)
-                detail += self.t(
-                    "result.outpaint",
-                    sw=_src[0], sh=_src[1], width=_op.get("width"), height=_op.get("height"),
-                    left=_pads.get("left", 0), right=_pads.get("right", 0),
-                    top=_pads.get("top", 0), bottom=_pads.get("bottom", 0),
-                )
-            if result.get("hires"):
-                _hw = result["hires"].get("width")
-                _hh = result["hires"].get("height")
-                if _hw and _hh:
-                    detail += self.t("result.hires_fixed", width=_hw, height=_hh)
-                else:
-                    # 尺寸由工作流自己决定，只说倍数，避免编一个尺寸出来
-                    detail += self.t("result.hires_scale", scale=result["hires"].get("scale", ""))
-            if result.get("hires_note"):
-                detail += self.t("result.warning", text=result["hires_note"])
-            if result.get("upscale_note"):
-                detail += self.t("result.note", note=result["upscale_note"])
-            if result.get("prompt_note"):
-                detail += self.t("result.note", note=result["prompt_note"])
-            if result.get("i2v"):
-                detail += self.t(
-                    "result.i2v_frames" if result.get("end_frame") else "result.i2v_start"
-                )
-            if result.get("backend"):
-                detail += self.t("result.backend", name=result["backend"])
-            if result.get("queued_seconds"):
-                # 排队时间与出图时间分开报，否则「这次怎么这么慢」说不清
-                detail += self.t("result.queued", seconds=result["queued_seconds"])
+        if detail:
             chain.append(Plain(detail + "\n"))
         shown_video = False
         video_conf = self.config.get("video", {}) or {}
@@ -2734,10 +2829,10 @@ class ComfyUISmartPlugin(Star):
             if video_conf.get("send_video", True):
                 chain.append(Video.fromFileSystem(str(path)))
                 shown_video = True
-                detail = self.t("result.video", seconds=seconds)
+                video_note = self.t("result.video", seconds=seconds)
             else:
-                detail = self.t("result.video_saved", seconds=seconds, path=path)
-            chain.append(Plain(detail + "\n"))
+                video_note = self.t("result.video_saved", seconds=seconds, path=path)
+            chain.append(Plain(video_note + "\n"))
         if result.get("videos") and shown_video:
             chain.append(Plain(self.t(
                 "result.video_meta",

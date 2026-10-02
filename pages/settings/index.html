@@ -379,6 +379,17 @@
             <label class="switch-wrapper"><input type="checkbox" id="out_show_params" class="ios-switch" /></label>
           </div>
           <div class="setting-row">
+            <div><h3 data-i18n="ui.title.047">合并成一条转发消息</h3><p data-i18n="ui.text.057">把参数文字与图片打包成一条「合并转发」发送，出多张图时不再刷屏（QQ 个人号 / OneBot v11 专用）。平台不是 aiocqhttp、结果是视频、或图片总量超过 20MB 时，会自动改回普通发送。</p></div>
+            <label class="switch-wrapper"><input type="checkbox" id="out_merge_forward" class="ios-switch" /></label>
+          </div>
+          <div class="form-grid">
+            <div class="form-group">
+              <label data-i18n="ui.label.059" for="out_merge_forward_name">转发卡片上的昵称</label>
+              <input type="text" id="out_merge_forward_name" class="input-modern"
+                     placeholder="留空 = ComfyUI 智能绘图" data-i18n-placeholder="ui.ph.009" />
+            </div>
+          </div>
+          <div class="setting-row">
             <div><h3 data-i18n="ui.title.025">出图过程中发送实时进度</h3><p data-i18n="ui.text.032">通过 ComfyUI 的 WebSocket 推送显示「第 n / 总步数」；连不上时自动退回轮询，不影响出图。</p></div>
             <label class="switch-wrapper"><input type="checkbox" id="out_show_progress" class="ios-switch" /></label>
           </div>

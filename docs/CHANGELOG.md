@@ -3,6 +3,39 @@
 > 从 v0.1.0 到最新的逐版本记录（主 README 只保留最近几条）。
 
 ## 更新日志
+**v0.28.0** — 合并转发消息（`output.merge_forward`）
+
+出多张图时（Hires / 多档 denoise / 一次出多张）会连着发好几条，群里比较吵。
+新增开关把参数文字与图片打包成**一条** AstrBot 的「群合并转发」消息。
+
+- **API 用的是 AstrBot 官方的 `Node` 组件**（`from astrbot.api.message_components import Node`）：
+  `Node(content=[Plain(...), Image...], name=..., uin=...)`，由 `event.chain_result([node])` 发出。
+  只有 **OneBot v11（QQ 个人号 / aiocqhttp）** 支持，这是 AstrBot 文档里写明的能力。
+- **先判平台**：`get_platform_name()` 不是 `aiocqhttp` 就直接走普通消息 ——
+  在别的平台发合并转发是会直接报错的。
+- **uin 用机器人自身 id**（`get_self_id()`），昵称由 `output.merge_forward_name` 配置
+  （留空回落「ComfyUI 智能绘图」）。群聊里的 `@` 留在节点**外面**：
+  塞进转发卡片就起不到提醒作用了。
+- **三种情况自动改回普通发送**（宁可拆开发，也不要把结果整条丢光）：
+  1. 平台不是 `aiocqhttp`；
+  2. **结果是视频** —— 读 `Node.to_dict()` 的源码可以看到，它只对 `Image` / `Record` 调
+     `convert_to_base64()`，`Video` 落到 `else` 分支走**同步** `toDict()`，
+     把 `file://` URI 原样塞进节点，适配器不保证能解析；
+  3. **图片总量超过 20MB** —— 图片同样要 base64 内嵌（体积 +33%），
+     一张 1920×1088 的 PNG 约 3MB、内嵌后约 4MB，四张就 16MB，
+     再大很可能发送失败。阈值是 `MERGE_FORWARD_MAX_BYTES`。
+- 顺带把 `_compose_result_chain` 拆开：参数文案抽成 `_result_detail_text()`，
+  合并逻辑独立成 `_merge_forward_chain()`（不适用时返回 `None`，调用方照旧走普通链路），
+  避免把两套拼装逻辑搅在一起。
+- **配置与界面**：`output.merge_forward`（bool，默认关）与 `output.merge_forward_name`（string），
+  配置页新增对应控件与中英文案（`ui.title.047` / `ui.text.057` / `ui.label.059` / `ui.ph.009`）。
+- **API 面核对加强**：`check_api_surface.py` 新增 `get_platform_name` / `get_self_id`
+  两个事件方法，以及 `Node` 的 `content` / `name` / `uin` / `to_dict`；
+  用真机拉取的 AstrBot 源码跑过，**62 项 API 全过**。
+- 测试：+10 项断言（默认关闭时链路不变、打包成 Node、昵称与 uin、留空回落、
+  多图同节点、群聊 @ 在节点外、平台/视频/超限三种回退、关参数后只剩图片），
+  Python 714 / 前端 51 / API 面 62 全绿。
+
 **v0.27.0** — 重整 LLM 提示词（生图 / 视频 / 反推三套）
 
 提示词是这类插件的「产品逻辑」本身，但原版三套模板里有几处会**稳定地**拖低出图质量。

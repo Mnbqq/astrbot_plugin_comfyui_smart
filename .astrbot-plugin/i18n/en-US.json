@@ -211,6 +211,7 @@
   "ui.label.056": "Extra negatives when filter is on",
   "ui.label.057": "Positive prompt",
   "ui.label.058": "Negative prompt",
+  "ui.label.059": "Nickname on the forwarded card",
   "ui.nav.agent": "Advanced",
   "ui.nav.draw": "Drawing",
   "ui.nav.inpaint": "Inpaint",
@@ -242,6 +243,7 @@
   "ui.ph.006": "Wan 2.2 TI2V-5B serves both t2v and i2v; may equal the value above",
   "ui.ph.007": "e.g. change the dress to red, keep the lighting consistent",
   "ui.ph.008": "blank = built-in list; otherwise built-in plus your words",
+  "ui.ph.009": "Empty = ComfyUI 智能绘图",
   "ui.subtitle.001": "Draw params",
   "ui.tab.agent": "Advanced",
   "ui.tab.draw": "Drawing parameters",
@@ -309,6 +311,7 @@
   "ui.text.054": "Click \"Run inspection\" to build the report.",
   "ui.text.055": "Built-in templates are picked by architecture; drop API-format JSON into the custom folder to add one.",
   "ui.text.056": "Generation counts, model usage and a gallery.",
+  "ui.text.057": "Pack the parameter text and images into a single forwarded message — no more spamming when one request produces several images (QQ personal account / OneBot v11 only). Falls back to normal sending when the platform is not aiocqhttp, the result is a video, or the images exceed 20MB in total.",
   "ui.title.001": "ComfyUI connection",
   "ui.title.002": "Unload previous model before switching",
   "ui.title.003": "Multi-backend scheduling",
@@ -354,5 +357,6 @@
   "ui.title.043": "Diagnostics",
   "ui.title.044": "Workflow templates",
   "ui.title.045": "Usage stats & gallery",
-  "ui.title.046": "Item detail"
+  "ui.title.046": "Item detail",
+  "ui.title.047": "Send as one forwarded message"
 }

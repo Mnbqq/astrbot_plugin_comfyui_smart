@@ -276,13 +276,15 @@ class AstrBotConfig(dict):
 EVENT_STUB = '''
 class AstrMessageEvent:
     def __init__(self, sender_id="10001", name="tester", message_str="", admin=False,
-                 group_id="20002", message=None):
+                 group_id="20002", message=None, platform="aiocqhttp", self_id="90001"):
         self._sender_id = sender_id
         self._name = name
         self.message_str = message_str
-        self.message_obj = type("Obj", (), {"message": list(message or [])})()
+        self.message_obj = type("Obj", (), {"message": list(message or []),
+                                            "self_id": self_id})()
         self._admin = admin
         self._group_id = group_id
+        self._platform = platform
         self.unified_msg_origin = "test:FriendMessage:10001"
         self.sent = []
 
@@ -297,6 +299,14 @@ class AstrMessageEvent:
 
     def get_group_id(self):
         return self._group_id
+
+    def get_platform_name(self):
+        """桩：与真实 AstrMessageEvent.get_platform_name() 一致（返回平台类型名）。"""
+        return self._platform
+
+    def get_self_id(self):
+        """桩：与真实 AstrMessageEvent.get_self_id() 一致（机器人自身 id）。"""
+        return self.message_obj.self_id
 
     def plain_result(self, text):
         return {"type": "plain", "text": text}
@@ -482,6 +492,19 @@ class Reply:
 
     def __init__(self, chain=None, **kw):
         self.chain = chain or []
+
+
+class Node:
+    """桩：AstrBot 的合并转发节点（OneBot v11）。
+
+    真实签名是 ``Node(content=[...], name=..., uin=...)``（content 为首个位置参数）。
+    """
+
+    def __init__(self, content=None, name="", uin="0", **kw):
+        self.content = content if content is not None else []
+        self.name = name
+        self.uin = uin
+        self.type = "Node"
 '''
 
 
@@ -5450,6 +5473,98 @@ def main() -> int:
                                 "ok": False, "error": "x"}]).startswith("⚠️")
           and hints.probe_summary([{"class_type": "X", "weight": "w", "state": "failed",
                                     "ok": False, "error": "x"}]).startswith("❌"), None)
+
+    print("\n=== 合并转发消息（v0.28.0）===")
+    from astrbot.api.message_components import At as _At
+    from astrbot.api.message_components import Image as _Image
+    from astrbot.api.message_components import Node as _Node
+    from astrbot.api.message_components import Plain as _Plain
+
+    _saved_output = dict(plugin.config.get("output") or {})
+
+    def _mk_result(**over):
+        base = {"template": "sd_checkpoint", "arch": "sdxl", "model": "m.safetensors",
+                "width": 1024, "height": 1024, "seed": 7, "seconds": 3.0,
+                "images": [], "videos": [], "video": {}}
+        base.update(over)
+        return base
+
+    def _merge_chain(conf, event=None, **over):
+        plugin.config["output"] = conf
+        ev = event if event is not None else AstrMessageEvent(sender_id="7001",
+                                                              message_str="/画图 x")
+        return plugin._compose_result_chain(ev, "7001", _mk_result(**over))
+
+    def _nodes(chain):
+        return [c for c in chain if isinstance(c, _Node)]
+
+    _pic_dir = Path(tempfile.mkdtemp(prefix="smart_merge_"))
+    pic = _pic_dir / "a.png"
+    pic.write_bytes(b"x" * 2048)
+
+    # 关闭时链路不变（回归守卫：别把默认行为改了）
+    plain_chain = _merge_chain({"show_params": True, "merge_forward": False,
+                                "mention_trigger_user": False})
+    check("合并转发关闭时仍是普通消息链（不含 Node）",
+          bool(plain_chain) and not _nodes(plain_chain),
+          [type(c).__name__ for c in plain_chain])
+
+    # 开启 + aiocqhttp：参数文字与图片都进同一个节点
+    merged = _merge_chain({"show_params": True, "merge_forward": True,
+                           "merge_forward_name": "我的画", "mention_trigger_user": False},
+                          images=[str(pic)])
+    merged_nodes = _nodes(merged)
+    kinds = [type(c).__name__ for c in merged_nodes[0].content] if merged_nodes else []
+    check("开启后整条结果打包成一个 Node（文字 + 图片）",
+          len(merged) == 1 and len(merged_nodes) == 1
+          and any(isinstance(c, _Plain) for c in merged_nodes[0].content)
+          and any(isinstance(c, _Image) for c in merged_nodes[0].content), kinds)
+    check("Node 用配置里的昵称，uin 用机器人自身 id（不是触发者）",
+          merged_nodes[0].name == "我的画" and merged_nodes[0].uin == "90001",
+          (merged_nodes[0].name, merged_nodes[0].uin))
+    check("昵称留空时回落到默认值",
+          _nodes(_merge_chain({"merge_forward": True, "merge_forward_name": "",
+                               "mention_trigger_user": False},
+                              images=[str(pic)]))[0].name == m.MERGE_FORWARD_DEFAULT_NAME,
+          None)
+    check("多张图都进同一个节点（出多张不刷屏就是这个用途）",
+          len(_nodes(_merge_chain({"merge_forward": True, "mention_trigger_user": False},
+                                  images=[str(pic), str(pic), str(pic)]))[0]
+              .content) == 4, None)
+
+    # 群聊：@ 留在节点外（塞进卡片里就提醒不到人）
+    group_ev = AstrMessageEvent(sender_id="7002", message_str="/画图 x", group_id="888")
+    group_chain = _merge_chain({"merge_forward": True, "mention_trigger_user": True},
+                               event=group_ev, images=[str(pic)])
+    check("群聊时 @ 留在节点外面（否则提醒不到触发人）",
+          isinstance(group_chain[0], _At) and isinstance(group_chain[-1], _Node),
+          [type(c).__name__ for c in group_chain])
+
+    # 三种必须回退的情况
+    check("平台不是 aiocqhttp 时回退普通发送（否则平台直接报错）",
+          not _nodes(_merge_chain({"merge_forward": True},
+                                  event=AstrMessageEvent(platform="telegram"),
+                                  images=[str(pic)])), None)
+    check("结果是视频时回退普通发送（Node 不保证能解析视频段）",
+          not _nodes(_merge_chain({"merge_forward": True}, videos=[str(pic)],
+                                  video={"seconds": 4})), None)
+    _real_cap = m.MERGE_FORWARD_MAX_BYTES
+    m.MERGE_FORWARD_MAX_BYTES = 1024
+    try:
+        check("图片总量超限时回退普通发送（免得整条发失败把结果丢光）",
+              not _nodes(_merge_chain({"merge_forward": True}, images=[str(pic)])), None)
+    finally:
+        m.MERGE_FORWARD_MAX_BYTES = _real_cap
+
+    # 关掉参数信息：节点里只剩图片
+    only_media = _nodes(_merge_chain({"show_params": False, "merge_forward": True,
+                                      "mention_trigger_user": False},
+                                     images=[str(pic)]))[0]
+    check("关掉「附带参数信息」后 Node 里只剩图片",
+          len(only_media.content) == 1 and isinstance(only_media.content[0], _Image),
+          [type(c).__name__ for c in only_media.content])
+
+    plugin.config["output"] = _saved_output
 
     plugin._collect_images = original_collect
     plugin.config["features"] = dict(ALL_FEATURES)
