@@ -59,7 +59,7 @@ from .error_hints import (
 
 PLUGIN_NAME = "astrbot_plugin_comfyui_smart"
 # 与 metadata.yaml 的 version 保持一致（tests/test_logic.py 会校验二者不漂移）
-PLUGIN_VERSION = "0.26.0"
+PLUGIN_VERSION = "0.27.0"
 
 # ControlNet 的深度预处理器权重是「按需下载」的（不在 models/ 下），
 # 探测结果按（后端 + 节点 + 权重名）缓存这么久，避免每次出图都多一次往返。

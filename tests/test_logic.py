@@ -3691,6 +3691,39 @@ def main() -> int:
     check("英文提示词也要求只输出 JSON（换语言不能丢格式约束）",
           "JSON" in catalog["en-US"]["llm.optimize_system"]
           and "JSON" in catalog["en-US"]["llm.reverse_system"], True)
+    check("LLM 视频系统提示词的中文文案也与代码常量一致",
+          catalog["zh-CN"]["llm.video_system"] == _llm.VIDEO_PROMPT_SYSTEM,
+          (len(catalog["zh-CN"]["llm.video_system"]), len(_llm.VIDEO_PROMPT_SYSTEM)))
+
+    # 提示词质量约束（v0.27.0）。这些规则就是**产品行为**，必须有断言兜着：
+    # 改提示词最容易「顺手删掉一条」，而出图质量是慢慢变差的，没人会立刻发现。
+    for _loc in ("zh-CN", "en-US"):
+        _opt = catalog[_loc]["llm.optimize_system"]
+        _rev = catalog[_loc]["llm.reverse_system"]
+        check(f"[{_loc}] 生图：要求不新增用户没提到的内容（防脑补）",
+              ("不要新增" in _opt) or ("Do NOT invent" in _opt), None)
+        check(f"[{_loc}] 生图：禁止重复插件按架构自动补的通用质量词",
+              ("写通用质量词" in _opt) or ("Do NOT emit generic quality tags" in _opt), None)
+        check(f"[{_loc}] 生图：给了 tag 数量区间（太多会稀释权重）",
+              ("15~30" in _opt) or ("15-30" in _opt), None)
+        check(f"[{_loc}] 生图：要求模型名从清单原样复制",
+              ("原样复制" in _opt) or ("verbatim" in _opt), None)
+        check(f"[{_loc}] 生图：不再要求列举通用手部负面词（合并去重后无增益，纯烧 token）",
+              "extra fingers" not in _opt and "fewer fingers" not in _opt, None)
+        check(f"[{_loc}] 反推：必须忽略签名 / 水印 / 画面文字",
+              ("签名" in _rev and "水印" in _rev)
+              or ("signature" in _rev.lower() and "watermark" in _rev.lower()), None)
+        check(f"[{_loc}] 反推：区分动漫插画与真人照片（照片不能推成 1girl/anime）",
+              ("真人照片" in _rev) or ("Real photograph" in _rev), None)
+        check(f"[{_loc}] 反推：给了 tag 顺序与数量区间，且含手部状态",
+              (("15~45" in _rev) or ("15-45" in _rev)) and "hands on hips" in _rev, None)
+        check(f"[{_loc}] 反推：不重复插件自动补的通用负面词",
+              ("不要重复列举" in _rev) or ("do not repeat them" in _rev), None)
+        check(f"[{_loc}] 提示词长度没有失控（超标说明该精简而不是继续堆规则）",
+              len(_opt) <= 2600 and len(_rev) <= 2100, (len(_opt), len(_rev)))
+    check("视频提示词也不再要求堆通用质量词",
+          ("写通用质量词" in catalog["zh-CN"]["llm.video_system"])
+          or ("generic quality tags" in catalog["en-US"]["llm.video_system"]), None)
 
     # Translator 行为
     tr_zh = i18n_mod.Translator(catalog, locale="zh-CN")

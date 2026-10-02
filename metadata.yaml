@@ -9,7 +9,7 @@ desc: >-
   支持自定义 API 格式工作流模板、权限与配额控制、出图统计与画廊。
   另有 ControlNet 深度控制与放大（可指定精确宽高）；对「按需从 HuggingFace 下载」的
   预处理权重会在提交前先探测，探不通就自动降级为图生图保构图，而不是跑到一半才报错。
-version: "0.26.0"
+version: "0.27.0"
 author: Mnbqq
 repo: "https://github.com/Mnbqq/astrbot_plugin_comfyui_smart"
 astrbot_version: ">=4.26.0"
