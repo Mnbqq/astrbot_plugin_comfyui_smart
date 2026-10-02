@@ -173,6 +173,184 @@
   0.45 幅度、原因回显、denoise 解析四则、三档串行出图、`--scale-to` 精确宽高与错误写法、
   依赖自检 info、`/体检 --probe` 汇报），Python 678 / 前端 51 / API 面 55 全绿。
 
+**v0.25.0** — ControlNet 深度控制 + 放大
+
+- **新增 `controlnet_sdxl` 模板（`purpose=control`）**：`/画图 --control depth` 先用深度预处理
+  出深度图、再交给 ControlNet 约束构图与姿势 —— 比只堆提示词可控得多。
+  强度 `--control-strength`（默认 **0.8**）、退出时机 `--control-end`（默认 **0.7**）、
+  换模型 `--control-model`。
+- **新增 `upscale` 模板（`purpose=upscale`，`prompt_required=false`）**：放大是**后处理**，
+  不经过采样器、也不需要提示词，所以模板体系新增这一类；`prompt_required=false` 时
+  跳过采样器 / 提示词校验与注入，**只要求 `save` 锚点**。
+- **指令**：`/放大 --scale N` 用 4x 模型放大再缩回目标倍数（默认 2、最大 4）；
+  出图时加 `--upscale N` 会在出图后自动放大一遍（复用 `generate()` 的 upscale 用途）。
+- **功能开关**：`features.control` / `features.upscale`（默认关）—— 两者都要额外权重，
+  没下过的机器开着也只会报错，所以默认不占位。
+- **控制用途自动偏好 SDXL 系底模**，并跳过 `inpaint` / `instruct` / `inkBase` 等**通道不匹配**
+  的变体（ControlNet 与底模通道数必须一致，否则提交就被服务端拒）。
+- 行内参数别名补 `control` / `control-model` / `control-strength` / `control-end` / `scale` / `upscale`。
+- **权重**：`control-depth-sdxl-small-fp16`（305MB）、`depth_anything_v2_vits`（95MB）、
+  `4x-UltraSharp`（64MB）均已校验并安装。
+- 真机实测：`/放大` 512x768 → **1024x1536**；`--control depth` 1024x1024 用时 **15.1 秒**。
+- 测试：Python 655 / 前端 51 / API 面 55 全绿。
+
+**v0.24.0** — 配置面板全量 i18n
+
+- **185 条面板文案全部键化**：字段标签、卡片标题、说明段、下拉选项、占位符、标签页标题
+  都走 i18n 键；中英目录各 **348 键**，切换语言时整页生效
+  （「中文」这个选项名保留原文 —— 语言选择本身不该跟着翻译跑）。
+- `applyI18n` 新增 `data-i18n-html`（说明里含 `<code>` 等内联标签时走 `innerHTML`）
+  与 `data-i18n-placeholder`（占位符）两类，补上此前只能翻纯文本的盲区。
+- **新增 3 条防回归断言**：结构性元素不得残留硬编码中文；`data-i18n` 用到的键
+  必须中英目录都有；两份语言目录的键集合必须一致（不会只翻一半）。
+- 过程记录：键化脚本第一版**边改边用旧偏移量**，把 `index.html` 改坏；已从 git 恢复并
+  改为**倒序插入**，重跑后 key 映射与第一版完全一致（可复现）。
+- 测试：Python 637 / 前端 51 / API 面 55 全绿。
+
+**v0.23.0** — 工程化收尾 + 巡检体检
+
+- **CI**（`.github/workflows/ci.yml`）：Python 3.10 / 3.11 / 3.12 三档跑逻辑与前端测试、
+  上架形态检查（根文件齐全 + 模板 JSON 可解析），并**克隆 AstrBot 主线核对 API 面** ——
+  上架要求的能力在 CI 里就被盯住，不再靠本地记得跑。
+- **Release**（`.github/workflows/release.yml`）：推 `v*` tag 自动打包源码包并发布 Release。
+- **新增 `diagnostics.py`**：跨机可用的巡检 / 体检纯逻辑。
+  - `inspect_models`：重名重复、疑似错放（VAE、文本编码器、ControlNet、放大模型、
+    GGUF 丢在 `checkpoints`）、从没用过（结合统计），并在同机时按体积列出最大的权重。
+  - `collect_requirements` + `check_requirements`：抽出模板里硬编码的权重与节点类型，
+    与真实清单核对（缺权重记 warn、缺节点记 error）—— 升级后缺节点、模板写着 fp8 的 umt5
+    而本地只有 GGUF，这类问题都能提前发现。
+  - `health_report`：离线、`--cache-none`、显存内存余量、档位与视频时长冲突、模板数量。
+- `/巡检` `/体检` 两条指令 + Pages `/diagnose` + 配置页「状态 → 诊断报告」卡片。
+- **真机修正两处误报**：`*BakedVae*` 是**自带 VAE 的底模**，不该报缺 VAE；
+  `clip_gguf` 与 `text_encoders` 是同一映射，依赖核对改为按**别名组取并集**
+  （`unet_gguf` ≡ `diffusion_models` ≡ `unet`）。
+- README 补 CI 徽章、巡检与体检章节、命令表。
+- 测试：+19 项（Python 637 / 前端 46 / API 面 55）。
+
+**v0.22.0** — 治理三件套：群 / 用户功能白名单、内容过滤、视频独立配额与审计日志
+
+- **按群 / 用户的 feature 白名单**：`permission.parse_feature_rules()` 支持
+  `user` / `group` / `default` 三级规则，功能名可用 `all` / `none`；优先级
+  **user > group > default > 全局 `features` 开关**，管理员在 `admin_bypass` 打开时不受限。
+  `feature_enabled(name, event)` / `enabled_features(event)` 全线透传事件，
+  6 个指令与 `/帮助` 都按当前范围判定。
+- **内容过滤**：`nsfw_filter` / `nsfw_words`（留空用内置 **13 词**）/ `nsfw_negative` /
+  `nsfw_notify`。**用户原话与 LLM 改写后的正向词都过一遍**，命中默认静默
+  （与功能开关行为一致）；指令入口在回「收到」之前就拦下，`generate()` 内再抛
+  `ContentBlockedError` 作为内部保险。
+- **视频独立配额**：`storage` 增加 `daily_video` 桶，`/视频` 与 `/图生视频` 的 check/record
+  传 `video=True`，新增 `video_daily_limit` / `video_cooldown` 与对应文案 ——
+  视频比图片贵得多，和图片共用一份日配额会被一部短片吃光。
+- **审计日志**：`storage` 增加 `audit.jsonl`（JSONL，2000 条上限，可按用户过滤）；
+  在 `generate()` **唯一出口**记账（覆盖指令 / LLM 无指令出图 / 配置页），内容过滤拦截
+  记 `purpose=blocked_nsfw`；新增 `/审计` 指令（管理员，支持 `--user`）与 Pages `/audit` 路由。
+- 配置项 8 个 + 面板控件 8 个 + 帮助文案补 `/审计`。
+- 测试：+20 项（范围规则优先级 / 管理员豁免 / 静默拦截 / 附加负面词 / 视频配额隔离 /
+  审计写入与过滤），Python 618 / 前端 46 / API 面 55 全绿。
+
+**v0.21.1** — 关闭的功能静默忽略
+
+- 用户要求：关闭的功能，插件**不要有任何回复**。原来那句「功能未开启」在群里反而是噪音 ——
+  没开的功能，多数时候别人也不需要看到机器人在解释。
+- 6 个指令入口（`/画图` `/图生图` `/扩图` `/图生视频` `/视频` `/反推`）改为
+  `if not feature_enabled(...): return`，不再发提示。
+- 无指令出图（LLM 工具）：工具开关关闭 **或** 文生图关闭 → 静默 `return`
+  （此前会回「工具未启用」）。
+- `generate()` 内部仍抛 `FeatureDisabledError` 作保险，防止别的入口绕过；
+  删除已无引用的 `_feature_check`，配置 hint、面板文案、README 同步为「静默忽略」。
+- 真机验证：默认配置下 5 个关闭的指令消息数均为 **0**；开着的文生图 **2.6 秒**正常出图。
+- 测试：+4 项改为断言「零输出」（并覆盖 LLM 工具两条静默路径），
+  Python 598 / 前端 46 / API 面 55 全绿。
+
+**v0.21.0** — 生成功能开关，默认只开文生图
+
+- 用户要求：所有生成功能都要有开关，默认只打开文生图。
+- **新增 `features` 配置组（7 个开关）**：`t2i` 默认开；`i2i` / `outpaint` / `inpaint` /
+  `t2v` / `i2v` / `reverse_prompt` 默认关。缺省（老配置没有这组）也按这份默认值走，
+  与配置页显示一致。
+- **拦截点两处**：`generate()` 唯一入口（指令与 LLM 无指令出图都走它）+ 各指令在权限检查后
+  立即判定，避免先回「收到，正在生成…」再报错；未开启时给出可操作提示
+  （告诉用户去「功能开关」打开），**不向 ComfyUI 提交任何任务**。
+- 展示：`/帮助` 末尾列出已开启功能；`/状态` 与状态接口带 `features` 列表；
+  配置页状态面板新增「已开启功能」一行；插件页「高级」新增「生成功能开关」卡片（7 个开关）。
+- `schema` 把 `features` 组放在最前，AstrBot 自带配置页一眼就能看到。
+- 测试：+11 项（缺省默认值、字符串 `false`/`off` 容错、指令拦截且不提交、
+  `generate` 直接拦截、开关打开后恢复、`/帮助` 列表），Python 593 / 前端 46 / API 面 55 全绿。
+
+**v0.20.0** — 配置面板与插件配置同步
+
+- **用户反馈**：面板没跟上插件新增的配置项。根因是这套插件页是「HTML 逐字段硬编码 +
+  `app.js` 的 `FIELDS` 映射」，此前只改了 `FIELDS`、`index.html` 里没有对应控件，
+  导致 **5 项配置在面板上不可见、只能改 JSON**：
+  - `server_free_before_switch`（v0.15.9 就漏了）
+  - `llm_optimize_for_video`（v0.18.0）
+  - `video_machine` / `video_t2v_model` / `video_i2v_model`（v0.17.0）
+- **修复**：`index.html` 补齐 5 个控件（开关 / 下拉 / 文本框）与档位说明文案。
+- **状态面板与 `/状态` 显示机器档位**（判定结果 + 分辨率 / 帧数 / 步数上限）：
+  `get_server_status` 返回 `machine` 段，`app.js` 状态表加一行。
+- **新增防回归测试**：`test_pages_js.js` 断言「`FIELDS` 每项都有 HTML 控件」
+  「HTML 里没有映射不到字段的僵尸控件」「这批新功能必须在面板可见」；
+  `test_logic.py` 断言状态接口与 `/状态` 文案都带档位。
+- README 增「配置面板（插件内置 Pages）」一节。
+- 测试：Python 582 / 前端 46 / API 面 55 全绿。
+
+**v0.19.0** — 低配 / 标配档默认优先挑加速版视频权重
+
+- 背景：挪走 1.3B 后，自动挑选按清单顺序落回「5B 原版」（20 步约 **281 秒**），
+  而同样可用的 Turbo 版只要 **74 秒** —— 低配机器上这个默认不合理。
+- 新增 `SPEED_HINTS`（`turbo` / `lightning` / `distill` / `schnell` / `flash` / `lite` / `fast`）。
+- `_resolve_selection` 在**自动挑**视频模型时：`low` / `mid` 档把名字带加速词的权重排前面
+  并记日志；`high` 档不干预；`video.t2v_model` / `i2v_model` 与 `--model` 的优先级仍最高。
+- README 与 `docs/机器档位与模型.md` 写明该偏好与覆盖方式。
+- 测试：+4 项（`low` 优先 Turbo、`auto`→`low` 同样生效、`high` 不干预、配置锁定压过偏好），
+  Python 579 / 前端 39 / API 面 55 全绿。
+
+**v0.18.1** — Wan safetensors 模板改用 GGUF 文本编码器 + 1.3B 实测
+
+- **问题**：`wan_t2v` / `wan_i2v` 模板硬编码 safetensors 版 umt5（fp8，6.3GB）与
+  `wan_2.1_vae`，低配用户只有 umt5 的 GGUF 量化版（3.4GB），提交时报 `value_not_in_list`。
+- **修复**：两个模板的 `CLIPLoader` → `CLIPLoaderGGUF`
+  （`clip_name` 用 `umt5-xxl-encoder-Q4_K_M.gguf`，`type=wan`）；VAE 用
+  `wan_2.1_vae.safetensors`（0.24GB，已下载并装机）；Wan 2.2 底模可用 `--vae` 覆盖。
+- **实测数据**：Wan 2.1 **1.3B** 在 8G 机器上 20 步 **391 秒**，比 5B 原版（281 秒）
+  **还慢**、画质相当 → 标注不推荐，首选仍是 5B Turbo（4 步 74 秒）。
+- README 推荐表与实测结论同步记录。
+- 测试：+1 项（Wan 模板必须用 GGUF 文本编码器），Python 575 / 前端 39 / API 面 55 全绿。
+
+**v0.18.0** — LLM 参与视频提示词 + `--llm` / `--no-llm` 开关
+
+- 视频提示词和图片**完全不同**（要动作 + 镜头 + 光影，不是英文 tag 堆叠），
+  所以单独做一条链路，而不是复用图片那套。
+- `llm_service` 新增 `VIDEO_PROMPT_SYSTEM` / `VIDEO_PROMPT_USER` 与
+  `optimize_video_prompt()`：强制写清动作、给一个镜头运动、保持用户语言
+  （Wan 原生懂中文）、40~80 字、禁止「静止 / 视频 / 帧」等词；
+  图生视频会额外提示「动作要围绕首帧图」。
+- 视频模型仍由 `video.t2v_model` / `video.i2v_model` 决定，**LLM 只改提示词、不选模型**。
+- **开关**：`llm_settings.optimize_for_video`（默认开）；图片侧沿用 `enable_prompt_optimize`。
+- **行内覆盖**：`--llm` 强制改写 / `--no-llm` 本次不改写（图片与视频都生效）。
+- i18n 两语言同步新增 `llm.video_system` / `llm.video_user`，帮助里补 `--llm` / `--no-llm`；
+  README 增「AI 改写提示词（图片 / 视频两套）」小节与参数说明。
+- 测试：+7 项（视频走专用方法、开关关闭、`--no-llm`、`--llm` 强制、图片链路不串），
+  Python 574 / 前端 39 / API 面 55 全绿。
+
+**v0.17.0** — 视频模型按功能分别配置 + 机器档位
+
+- **新增 `video` 配置段**：
+  - `machine`（`auto` / `low` / `mid` / `high`）：决定分辨率 / 帧数 / 步数上限。
+    `auto` 按显存判定（≤10G → `low`，12~20G → `mid`，≥24G → `high`），
+    内存 <20G 再降一档，探测不到按 `low` 兜底。
+  - `t2v_model` / `i2v_model`：文生视频与图生视频各自指定默认模型（留空 = 自动挑），
+    `--model` 仍优先；配置的模型找不到时会记警告并回退自动挑选。
+- **档位实现**：`MACHINE_PRESETS` + `resolve_machine_tier()` + `_machine()`
+  （探测一次并缓存，读 `/system_stats` 的显存 / 内存总量）；接入点是视频帧数上限
+  （`apply_native_video_defaults`）、步数上限、图生视频的尺寸预算、图片用途的 2 倍像素预算。
+- **文档重构**：README 从 **1309 行瘦身到 144 行**，只留特性 / 快速开始 / 命令 / 配置 /
+  机器档位与推荐模型 / 中文提示词 / 模板表 / 排错 / 最近更新日志；
+  新增 `docs/机器档位与模型.md`（三档硬件标准 + 各档模型清单 + GGUF 目录坑）；
+  旧 README 详细内容归档到 `docs/内部设计.md`，完整更新日志归档到 `docs/CHANGELOG.md`。
+- 测试：+12 项（档位判定 / 降档 / 兜底、档位上限夹帧数与步数、按功能配模型与回退），
+  Python 567 / 前端 39 / API 面 55 全绿。
+
 **v0.16.0** — 支持 LTX-Video 2B（8G 显存最省的一档视频模型）
 
 - **新增 `ltxv_t2v` 模板**：`UnetLoaderGGUF`（LTXV GGUF）+ `CLIPLoaderGGUF(type=ltxv)`
