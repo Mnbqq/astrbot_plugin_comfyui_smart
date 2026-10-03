@@ -349,6 +349,31 @@ node   tests/test_pages_js.js    # 配置页前端
 python3 tests/check_api_surface.py <AstrBot 源码目录>   # 上架 API 面核对
 ```
 
+### 发版
+
+tag 消息沿用 `ComfyUI 智能绘图 vX.Y.Z` + 空行 + 一句话说明的格式：
+
+```bash
+git tag -a v0.29.0 -m "ComfyUI 智能绘图 v0.29.0" -m "一句话说明这一版改了什么"
+git push origin refs/tags/v0.29.0      # ← 一次只推一个 tag
+```
+
+推上去后 `.github/workflows/release.yml` 会打包 `astrbot_plugin_comfyui_smart_<tag>.tar.gz` 并创建 Release。
+推 `main` 只跑 CI，不会自动发版。
+
+> ⚠️ **一次只能推一个 tag**。把多个 tag 塞进同一条 `git push`
+> （`git push origin v0.26.0 v0.27.0 …`）**不会触发任何工作流** —— 这是 GitHub Actions 的已知问题
+> （[actions/runner#3644](https://github.com/actions/runner/issues/3644)），
+> 表现为 tag 明明推上去了、仓库里也有，但既不跑 Release 也不报错，很容易误以为是权限问题。
+>
+> 已经一起推上去的补救办法是**先删再逐个推**（delete 事件不触发工作流，所以删的时候可以一次删多个）：
+>
+> ```bash
+> git push origin --delete refs/tags/v0.26.0 refs/tags/v0.27.0
+> git push origin refs/tags/v0.26.0
+> git push origin refs/tags/v0.27.0
+> ```
+
 ## 许可
 
 MIT
