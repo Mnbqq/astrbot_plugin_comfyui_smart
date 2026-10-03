@@ -64,6 +64,11 @@ OPTIONAL_KEYS = ("positive", "negative", "checkpoint", "lora", "vae")
 MAX_CHECKPOINTS = 60
 MAX_LORAS = 80
 MAX_OTHERS = 40
+# 详细分析里「可疑处」最多保留几条：模型很爱一口气列十条，
+# 聊天窗里刷屏，而且后几条多半是硬凑的。提示词里也写了同一个上限。
+MAX_ANOMALIES = 5
+# 详细分析的三个文字分区（anomalies 是列表，另行处理）
+ANALYSIS_KEYS = ("composition", "lighting", "style")
 
 
 def _to_data_url(ref: str) -> str:
@@ -393,6 +398,7 @@ class LLMService:
         hint: str = "",
         event=None,
         provider_id: str = "",
+        detail: bool = False,
     ) -> dict:
         """看图反推提示词。
 
@@ -401,15 +407,22 @@ class LLMService:
             hint: 用户附加的要求，例如「只要人物特征」。
             event: 可选消息事件。
             provider_id: 指定用哪个 provider 看图（留空则用配置或会话默认）。
+            detail: 详细分析模式（`/反推 --详细`）：除 tag 外再要一份中文分区分析。
 
         Returns:
-            {"positive": str, "negative": str, "summary": str, "raw_ok": bool,
-             "model": str}
+            {"positive": str, "negative": str, "summary": str, "analysis": dict,
+             "raw_ok": bool, "model": str}
+            `analysis` 只在下过详细分析指令时有内容，结构见 `parse_reverse_result`。
 
         Raises:
             RuntimeError: LLM 不可用或调用失败。
         """
-        user = self._t("llm.reverse_user", hint="")
+        if detail:
+            system = self._t("llm.reverse_detail_system") or REVERSE_DETAIL_SYSTEM
+            user = self._t("llm.reverse_detail_user", hint="")
+        else:
+            system = self._t("llm.reverse_system") or REVERSE_SYSTEM
+            user = self._t("llm.reverse_user", hint="")
         if hint.strip():
             user += self._t("llm.reverse_hint", hint=hint.strip())
 
@@ -431,7 +444,7 @@ class LLMService:
             )
 
         text = await self.generate(
-            self._t("llm.reverse_system") or REVERSE_SYSTEM,
+            system,
             user,
             event=event,
             image_urls=image_refs,
@@ -563,8 +576,11 @@ VIDEO_PROMPT_USER = (
 # - **签名/水印**：反推原图右下角写着 `Xxun1003`，不明确禁止的话模型会把它当内容推出来。
 # - **真人照片**：照片被推成 1girl, anime style 之后，拿去出图就变成二次元了。
 # - **编造细节**：看不清的纹样硬猜，重绘出来和原图南辕北辙 —— 宁可少写。
-REVERSE_SYSTEM = (
-    "你是插画提示词反推助手：看图，输出可直接用于 Stable Diffusion 的英文 tag 提示词。\n"
+#
+# v0.30.0 起分成两套：`REVERSE_SYSTEM`（只出 tag）与 `REVERSE_DETAIL_SYSTEM`
+# （tag + 中文分区分析）。**tag 规则与看图规则是同一段常量**（`REVERSE_TAG_RULES`），
+# 两种模式共用 —— 复制一份出来改，迟早会出现「普通模式禁了某件事、详细模式没禁」的漂移。
+REVERSE_TAG_RULES = (
     "【看图】\n"
     "1. 只描述画面里**真实存在**的内容。看不清的纹样、配饰不要猜 —— "
     "编造的 tag 会让重绘结果偏离原图。\n"
@@ -584,11 +600,42 @@ REVERSE_SYSTEM = (
     "6. 只写**与这张图相关**的缺陷词（多人构图写 extra limbs、写实照片写 anime style）；"
     "通用的手部与肢体内脏词插件会自动补齐，不要重复列举。\n"
     "7. 想不出针对性的就留空字符串。\n"
+)
+
+# 一句中文概括：两套模式共用（详细分析在它后面再补一段 analysis）
+REVERSE_SUMMARY_RULE = (
     "【summary】\n"
     "8. 用一句中文概括画面：主体 + 在做什么 + 环境与光线。\n"
-    "【输出】\n"
+)
+
+REVERSE_SYSTEM = (
+    "你是插画提示词反推助手：看图，输出可直接用于 Stable Diffusion 的英文 tag 提示词。\n"
+    + REVERSE_TAG_RULES
+    + REVERSE_SUMMARY_RULE
+    + "【输出】\n"
     "9. 只输出一个 JSON 对象：不要 markdown 代码块、不要说明文字、不要注释。\n"
     '{"positive": "...", "negative": "...", "summary": "..."}'
+)
+
+# 详细分析模式（`/反推 --详细`）：tag 规则与上面**逐字相同**，只是另外要一份中文分区分析。
+# 为什么分区而不是「随便写段分析」：分区是**可核对的** —— 模型没法用一句漂亮话糊过去；
+# 而 anomalies 明确允许空数组，是为了让它能说「没看出问题」，而不是硬编几条凑数。
+REVERSE_DETAIL_SYSTEM = (
+    "你是插画提示词反推与画面分析助手：看图，输出可直接用于 Stable Diffusion 的英文 tag 提示词，"
+    "并附一份中文画面分析（构图 / 光线色彩 / 画风 / 可疑处）。\n"
+    + REVERSE_TAG_RULES
+    + REVERSE_SUMMARY_RULE
+    + "【analysis】\n"
+    "9. 用中文分四块写，每块 1~2 句、不超过 80 字；**只写看得见的**，看不清就写「无法判断」，不要编：\n"
+    "　· composition：画面构成与取景（主体位置、视线引导、前中后景、留白）\n"
+    "　· lighting：光线与色彩（主光方向、冷暖对比、光源类型、整体色调）\n"
+    "　· style：画风与笔触（媒介、完成度、参考风格；**不要断言具体模型或画师**）\n"
+    "　· anomalies：可疑处 —— 结构崩坏（手指、四肢、器物）、镜像或透视漂移、画面上的伪文字与水印；\n"
+    "　　每条一句话，最多 5 条，**没有就留空数组**，不要为了凑数编问题\n"
+    "【输出】\n"
+    "10. 只输出一个 JSON 对象：不要 markdown 代码块、不要说明文字、不要注释。\n"
+    '{"positive": "...", "negative": "...", "summary": "...", '
+    '"analysis": {"composition": "...", "lighting": "...", "style": "...", "anomalies": ["..."]}}'
 )
 
 
@@ -615,6 +662,56 @@ def _load_json_object(text: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def _normalize_anomalies(value) -> list[str]:
+    """把 anomalies 字段整理成字符串列表。
+
+    模型有时给数组、有时给一整段带 `-` / 序号的文本，两种都收；
+    空项一律丢掉（宁可这块不显示，也不要出现一个空的「·」）。
+    """
+    if isinstance(value, list):
+        raw_items = [item for item in value if isinstance(item, str)]
+    elif isinstance(value, str):
+        raw_items = value.splitlines()
+    else:
+        return []
+    items: list[str] = []
+    for item in raw_items:
+        text = re.sub(r"^[\s\-·*•　]*(?:\d+[.、)]\s*)?", "", item).strip()
+        if text:
+            items.append(text)
+    return items
+
+
+def _normalize_analysis(value) -> dict:
+    """规范化 `analysis` 字段（详细分析模式）。
+
+    容错三种写法，都是为了「模型不按格式来也能显示」：
+    - 对象 → 取 composition / lighting / style（字符串）+ anomalies（列表）；
+    - 字符串 → 放进 `text`，调用方原样展示（模型把整段分析写成一段话时）；
+    - 其它 / 缺失 → 空字典（普通模式就是这种，不算错）。
+
+    Args:
+        value: LLM 给的 analysis 字段。
+
+    Returns:
+        规范化后的字典；可能为空。
+    """
+    if isinstance(value, str):
+        text = value.strip()
+        return {"text": text} if text else {}
+    if not isinstance(value, dict):
+        return {}
+    analysis: dict = {}
+    for key in ANALYSIS_KEYS:
+        item = value.get(key)
+        if isinstance(item, str) and item.strip():
+            analysis[key] = item.strip()
+    anomalies = _normalize_anomalies(value.get("anomalies"))
+    if anomalies:
+        analysis["anomalies"] = anomalies[:MAX_ANOMALIES]
+    return analysis
+
+
 def parse_reverse_result(text: str) -> dict:
     """解析反推结果。
 
@@ -622,10 +719,17 @@ def parse_reverse_result(text: str) -> dict:
         text: LLM 原始输出。
 
     Returns:
-        {"positive": str, "negative": str, "summary": str, "raw_ok": bool}；
+        {"positive": str, "negative": str, "summary": str, "analysis": dict,
+         "raw_ok": bool}；
         解析失败时 positive 为空且 raw_ok 为 False。
     """
-    result = {"positive": "", "negative": "", "summary": "", "raw_ok": False}
+    result = {
+        "positive": "",
+        "negative": "",
+        "summary": "",
+        "analysis": {},
+        "raw_ok": False,
+    }
     data = _load_json_object(text)
     if not isinstance(data, dict):
         return result
@@ -634,6 +738,7 @@ def parse_reverse_result(text: str) -> dict:
         value = data.get(key)
         if isinstance(value, str):
             result[key] = value.strip()
+    result["analysis"] = _normalize_analysis(data.get("analysis"))
     return result
 
 

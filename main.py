@@ -59,7 +59,7 @@ from .error_hints import (
 
 PLUGIN_NAME = "astrbot_plugin_comfyui_smart"
 # 与 metadata.yaml 的 version 保持一致（tests/test_logic.py 会校验二者不漂移）
-PLUGIN_VERSION = "0.29.0"
+PLUGIN_VERSION = "0.30.0"
 
 # ControlNet 的深度预处理器权重是「按需下载」的（不在 models/ 下），
 # 探测结果按（后端 + 节点 + 权重名）缓存这么久，避免每次出图都多一次往返。
@@ -199,6 +199,8 @@ PARAM_ALIASES = {
     "denoise": "denoise", "重绘": "denoise",
     "provider": "provider", "模型商": "provider",
     "draw": "draw", "画": "draw",
+    # /反推 --详细：除英文 tag 外再要一份中文分区分析
+    "detail": "detail", "详细": "detail", "分析": "detail",
     "hires-steps": "hires_steps",
     "lora": "lora", "模型": "model", "model": "model",
     "negative": "negative", "负面": "negative",
@@ -278,6 +280,11 @@ _QUOTED_TOKEN_RE = re.compile(
 # 值里天然可能含空格、缺了引号就会被截断的参数。只列这类，
 # 免得把「描述排在开关后面」这种正常写法也报成问题（那会变成狼来了）。
 SPACE_PRONE_KEYS = frozenset({"negative"})
+# 纯粹的开关（只表示「本次这么做」，本身没有取值）：解析时**不许吞掉后面的 token**。
+# `--详细` 尤其明显：用户写 `/反推 --详细 帮我看构图`，若按 `--key value` 取值，
+# 「帮我看构图」会被当成 detail 的值而**从额外要求里消失** —— 又一处静默失效。
+# 只列 detail：`--画` / `--hires` 这类历史行为不动，免得改坏既有用法。
+BOOLEAN_FLAGS = frozenset({"detail"})
 
 
 def _unquote(token: str) -> str:
@@ -347,6 +354,11 @@ def _scan_inline(text: str) -> tuple[str, dict, list[str]]:
         if not quoted and token.startswith("--") and len(token) > 2:
             key = PARAM_ALIASES.get(token[2:].lower())
             if key:
+                if key in BOOLEAN_FLAGS:
+                    # 纯开关：后面的 token 一律留给描述（见 BOOLEAN_FLAGS 注释）
+                    opts[key] = "1"
+                    index += 1
+                    continue
                 nxt = tokens[index + 1] if index + 1 < len(tokens) else None
                 if nxt is None or (not nxt[1] and nxt[0].startswith("--")):
                     # 后面没有值（或紧跟下一个参数）：当成开关，标记为 "1"
@@ -3452,6 +3464,43 @@ class ComfyUISmartPlugin(Star):
         await self._record_generation(uid, event, result)
         yield event.chain_result(self._compose_result_chain(event, uid, result))
 
+    def _reverse_analysis_lines(self, analysis: dict) -> list[str]:
+        """把详细分析渲染成聊天文本。
+
+        缺失的分区**整行不显示**：模型没写光线就不该出现一个空标签 ——
+        空标签既占地方，又会让人以为「模型说这里没问题」。
+        整块都没有时给一句说明，而不是只留一个空标题（用户明明加了 --详细）。
+
+        Args:
+            analysis: `parse_reverse_result()` 归一化后的 analysis 字典。
+
+        Returns:
+            待拼接的文本行（首行是「详细分析」标题）。
+        """
+        lines = [self.t("cmd.reverse.detail_title")]
+        body: list[str] = []
+        # 模型把整段分析写成一整段话时的兜底（没有分区字段）
+        text = str(analysis.get("text") or "").strip()
+        if text:
+            body.append(self.t("cmd.reverse.detail_text", value=text))
+        for key, label in (
+            ("composition", "cmd.reverse.detail.composition"),
+            ("lighting", "cmd.reverse.detail.lighting"),
+            ("style", "cmd.reverse.detail.style"),
+        ):
+            value = str(analysis.get(key) or "").strip()
+            if value:
+                body.append(self.t(label, value=value))
+        anomalies = analysis.get("anomalies") or []
+        if anomalies:
+            body.append(self.t("cmd.reverse.detail.anomalies"))
+            for item in anomalies:
+                body.append(self.t("cmd.reverse.detail.item", value=item))
+        if not body:
+            # 加了 --详细 却什么都没拿到：说清楚，而不是静默给个空标题
+            body.append(self.t("cmd.reverse.detail_empty"))
+        return lines + body
+
     @filter.command("反推", alias={"反推提示词", "识图", "img2prompt"})
     async def cmd_reverse_prompt(self, event: AstrMessageEvent):
         """看一张图，反推出可用的提示词。"""
@@ -3477,6 +3526,8 @@ class ComfyUISmartPlugin(Star):
             return
 
         pid = str(opts.get("provider") or "").strip()
+        # --详细：除英文 tag 外再要一份中文分区分析（构图/光线/画风/可疑处）
+        detail = bool(str(opts.get("detail") or "").strip())
         yield event.plain_result(self.t(
             "cmd.reverse.analyzing",
             model=self.llm.provider_label(pid) if pid else self.t("cmd.draw.vision_current"),
@@ -3484,7 +3535,7 @@ class ComfyUISmartPlugin(Star):
         ))
         try:
             result = await self.llm.reverse_prompt(
-                images, hint=hint, event=event, provider_id=pid
+                images, hint=hint, event=event, provider_id=pid, detail=detail
             )
         except RuntimeError as e:
             logger.warning("反推失败：%s", e)
@@ -3503,6 +3554,11 @@ class ComfyUISmartPlugin(Star):
         lines.append(self.t("cmd.reverse.positive", positive=result["positive"]))
         if result.get("negative"):
             lines.append(self.t("cmd.reverse.negative", negative=result["negative"]))
+
+        if detail:
+            lines.extend(self._reverse_analysis_lines(result.get("analysis") or {}))
+        else:
+            lines.append(self.t("cmd.reverse.detail_hint"))
 
         if not opts.get("draw"):
             lines.append(self.t("cmd.reverse.draw_hint"))

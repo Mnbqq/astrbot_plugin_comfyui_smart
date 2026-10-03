@@ -607,6 +607,16 @@ def main() -> int:
     check("引号包住的不会被当参数吃掉",
           _o.get("ratio") is None and _d == "16:9 只是描述里的引号内容", (_o, repr(_d)))
 
+    # 纯开关不吞后面的 token（v0.30.0 的 --详细）：
+    # `/反推 --详细 帮我看构图` 若按 `--key value` 取值，「帮我看构图」会从额外要求里消失。
+    _d, _o = m.parse_inline_params("--详细 帮我看构图")
+    check("--详细 是纯开关，后面的文字仍留在描述里（不被当成它的值）",
+          _o.get("detail") == "1" and _d == "帮我看构图", (_o, repr(_d)))
+    _d, _o = m.parse_inline_params("--detail")
+    check("--detail 等价写法", _o.get("detail") == "1" and _d == "", (_o, repr(_d)))
+    _d, _o = m.parse_inline_params("--分析 看看光线")
+    check("中文别名 --分析 同样认", _o.get("detail") == "1" and _d == "看看光线", (_o, repr(_d)))
+
     # 截断检测：只提示、不改写（自动吞词同样是一种静默出错）
     check("裸粘含空格的负面词会被识别为截断",
           m.find_space_truncated(f"一个女孩 --negative {_LONG_NEG}") == ["negative"], None)
@@ -1778,6 +1788,33 @@ def main() -> int:
     bad = llm.parse_reverse_result("完全不是 JSON")
     check("非 JSON 不崩且标记失败", bad["raw_ok"] is False and bad["positive"] == "")
 
+    # 详细分析模式（v0.30.0）：analysis 字段的容错解析
+    _det = llm.parse_reverse_result(json.dumps({
+        "positive": "1girl", "negative": "", "summary": "少女",
+        "analysis": {"composition": "主体居中，前景虚化", "lighting": "暖色侧逆光",
+                     "style": "厚涂动漫插画",
+                     "anomalies": ["- 左手手指粘连", "画面右上有伪文字"]},
+    }, ensure_ascii=False))
+    check("解析 analysis 的分区与可疑处",
+          _det["analysis"].get("composition") == "主体居中，前景虚化"
+          and _det["analysis"].get("anomalies") == ["左手手指粘连", "画面右上有伪文字"],
+          _det["analysis"])
+    check("普通模式没有 analysis 字段时留空字典（不算错）",
+          llm.parse_reverse_result('{"positive":"a"}')["analysis"] == {})
+    check("analysis 写成一整段话时放进 text（模型不按分区写也能显示）",
+          llm.parse_reverse_result('{"positive":"a","analysis":"整体偏暖，构图居中"}'
+                                   )["analysis"] == {"text": "整体偏暖，构图居中"})
+    check("anomalies 写成带序号/符号的整段文本也能拆出来",
+          llm.parse_reverse_result('{"positive":"a","analysis":{"anomalies":"1. 手指粘连\\n· 伪文字"}}'
+                                   )["analysis"]["anomalies"] == ["手指粘连", "伪文字"])
+    check("anomalies 是空数组时不显示这一块（不许出现空的「·」）",
+          "anomalies" not in llm.parse_reverse_result(
+              '{"positive":"a","analysis":{"composition":"居中","anomalies":[]}}')["analysis"])
+    check("可疑处超过 5 条会截断（聊天窗里不该刷屏）",
+          len(llm.parse_reverse_result(json.dumps(
+              {"positive": "a", "analysis": {"anomalies": [f"问题{i}" for i in range(9)]}},
+              ensure_ascii=False))["analysis"]["anomalies"]) == llm.MAX_ANOMALIES)
+
     from astrbot.api.event import AstrMessageEvent
     from astrbot.api.message_components import Image as StubImage
     from astrbot.api.message_components import Reply as StubReply
@@ -1823,6 +1860,43 @@ def main() -> int:
     check("图片确实作为 image_urls 传给了 LLM",
           ctx.llm_calls and ctx.llm_calls[-1].get("image_urls") == ["/tmp/pic.png"],
           ctx.llm_calls[-1].get("image_urls") if ctx.llm_calls else None)
+
+    # --详细：除英文 tag 外再给一份中文分区分析，并改用详细分析模板
+    asyncio.run(enable_llm(json.dumps({
+        "positive": "1girl, kimono", "negative": "bad hands", "summary": "和服少女",
+        "analysis": {"composition": "主体居中，前景虚化", "lighting": "暖色侧逆光",
+                     "style": "厚涂动漫插画", "anomalies": ["左手手指粘连"]},
+    }, ensure_ascii=False)))
+    ev_det = AstrMessageEvent(message_str="/反推 --详细", message=[StubImage("/tmp/pic.png")])
+    out_det = asyncio.run(drive(plugin.cmd_reverse_prompt(ev_det)))
+    det_text = "\n".join(x["text"] for x in out_det)
+    check("--详细 用的是详细分析模板（不是普通模板）",
+          ctx.llm_calls[-1].get("system_prompt") == llm.REVERSE_DETAIL_SYSTEM,
+          (ctx.llm_calls[-1].get("system_prompt") or "")[:20])
+    check("--详细 仍然给出正向提示词", "1girl, kimono" in det_text, det_text[:40])
+    check("--详细 输出中文分区分析与可疑处",
+          "📐" in det_text and "主体居中，前景虚化" in det_text and "左手手指粘连" in det_text,
+          det_text[-90:])
+    check("普通模式不含分析块，但提示了怎么拿到它",
+          "📐" not in text_all and "--详细" in text_all, text_all[-60:])
+    check("详细分析的排版与既有文案风格一致（每个分区各占一段）",
+          "📐 详细分析：\n\n　构图：主体居中，前景虚化" in det_text, repr(det_text[-70:]))
+
+    # 开关后面的文字是「额外要求」，不是开关的值
+    ev_det_hint = AstrMessageEvent(message_str="/反推 --详细 帮我重点看光线",
+                                   message=[StubImage("/tmp/pic.png")])
+    asyncio.run(drive(plugin.cmd_reverse_prompt(ev_det_hint)))
+    check("--详细 后面的文字作为额外要求传给模型",
+          "帮我重点看光线" in (ctx.llm_calls[-1].get("prompt") or ""),
+          (ctx.llm_calls[-1].get("prompt") or "")[-30:])
+
+    # 模型没按格式给 analysis：说清楚，而不是只留一个空标题
+    asyncio.run(enable_llm('{"positive":"1girl, kimono","negative":"","summary":"和服少女"}'))
+    out_det_empty = asyncio.run(drive(plugin.cmd_reverse_prompt(AstrMessageEvent(
+        message_str="/反推 --详细", message=[StubImage("/tmp/pic.png")]))))
+    det_empty_text = "\n".join(x["text"] for x in out_det_empty)
+    check("--详细 但模型没给分析时给出说明（不是空标题）",
+          "📐" in det_empty_text and "没给出分析" in det_empty_text, det_empty_text[-50:])
 
     # --画：反推后直接出图，且不再让 LLM 改写提示词
     def fresh_ok_session(pid="rev-1"):
@@ -3762,11 +3836,13 @@ def main() -> int:
     # LLM 提示词：中文文案必须与代码里的常量一致（防止两边漂移）
     check("LLM 系统提示词的中文文案与代码常量一致",
           catalog["zh-CN"]["llm.optimize_system"] == _llm.PROMPT_SYSTEM
-          and catalog["zh-CN"]["llm.reverse_system"] == _llm.REVERSE_SYSTEM,
+          and catalog["zh-CN"]["llm.reverse_system"] == _llm.REVERSE_SYSTEM
+          and catalog["zh-CN"]["llm.reverse_detail_system"] == _llm.REVERSE_DETAIL_SYSTEM,
           (len(catalog["zh-CN"]["llm.optimize_system"]), len(_llm.PROMPT_SYSTEM)))
     check("英文提示词也要求只输出 JSON（换语言不能丢格式约束）",
           "JSON" in catalog["en-US"]["llm.optimize_system"]
-          and "JSON" in catalog["en-US"]["llm.reverse_system"], True)
+          and "JSON" in catalog["en-US"]["llm.reverse_system"]
+          and "JSON" in catalog["en-US"]["llm.reverse_detail_system"], True)
     check("LLM 视频系统提示词的中文文案也与代码常量一致",
           catalog["zh-CN"]["llm.video_system"] == _llm.VIDEO_PROMPT_SYSTEM,
           (len(catalog["zh-CN"]["llm.video_system"]), len(_llm.VIDEO_PROMPT_SYSTEM)))
@@ -3797,6 +3873,27 @@ def main() -> int:
               ("不要重复列举" in _rev) or ("do not repeat them" in _rev), None)
         check(f"[{_loc}] 提示词长度没有失控（超标说明该精简而不是继续堆规则）",
               len(_opt) <= 2600 and len(_rev) <= 2100, (len(_opt), len(_rev)))
+
+        # 详细分析模板（v0.30.0）：分区是这份模板的**产品行为**，同样逐条兜住
+        _det = catalog[_loc]["llm.reverse_detail_system"]
+        check(f"[{_loc}] 反推详细：复用同一份 tag 规则（不许精简时把 tag 规则删掉）",
+              (("15~45" in _det) or ("15-45" in _det)) and "hands on hips" in _det, None)
+        check(f"[{_loc}] 反推详细：四个分区齐全（构图 / 光线 / 画风 / 可疑处）",
+              all(k in _det for k in ("composition", "lighting", "style", "anomalies")), None)
+        check(f"[{_loc}] 反推详细：没有可疑处就留空数组（不许为了凑数编问题）",
+              ("空数组" in _det) or ("EMPTY array" in _det), None)
+        check(f"[{_loc}] 反推详细：不许断言具体模型或画师",
+              ("不要断言具体模型或画师" in _det) or ("do NOT name a specific model" in _det), None)
+        check(f"[{_loc}] 反推详细：看不清要写「无法判断」而不是猜",
+              ("无法判断" in _det) or ("cannot tell" in _det), None)
+        check(f"[{_loc}] 反推详细：要求与普通模式不同的用户指令",
+              "{hint}" in catalog[_loc]["llm.reverse_detail_user"], None)
+        # 详细分析模板比普通反推多一整段 analysis，而英文同义表达天然是中文的 ~2 倍
+        # （实测 zh 1339 / en 2605），所以这份的预算单独给到 2800（普通反推仍是 2100）。
+        # 留这点余量是为了让「往中文里补一条规则」不至于立刻把英文顶爆。
+        _det_limit = 2800
+        check(f"[{_loc}] 反推详细模板也没失控（≤{_det_limit} 字符）",
+              len(_det) <= _det_limit, len(_det))
     check("视频提示词也不再要求堆通用质量词",
           ("写通用质量词" in catalog["zh-CN"]["llm.video_system"])
           or ("generic quality tags" in catalog["en-US"]["llm.video_system"]), None)
