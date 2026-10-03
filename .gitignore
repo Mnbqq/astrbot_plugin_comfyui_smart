@@ -4,3 +4,5 @@ __pycache__/
 .DS_Store
 data/
 *.log
+# 发版时由 .github/scripts/release_notes.py 生成的 Release 正文（本地试跑会留下）
+release_body.md
