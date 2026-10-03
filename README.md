@@ -374,6 +374,21 @@ git push origin refs/tags/v0.29.0      # ← 一次只推一个 tag
 > git push origin refs/tags/v0.27.0
 > ```
 
+#### 重建已有 Release 的正文
+
+Release 正文由 `docs/CHANGELOG.md` 里对应那一节生成（见 `.github/scripts/release_notes.py`）。
+如果某个 Release 是在这套流程之前发的，正文只会有一行 compare 链接。
+
+**重推 tag 是没用的** —— tag 推送用的是「该 tag 提交里」的 workflow，旧 tag 里那份
+`release.yml` 还是老的（已实测确认：重推 v0.25.0 后正文一个字都没变）。
+正确做法是手动触发：
+
+**Actions → Release → Run workflow** → `tag` 填版本号（如 `v0.25.0`）→ Run。
+它会检出 `main`、用最新的脚本与 CHANGELOG 生成正文，并按该 tag 的内容重打源码包；
+**同名的 Release 会原地更新**，不会重复创建。
+
+触发页面：https://github.com/Mnbqq/astrbot_plugin_comfyui_smart/actions/workflows/release.yml
+
 ## 许可
 
 MIT
