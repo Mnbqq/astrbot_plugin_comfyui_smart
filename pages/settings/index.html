@@ -243,6 +243,14 @@
             <label class="switch-wrapper"><input type="checkbox" id="draw_quality_tags" class="ios-switch" /></label>
           </div>
           <div class="form-group full-width">
+            <label data-i18n="ui.label.060" for="draw_quality_words_by">质量词由谁写</label>
+            <select id="draw_quality_words_by" class="input-modern">
+              <option data-i18n="ui.opt.014" value="plugin">plugin —— 插件按底模架构自动补（默认）</option>
+              <option data-i18n="ui.opt.015" value="llm">llm —— 同时允许 AI 自己写 2~4 个画面相关的质量词</option>
+            </select>
+            <p data-i18n-html="ui.text.058" class="field-hint">选 <code>llm</code> 时插件补的通用词仍会合并，重复的自动去掉；想完全交给 AI 写，请把上面的「按架构自动补质量词」关掉。</p>
+          </div>
+          <div class="form-group full-width">
             <label data-i18n="ui.label.024" for="draw_negative_mode">负面提示词策略</label>
             <select id="draw_negative_mode" class="input-modern">
               <option data-i18n="ui.opt.004" value="merge">merge —— 合并全部（默认词 + 手部规避词 + 架构词 + LLM 词，最稳）</option>

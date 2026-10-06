@@ -62,6 +62,8 @@ const FIELDS = [
   { id: 'draw_cfg', path: ['draw_settings', 'default_cfg'], kind: 'float' },
   { id: 'draw_sampler', path: ['draw_settings', 'default_sampler'], kind: 'string' },
   { id: 'draw_quality_tags', path: ['draw_settings', 'add_quality_tags'], kind: 'bool' },
+  { id: 'draw_quality_words_by', path: ['draw_settings', 'quality_words_by'], kind: 'select',
+    options: ['plugin', 'llm'] },
   { id: 'draw_negative_mode', path: ['draw_settings', 'negative_mode'], kind: 'select',
     options: ['merge', 'guard_only', 'custom_only', 'raw'] },
   { id: 'draw_force_vae', path: ['draw_settings', 'force_vae'], kind: 'string' },

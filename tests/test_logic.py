@@ -1225,7 +1225,7 @@ def main() -> int:
                 return kw["json"]["prompt"]
         return {}
 
-    async def fake_opt(user_desc, catalog, defaults=None, event=None):
+    async def fake_opt(user_desc, catalog, defaults=None, event=None, **kw):
         # 故意返回一个很短、缺少手部规避词的负面词
         return {"positive": "1girl, standing", "negative": "blurry", "checkpoint": "",
                 "lora": "", "lora_strength": 1.0, "vae": "", "width": 0, "height": 0,
@@ -1247,6 +1247,21 @@ def main() -> int:
           "blurry" in neg_text and "bad hands" in neg_text and "extra fingers" in neg_text,
           neg_text[:80])
     check("默认负面词被保留", "lowres" in neg_text, neg_text[:40])
+
+    # 质量词由谁写（v0.32.0）：切到 llm 后，模型自己写的与插件按架构补的自动去重
+    async def fake_opt_with_quality(user_desc, catalog, defaults=None, event=None, **kw):
+        return {"positive": "masterpiece, 1girl, film grain", "negative": "", "checkpoint": "",
+                "lora": "", "lora_strength": 1.0, "vae": "", "width": 0, "height": 0,
+                "prompt_style": "tags", "raw_ok": True}
+
+    plugin.llm.optimize_prompt = fake_opt_with_quality
+    plugin.config["draw_settings"] = {"default_negative": "lowres", "add_quality_tags": True,
+                                      "quality_words_by": "llm"}
+    q_pos = capture_graph("一个少女")["2"]["inputs"]["text"]
+    check("模型写的质量词与架构补的自动去重（masterpiece 只出现一次）",
+          q_pos.count("masterpiece") == 1 and "film grain" in q_pos and "best quality" in q_pos,
+          q_pos[:70])
+    plugin.llm.optimize_prompt = fake_opt      # 复原：后面几段还依赖它的负面词
 
     # custom_only：只用你自己的词，不追加任何内容，也不采纳 LLM 的
     plugin.config["draw_settings"] = {"default_negative": "我的负面词A",
@@ -1287,7 +1302,7 @@ def main() -> int:
 
     # LLM 给的尺寸只当比例意图：SD1.5 模型不能被拉回 1024 档
     async def make_opt(w, h):
-        async def _opt(user_desc, catalog, defaults=None, event=None):
+        async def _opt(user_desc, catalog, defaults=None, event=None, **kw):
             return {"positive": "1girl", "negative": "", "checkpoint": "", "lora": "",
                     "lora_strength": 1.0, "vae": "", "width": w, "height": h, "raw_ok": True}
         return _opt
@@ -1351,7 +1366,7 @@ def main() -> int:
         plugin.comfy._session = sess
         plugin.comfy.invalidate_model_cache()
 
-        async def _opt(user_desc, catalog, defaults=None, event=None):
+        async def _opt(user_desc, catalog, defaults=None, event=None, **kw):
             return {"positive": "A red-haired girl sits on a wooden veranda at dusk.",
                     "negative": "blurry", "checkpoint": "", "lora": "", "lora_strength": 1.0,
                     "vae": "", "width": 0, "height": 0, "prompt_style": style, "raw_ok": True}
@@ -2077,6 +2092,34 @@ def main() -> int:
           ctx.llm_calls[-1].get("chat_provider_id") if ctx.llm_calls else None)
     check("结果里带上看图模型，便于排查",
           "qwen-vl-max" in str(res_vision.get("model")), res_vision.get("model"))
+
+    # 质量修饰词（七段的最后一段）由谁写（v0.32.0）：同一套系统提示词，靠用户消息那一行切换
+    svc_q = llm.LLMService(ctx, {"llm_settings": {"provider": "vision-model"}})
+    ctx.llm_calls = []
+    asyncio.run(svc_q.optimize_prompt("一个少女", {"checkpoints": ["a.safetensors"]}))
+    _p_plugin = ctx.llm_calls[-1].get("prompt") or ""
+    check("默认（plugin）在用户消息里写明「质量词不需要你写」",
+          "【质量词】" in _p_plugin and "不需要你写" in _p_plugin, _p_plugin[-40:])
+
+    ctx.llm_calls = []
+    asyncio.run(svc_q.optimize_prompt("一个少女", {"checkpoints": ["a.safetensors"]},
+                                      quality_words_by="llm"))
+    _p_llm = ctx.llm_calls[-1].get("prompt") or ""
+    check("切到 llm 时同一行改成「请你写 2~4 个」",
+          "【质量词】" in _p_llm and "请你写" in _p_llm, _p_llm[-40:])
+    check("两种模式共用同一套系统提示词（不复制第二份模板）",
+          ctx.llm_calls[-1].get("system_prompt") == llm.PROMPT_SYSTEM, None)
+
+    ctx.llm_calls = []
+    asyncio.run(svc_q.optimize_prompt("一个少女", {"checkpoints": ["a.safetensors"]},
+                                      quality_words_by="乱填"))
+    check("非法取值退回 plugin（老行为，不会静默变成另一套）",
+          "不需要你写" in (ctx.llm_calls[-1].get("prompt") or ""), None)
+    check("normalize_quality_words_by 归一化（大小写容错、认不出按 plugin）",
+          llm.normalize_quality_words_by("LLM") == "llm"
+          and llm.normalize_quality_words_by(" llm ") == "llm"
+          and llm.normalize_quality_words_by("") == "plugin"
+          and llm.normalize_quality_words_by("plugin") == "plugin", None)
 
     # 配置里的 vision_provider 生效（无需行内指定）
     # LLMService 接收的是完整插件配置（不是 llm_settings 子字典）
@@ -3954,7 +3997,8 @@ def main() -> int:
         check(f"[{_loc}] 生图：要求不新增用户没提到的内容（防脑补）",
               ("不要新增" in _opt) or ("Do NOT invent" in _opt), None)
         check(f"[{_loc}] 生图：禁止重复插件按架构自动补的通用质量词",
-              ("写通用质量词" in _opt) or ("Do NOT emit generic quality tags" in _opt), None)
+              ("写通用质量词" in _opt)
+              or ("do not emit generic quality tags" in _opt.lower()), None)
         check(f"[{_loc}] 生图：给了 tag 数量区间（太多会稀释权重）",
               ("15~30" in _opt) or ("15-30" in _opt), None)
         check(f"[{_loc}] 生图：要求模型名从清单原样复制",
@@ -3968,6 +4012,20 @@ def main() -> int:
         check(f"[{_loc}] 生图：natural 时明确禁止堆 tag / ((加权)) / 质量词",
               ("堆逗号 tag" in _opt and "((强调))" in _opt)
               or ("pile up comma tags" in _opt and "((emphasis))" in _opt), None)
+        # 结构模板（v0.32.0）：七段覆盖 + 细节特征独立成维 + natural 按七段顺序
+        check(f"[{_loc}] 生图：七段都要覆盖，且「细节特征（材质/纹理/颜色）」独立成一维",
+              ("七段" in _opt and "细节特征" in _opt)
+              or ("seven slots" in _opt and "detail (material" in _opt), None)
+        check(f"[{_loc}] 生图：质量词这一段由用户消息里的【质量词】那一行决定（开关在插件侧）",
+              ("【质量词】" in _opt) or ("[Quality words] line" in _opt), None)
+        check(f"[{_loc}] 生图：natural 明确按七段顺序写句子",
+              ("主体 → 场景与环境 → 动作与状态 → 细节特征 → 光照与氛围 → 风格媒介" in _opt)
+              or ("subject → setting and environment → action and state → detail → "
+                  "lighting and mood → style and medium" in _opt), None)
+        check(f"[{_loc}] 生图：用户消息带质量词占位符，且两套规则文案都在",
+              "{quality_rule}" in catalog[_loc]["llm.optimize_user"]
+              and catalog[_loc]["llm.quality_rule_plugin"]
+              and catalog[_loc]["llm.quality_rule_llm"], None)
         check(f"[{_loc}] 反推：必须忽略签名 / 水印 / 画面文字",
               ("签名" in _rev and "水印" in _rev)
               or ("signature" in _rev.lower() and "watermark" in _rev.lower()), None)

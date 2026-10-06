@@ -282,6 +282,16 @@
         "hint": "开启后 SD1.5/Pony 系模型的正向提示词会自动带上质量词（SDXL/Flux 不加，加了反而可能变差）。",
         "default": true
       },
+      "quality_words_by": {
+        "description": "质量词由谁写",
+        "type": "string",
+        "options": [
+          "plugin",
+          "llm"
+        ],
+        "hint": "plugin=插件按底模架构自动补（默认，SD1.5 补 masterpiece、Pony 补 score_9、Flux 不补）；llm=同时允许 AI 在提示词里自己写 2~4 个与画面相关的质量词（插件补的通用词仍会合并，重复的自动去掉）。想完全交给 AI 写，就把上面的「按架构自动补质量词」关掉。",
+        "default": "plugin"
+      },
       "negative_mode": {
         "description": "负面提示词策略",
         "type": "string",

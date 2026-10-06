@@ -33,14 +33,19 @@ PROMPT_SYSTEM = (
     "只有明显留白处才补必要信息（画幅、光线、构图），且要克制。\n"
     "2. 英文逗号分隔、全小写，不要句子、不要解释、不要编号。\n"
     "3. 15~30 个 tag。太少说不清画面，太多会稀释每个词的权重。\n"
-    "4. 顺序（越靠前影响越大）：主体数量与类型（1girl, solo / 2girls / no humans / landscape）"
-    "→ 外貌（发色发型、瞳色、表情、视线）→ 服装与配饰 → 动作与手部状态 → 视角与构图 "
-    "→ 场景背景 → 光线氛围 → 画风媒介。\n"
+    "4. **七段都要尽量覆盖**：主体（数量与类型）／场景与环境／动作与状态／细节特征／光照氛围／"
+    "风格媒介／质量修饰词（见第 7 条）。但**只写画面里真有的**，写不出就跳过 —— "
+    "不要为了凑满七段编内容（第 1 条）。顺序（越靠前权重越大）：主体数量与类型"
+    "（1girl, solo / 2girls / no humans / landscape）→ 外貌（发色发型、瞳色、表情、视线）"
+    "→ 服装与配饰 → 细节特征（材质、纹理、颜色）→ 动作与手部状态 → 视角与构图 → 场景背景 "
+    "→ 光线氛围 → 画风媒介。\n"
     "5. 手部要写出**具体动作**（hands on hips、holding a cup、arms crossed、"
     "hand on own cheek）—— 让人有明确的手可画，比事后堆负面词有效得多。\n"
     "6. 中文专有名词用通行的 Danbooru 写法：初音未来 → hatsune miku、水墨 → ink painting。\n"
-    "7. **不要**写通用质量词（masterpiece、best quality、8k、ultra detailed、highres）—— "
-    "插件会按底模架构自动补，你写了也是重复。\n"
+    "7. **质量修饰词**这一段由谁写，看用户消息里【质量词】那一行：没让你写就**不要**写通用质量词"
+    "（masterpiece、best quality、8k、ultra detailed、highres）—— 插件会按底模架构自动补，"
+    "你写了也是重复；让你写就只写 2~4 个与本次画面相关的（例如 film grain、soft bokeh），"
+    "不要堆一长串清单。\n"
     "8. 不要用 (word:1.2) 权重语法，也不要把负面词写进 positive。\n"
     "【负面词】\n"
     "9. negative 只写**与这次描述相关**的缺陷词；通用的手部与肢体内脏词插件会自动补齐，"
@@ -57,8 +62,9 @@ PROMPT_SYSTEM = (
     "【输出风格】\n"
     "14. 看**你选中的那个 checkpoint** 属于哪一类，决定 positive 怎么写，并如实填 prompt_style：\n"
     "　· 名字里有 qwen-image 的底模（Qwen-Image 一类，文本编码器是 LLM）→ prompt_style 填 "
-    "\"natural\"，positive 写成**通顺的英文句子**（1~3 句、40~80 词），把主体、动作、环境、"
-    "光线、风格写进句子里；**不要**堆逗号 tag，不要写 ((强调))，不要写 masterpiece / 8k 这类质量词。\n"
+    "\"natural\"，positive 写成**通顺的英文句子**（1~3 句、40~80 词），按这个顺序把七段写进句子："
+    "主体 → 场景与环境 → 动作与状态 → 细节特征 → 光照与氛围 → 风格媒介（质量词见第 7 条）；"
+    "**不要**堆逗号 tag，不要写 ((强调))。\n"
     "　· 其余底模（SD1.5 / SDXL / Pony / Flux 等）→ prompt_style 填 \"tags\"，"
     "positive 按上面第 2~4 条写英文 tag。\n"
     "【输出】\n"
@@ -75,6 +81,24 @@ _PROMPT_STYLE_ALIASES = frozenset({
     "natural", "natural language", "sentence", "sentences", "prose",
     "自然语言", "自然语言句子", "句子",
 })
+# 质量修饰词（七段的最后一段）由谁写：plugin = 插件按架构补（默认）；llm = 也允许模型自己写
+QUALITY_WORDS_BY_PLUGIN = "plugin"
+QUALITY_WORDS_BY_LLM = "llm"
+
+
+def normalize_quality_words_by(value) -> str:
+    """把配置值归一成 plugin / llm。
+
+    认不出来一律按 `plugin`（老行为）：那套是「插件按架构补」，就算配置写错也照旧出图。
+
+    Args:
+        value: 配置里的 `draw_settings.quality_words_by`。
+
+    Returns:
+        `QUALITY_WORDS_BY_PLUGIN` 或 `QUALITY_WORDS_BY_LLM`。
+    """
+    text = str(value or "").strip().lower()
+    return QUALITY_WORDS_BY_LLM if text == QUALITY_WORDS_BY_LLM else QUALITY_WORDS_BY_PLUGIN
 MAX_CHECKPOINTS = 60
 MAX_LORAS = 80
 MAX_OTHERS = 40
@@ -527,6 +551,7 @@ class LLMService:
         catalog: dict[str, list[str]],
         defaults: dict | None = None,
         *,
+        quality_words_by: str = QUALITY_WORDS_BY_PLUGIN,
         event=None,
     ) -> dict:
         """把中文描述转成提示词并选型。
@@ -535,22 +560,29 @@ class LLMService:
             user_desc: 用户的中文描述。
             catalog: 真实模型清单 {文件夹: [文件名...]}。
             defaults: 默认参数（负面词/宽高），用于填充缺省。
+            quality_words_by: 质量修饰词（七段的最后一段）由谁写；见
+                `normalize_quality_words_by()`。
             event: 可选消息事件。
 
         Returns:
             规范化后的结果字典，含 positive / negative / checkpoint / lora /
-            lora_strength / vae / width / height，以及 raw_ok 标记解析是否成功。
+            lora_strength / vae / width / height / prompt_style，
+            以及 raw_ok 标记解析是否成功。
 
         Raises:
             RuntimeError: LLM 不可用或调用失败。
         """
         defaults = defaults or {}
         catalog_text = self.build_catalog(catalog)
+        rule_key = ("llm.quality_rule_llm"
+                    if normalize_quality_words_by(quality_words_by) == QUALITY_WORDS_BY_LLM
+                    else "llm.quality_rule_plugin")
         user = self._t(
             "llm.optimize_user",
             desc=user_desc,
             negative=defaults.get("negative") or "（无）",
             catalog=catalog_text,
+            quality_rule=self._t(rule_key),
         )
         system = self._t("llm.optimize_system") or PROMPT_SYSTEM
         text = await self.generate(system, user, event=event)
