@@ -47,6 +47,7 @@ from .workflow_templates import (
     guess_arch,
     load_templates,
     looks_like_natural_language_encoder,
+    matched_arch_hint,
     pick_template,
 )
 from .error_hints import (
@@ -1916,6 +1917,9 @@ class ComfyUISmartPlugin(Star):
         # negative 决定（Flux 那种 CFG=1 的才关），跟提示词写成句子还是 tag 无关。
         prompt_style = str(opt.get("prompt_style") or "").strip() or PROMPT_STYLE_TAGS
         natural_style = prompt_style == PROMPT_STYLE_NATURAL
+        clip_arch = matched_arch_hint(
+            selection["model"], str(draw_conf.get("arch_override") or "").strip().lower()
+        )
         if not natural_style and looks_like_natural_language_encoder(selection["model"]):
             # 交叉校验：底模像是自然语言编码器，这次却给了 tag —— 不静默，写进结果说明
             logger.warning(
@@ -1923,6 +1927,16 @@ class ComfyUISmartPlugin(Star):
                 "（prompt_style=%s）", selection["model"], prompt_style,
             )
             llm_note += self.t("result.natural_hint")
+        elif natural_style and clip_arch:
+            # 反方向：模型自称 natural，但这个名字**明确命中**某个 CLIP 系家族
+            # （`matched_arch_hint` 不套兜底，所以「谁都不认识的新底模」不会走到这里），
+            # 那多半是模型没按规则走。插件重写不了它写出来的句子，所以只提示、不硬改 ——
+            # 把 masterpiece 塞进散文里只会让问题更难看出来。
+            logger.warning(
+                "底模 %s 命中 %s 架构（CLIP 系），模型却把提示词写成了自然语言",
+                selection["model"], clip_arch,
+            )
+            llm_note += self.t("result.clip_style_hint", model=selection["model"])
 
         # 正向：按架构补质量词（SD1.5 系模型不加质量词出图会明显发糊）
         if (not natural_style and bool(draw_conf.get("add_quality_tags", True))

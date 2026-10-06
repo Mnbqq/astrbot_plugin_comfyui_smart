@@ -1384,6 +1384,25 @@ def main() -> int:
     _, ok_result = capture_style("一个少女", "tags", model="3Guofeng3_v34.safetensors")
     check("普通底模不会误报这条提示", not ok_result["llm_note"], ok_result["llm_note"])
 
+    # 反方向：模型自称 natural，但底模名字**明确命中** CLIP 系家族 → 提示，且不硬塞质量词
+    m_graph, m_result = capture_style("一个少女", "natural", model="3Guofeng3_v34.safetensors")
+    check("模型乱填 natural（SD1.5 系底模）时给出提示",
+          "⚠️" in m_result["llm_note"], m_result["llm_note"])
+    check("乱填 natural 时也不把 masterpiece 塞进散文里（那是更难排查的混合体）",
+          not m_graph["2"]["inputs"]["text"].startswith("masterpiece"),
+          m_graph["2"]["inputs"]["text"][:45])
+
+    _, u_result = capture_style("一个少女", "natural", model="some-new-model_v1.safetensors")
+    check("名字谁都不认识时按模型说的走，不误报（可能是新出的 LLM 编码器）",
+          not u_result["llm_note"], u_result["llm_note"])
+    check("matched_arch_hint 不套兜底：认识的返回架构、不认识的返回空",
+          wt.matched_arch_hint("juggernautXL_v9.safetensors") == "sdxl"
+          and wt.matched_arch_hint("3Guofeng3_v34.safetensors") == "sd15"
+          and wt.matched_arch_hint("some-new-model_v1.safetensors") == ""
+          and wt.guess_arch("some-new-model_v1.safetensors") == wt.DEFAULT_ARCH,
+          (wt.matched_arch_hint("juggernautXL_v9.safetensors"),
+           wt.matched_arch_hint("some-new-model_v1.safetensors")))
+
     print("\n=== 提交前的本地预检（服务端不给原因时的兜底）===")
     # V2 与 V3 两种输入描述都要能读出下拉选项
     check("V2 下拉选项", api._combo_options([["euler", "dpmpp_2m"], {"tooltip": "t"}])

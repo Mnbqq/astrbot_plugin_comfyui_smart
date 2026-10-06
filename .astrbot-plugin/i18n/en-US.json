@@ -132,6 +132,7 @@
   "queue.waiting": "⏳ {ahead} task(s) ahead, queued (concurrency limit {max})…",
   "queue.waiting_self": "⏳ You already have one running; queued (concurrency limit {max})…",
   "result.backend": "\n🖥 Backend: {name}",
+  "result.clip_style_hint": "(⚠️ the model wrote the prompt as prose, but {model} is a CLIP-era checkpoint where English tags work better; if the result disappoints, send the description again or add --no-llm to use your own wording)",
   "result.hires_fixed": "\n🔍 Hires Fix: {width}x{height}",
   "result.hires_scale": "\n🔍 Hires Fix: ×{scale}",
   "result.i2i": "\n🖼 Img2img: denoise {denoise}",

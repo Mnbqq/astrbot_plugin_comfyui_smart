@@ -132,6 +132,7 @@
   "queue.waiting": "⏳ 前面还有 {ahead} 个任务，排队中（同时出图上限 {max}）…",
   "queue.waiting_self": "⏳ 你已有一张在出，本次排队等待（同时出图上限 {max}）…",
   "result.backend": "\n🖥 后端：{name}",
+  "result.clip_style_hint": "（⚠️ 模型这次把提示词写成了自然语言，但底模 {model} 是 CLIP 系、吃英文 tag 更准；如出图不理想，把描述原样再来一次或加 --no-llm 用自己的话）",
   "result.hires_fixed": "\n🔍 Hires Fix：{width}x{height}",
   "result.hires_scale": "\n🔍 Hires Fix：×{scale}",
   "result.i2i": "\n🖼 图生图：重绘幅度 {denoise}",

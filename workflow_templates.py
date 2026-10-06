@@ -736,6 +736,29 @@ def profile_pixels(arch: str) -> int:
     return int(arch_profile(arch).get("pixels") or 0)
 
 
+def matched_arch_hint(model_name: str, override: str = "") -> str:
+    """按模型名**命中**的架构 key；谁都没命中时返回空串。
+
+    与 `guess_arch()` 的区别是**不套 `DEFAULT_ARCH` 兜底**：调用方需要分辨
+    「这个名字明确属于某个已知家族」与「谁都不认识、只能按 sd15 兜着」——
+    后者很可能是新出的底模（例如 LLM 文本编码器那一类），不能当成 CLIP 系处理。
+
+    Args:
+        model_name: 模型文件名，可含子目录。
+        override: 配置里指定的架构；非空且合法时直接采用。
+
+    Returns:
+        架构 key；没命中返回空串。
+    """
+    if override and override in ARCH_PROFILES:
+        return override
+    lowered = (model_name or "").lower()
+    for keywords, arch in _ARCH_HINTS:
+        if any(k in lowered for k in keywords):
+            return arch
+    return ""
+
+
 def guess_arch(model_name: str, override: str = "") -> str:
     """按模型文件名猜测架构。
 
@@ -746,13 +769,7 @@ def guess_arch(model_name: str, override: str = "") -> str:
     Returns:
         架构 key；未识别时返回 DEFAULT_ARCH。
     """
-    if override and override in ARCH_PROFILES:
-        return override
-    lowered = (model_name or "").lower()
-    for keywords, arch in _ARCH_HINTS:
-        if any(k in lowered for k in keywords):
-            return arch
-    return DEFAULT_ARCH
+    return matched_arch_hint(model_name, override) or DEFAULT_ARCH
 
 
 def arch_profile(arch: str) -> dict:
