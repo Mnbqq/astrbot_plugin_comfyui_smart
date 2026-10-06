@@ -54,13 +54,27 @@ PROMPT_SYSTEM = (
     "12. lora 只在名字与用户描述的主题或画风**明确相关**时才填，否则留空字符串；"
     "lora_strength 一般 0.6~0.9，不确定填 0.8。\n"
     "13. vae 默认留空字符串。\n"
+    "【输出风格】\n"
+    "14. 看**你选中的那个 checkpoint** 属于哪一类，决定 positive 怎么写，并如实填 prompt_style：\n"
+    "　· 名字里有 qwen-image 的底模（Qwen-Image 一类，文本编码器是 LLM）→ prompt_style 填 "
+    "\"natural\"，positive 写成**通顺的英文句子**（1~3 句、40~80 词），把主体、动作、环境、"
+    "光线、风格写进句子里；**不要**堆逗号 tag，不要写 ((强调))，不要写 masterpiece / 8k 这类质量词。\n"
+    "　· 其余底模（SD1.5 / SDXL / Pony / Flux 等）→ prompt_style 填 \"tags\"，"
+    "positive 按上面第 2~4 条写英文 tag。\n"
     "【输出】\n"
-    "14. 只输出一个 JSON 对象：不要 markdown 代码块、不要前后说明、不要注释、不要多余字段。\n"
+    "15. 只输出一个 JSON 对象：不要 markdown 代码块、不要前后说明、不要注释、不要多余字段。\n"
     '{"positive": "...", "negative": "...", "checkpoint": "...", "lora": "", '
-    '"lora_strength": 0.8, "vae": "", "width": 0, "height": 0}'
+    '"lora_strength": 0.8, "vae": "", "width": 0, "height": 0, "prompt_style": "tags"}'
 )
 # positive/negative 之外的可选覆盖字段：宽高为 0 表示沿用架构默认
 OPTIONAL_KEYS = ("positive", "negative", "checkpoint", "lora", "vae")
+# 提示词输出风格：tags = 逗号 tag（CLIP 系底模）；natural = 通顺句子（LLM 编码器底模）
+PROMPT_STYLE_TAGS = "tags"
+PROMPT_STYLE_NATURAL = "natural"
+_PROMPT_STYLE_ALIASES = frozenset({
+    "natural", "natural language", "sentence", "sentences", "prose",
+    "自然语言", "自然语言句子", "句子",
+})
 MAX_CHECKPOINTS = 60
 MAX_LORAS = 80
 MAX_OTHERS = 40
@@ -749,6 +763,23 @@ def _strip_code_fence(text: str) -> str:
     return text.replace("```", "").strip()
 
 
+def _normalize_prompt_style(value) -> str:
+    """把 `prompt_style` 归一成 tags / natural。
+
+    模型可能写 natural、natural language，也可能写中文或干脆不写。**认不出来一律按 tags** ——
+    这是刻意的保守：猜成 natural 会把「本该堆 tag」的常规底模改成一段散文，
+    而 tag 场景下散文的命中率明显更差；反过来退化成 tag 只是没那么贴合，代价小得多。
+
+    Args:
+        value: LLM 给的 prompt_style 字段。
+
+    Returns:
+        `PROMPT_STYLE_TAGS` 或 `PROMPT_STYLE_NATURAL`。
+    """
+    text = str(value or "").strip().lower().replace("_", " ").replace("-", " ")
+    return PROMPT_STYLE_NATURAL if text in _PROMPT_STYLE_ALIASES else PROMPT_STYLE_TAGS
+
+
 def parse_optimize_result(text: str) -> dict:
     """容错解析 LLM 输出的 JSON。
 
@@ -767,6 +798,7 @@ def parse_optimize_result(text: str) -> dict:
         "vae": "",
         "width": 0,
         "height": 0,
+        "prompt_style": PROMPT_STYLE_TAGS,
         "raw_ok": False,
     }
     data = _load_json_object(text)
@@ -777,6 +809,7 @@ def parse_optimize_result(text: str) -> dict:
     for key in OPTIONAL_KEYS:
         value = data.get(key)
         result[key] = value.strip() if isinstance(value, str) else ""
+    result["prompt_style"] = _normalize_prompt_style(data.get("prompt_style"))
     strength = data.get("lora_strength")
     if isinstance(strength, (int, float)):
         result["lora_strength"] = max(0.0, min(float(strength), 2.0))

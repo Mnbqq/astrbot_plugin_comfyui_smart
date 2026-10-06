@@ -940,6 +940,22 @@ def main() -> int:
     check("代码块容错", r["raw_ok"] and r["positive"] == "a, b" and r["lora_strength"] == 0.8, r)
     check("非 JSON 不崩", llm.parse_optimize_result("这不是 JSON")["raw_ok"] is False)
 
+    # prompt_style（v0.31.0）：模型声明这次输出的是 tag 还是自然语言句子
+    check("没写 prompt_style 时按 tags（老行为，不猜成散文）",
+          llm.parse_optimize_result('{"positive":"a"}')["prompt_style"] == "tags")
+    check("natural 被认出来",
+          llm.parse_optimize_result('{"positive":"a","prompt_style":"natural"}'
+                                    )["prompt_style"] == "natural")
+    check("Natural Language / 自然语言 / 大小写与连字符都容错",
+          all(llm.parse_optimize_result(
+              '{"positive":"a","prompt_style":"%s"}' % v)["prompt_style"] == "natural"
+              for v in ("Natural Language", "natural_language", "NATURAL", "自然语言", "句子")),
+          None)
+    check("乱填的值一律退回 tags（猜错方向代价更大）",
+          all(llm.parse_optimize_result(
+              '{"positive":"a","prompt_style":"%s"}' % v)["prompt_style"] == "tags"
+              for v in ("", "prose?", "tags", "TAGS", "散文")), None)
+
     print("\n=== 插件装配与 Pages ===")
     StarTools.set_root(tempfile.mkdtemp(prefix="smart_root_"))
     ctx = Context()
@@ -1311,6 +1327,62 @@ def main() -> int:
     vgraph = capture_graph("1girl")
     check("强制 VAE 会写入 VAELoader", "my_vae.safetensors" in json.dumps(vgraph, ensure_ascii=False),
           [n.get("class_type") for n in vgraph.values()])
+
+    print("\n=== 自然语言编码器底模（Qwen-Image 一类，v0.31.0）===")
+    check("按模型名识别自然语言编码器（含路径与大小写）",
+          wt.looks_like_natural_language_encoder("qwen-image-fp8.safetensors")
+          and wt.looks_like_natural_language_encoder("Qwen/Qwen-Image-Edit.safetensors")
+          and not wt.looks_like_natural_language_encoder("juggernautXL_v9.safetensors")
+          and not wt.looks_like_natural_language_encoder(""),
+          None)
+
+    def capture_style(desc, style, model="qwen-image-fp8.safetensors"):
+        """指定底模与 prompt_style 跑一次出图，同时拿到提交的图与结果字典。"""
+        sess = api.aiohttp.ClientSession()
+        sess.route("GET", "/models", api.aiohttp.ClientResponse(200, payload=["checkpoints"]))
+        sess.route("GET", "/models/checkpoints", api.aiohttp.ClientResponse(200, payload=[model]))
+        sess.route("POST", "/prompt", api.aiohttp.ClientResponse(200, payload={"prompt_id": "st-1"}))
+        sess.route("GET", "/queue", api.aiohttp.ClientResponse(
+            200, payload={"queue_running": [], "queue_pending": []}))
+        sess.route("GET", "/history/st-1", api.aiohttp.ClientResponse(200, payload={"st-1": {
+            "status": {"status_str": "success", "completed": True},
+            "outputs": {"7": {"images": [{"filename": "s.png", "type": "output"}]}}}}))
+        sess.route("GET", "/view", api.aiohttp.ClientResponse(200, text="PNG"))
+        plugin.comfy._session = sess
+        plugin.comfy.invalidate_model_cache()
+
+        async def _opt(user_desc, catalog, defaults=None, event=None):
+            return {"positive": "A red-haired girl sits on a wooden veranda at dusk.",
+                    "negative": "blurry", "checkpoint": "", "lora": "", "lora_strength": 1.0,
+                    "vae": "", "width": 0, "height": 0, "prompt_style": style, "raw_ok": True}
+
+        plugin.llm.optimize_prompt = _opt
+        plugin.config["draw_settings"] = {"default_negative": "lowres", "add_quality_tags": True}
+        result = asyncio.run(plugin.generate(user_desc="廊台上的红发少女", opts={}))
+        graph = {}
+        for method, path, kw in sess.calls:
+            if method == "POST" and path == "/prompt":
+                graph = kw["json"]["prompt"]
+        return graph, result
+
+    n_graph, n_result = capture_style("廊台上的红发少女", "natural")
+    check("natural：句子原样进正向，不再补 CLIP 时代的质量词",
+          n_graph["2"]["inputs"]["text"].startswith("A red-haired girl sits"), 
+          n_graph["2"]["inputs"]["text"][:45])
+    check("natural：负面词不跟着关（那是 CFG 的事，不是提示词风格的事）",
+          "bad hands" in n_graph["3"]["inputs"]["text"],
+          n_graph["3"]["inputs"]["text"][:45])
+    check("natural：风格与底模一致，不给多余提示", not n_result["llm_note"], n_result["llm_note"])
+
+    t_graph, t_result = capture_style("廊台上的红发少女", "tags")
+    check("tags：质量词照旧补上（老行为不回归）",
+          t_graph["2"]["inputs"]["text"].startswith("masterpiece, best quality"),
+          t_graph["2"]["inputs"]["text"][:45])
+    check("底模是自然语言编码器却给了 tag 时，结果里明确提示（不静默）",
+          "⚠️" in t_result["llm_note"], t_result["llm_note"])
+
+    _, ok_result = capture_style("一个少女", "tags", model="3Guofeng3_v34.safetensors")
+    check("普通底模不会误报这条提示", not ok_result["llm_note"], ok_result["llm_note"])
 
     print("\n=== 提交前的本地预检（服务端不给原因时的兜底）===")
     # V2 与 V3 两种输入描述都要能读出下拉选项
@@ -3852,6 +3924,14 @@ def main() -> int:
     for _loc in ("zh-CN", "en-US"):
         _opt = catalog[_loc]["llm.optimize_system"]
         _rev = catalog[_loc]["llm.reverse_system"]
+        # 长度守卫：**中文是本体**（规则有没有失控看它），英文是它的翻译，同义表达天然长 ~2 倍
+        # （实测 optimize 1.97x、reverse 2.02x、reverse_detail 1.95x），所以英文按
+        # 「不超过中文长度 × 2.2」兜 —— 用同一把尺子量两种语言，只会逼着人砍英文，
+        # 而英文砍掉的往往是必要的约束说明。
+        _cap_opt = 2600 if _loc == "zh-CN" else len(
+            catalog["zh-CN"]["llm.optimize_system"]) * 2.2
+        _cap_rev = 2100 if _loc == "zh-CN" else len(
+            catalog["zh-CN"]["llm.reverse_system"]) * 2.2
         check(f"[{_loc}] 生图：要求不新增用户没提到的内容（防脑补）",
               ("不要新增" in _opt) or ("Do NOT invent" in _opt), None)
         check(f"[{_loc}] 生图：禁止重复插件按架构自动补的通用质量词",
@@ -3862,6 +3942,13 @@ def main() -> int:
               ("原样复制" in _opt) or ("verbatim" in _opt), None)
         check(f"[{_loc}] 生图：不再要求列举通用手部负面词（合并去重后无增益，纯烧 token）",
               "extra fingers" not in _opt and "fewer fingers" not in _opt, None)
+        check(f"[{_loc}] 生图：打底模风格这件事必须绑定「你自己选中的那个底模」",
+              ("你选中的那个 checkpoint" in _opt) or ("checkpoint YOU picked" in _opt), None)
+        check(f"[{_loc}] 生图：用 prompt_style 声明 tag / natural，并覆盖 qwen-image 一类底模",
+              ("prompt_style" in _opt) and ("qwen-image" in _opt) and ("natural" in _opt), None)
+        check(f"[{_loc}] 生图：natural 时明确禁止堆 tag / ((加权)) / 质量词",
+              ("堆逗号 tag" in _opt and "((强调))" in _opt)
+              or ("pile up comma tags" in _opt and "((emphasis))" in _opt), None)
         check(f"[{_loc}] 反推：必须忽略签名 / 水印 / 画面文字",
               ("签名" in _rev and "水印" in _rev)
               or ("signature" in _rev.lower() and "watermark" in _rev.lower()), None)
@@ -3872,7 +3959,7 @@ def main() -> int:
         check(f"[{_loc}] 反推：不重复插件自动补的通用负面词",
               ("不要重复列举" in _rev) or ("do not repeat them" in _rev), None)
         check(f"[{_loc}] 提示词长度没有失控（超标说明该精简而不是继续堆规则）",
-              len(_opt) <= 2600 and len(_rev) <= 2100, (len(_opt), len(_rev)))
+              len(_opt) <= _cap_opt and len(_rev) <= _cap_rev, (len(_opt), len(_rev)))
 
         # 详细分析模板（v0.30.0）：分区是这份模板的**产品行为**，同样逐条兜住
         _det = catalog[_loc]["llm.reverse_detail_system"]
@@ -3888,12 +3975,11 @@ def main() -> int:
               ("无法判断" in _det) or ("cannot tell" in _det), None)
         check(f"[{_loc}] 反推详细：要求与普通模式不同的用户指令",
               "{hint}" in catalog[_loc]["llm.reverse_detail_user"], None)
-        # 详细分析模板比普通反推多一整段 analysis，而英文同义表达天然是中文的 ~2 倍
-        # （实测 zh 1339 / en 2605），所以这份的预算单独给到 2800（普通反推仍是 2100）。
-        # 留这点余量是为了让「往中文里补一条规则」不至于立刻把英文顶爆。
-        _det_limit = 2800
-        check(f"[{_loc}] 反推详细模板也没失控（≤{_det_limit} 字符）",
-              len(_det) <= _det_limit, len(_det))
+        # 详细分析模板同样按上面那条规则给预算（中文绝对、英文 2.2 倍）
+        _cap_det = 2600 if _loc == "zh-CN" else len(
+            catalog["zh-CN"]["llm.reverse_detail_system"]) * 2.2
+        check(f"[{_loc}] 反推详细模板也没失控（≤{int(_cap_det)} 字符）",
+              len(_det) <= _cap_det, len(_det))
     check("视频提示词也不再要求堆通用质量词",
           ("写通用质量词" in catalog["zh-CN"]["llm.video_system"])
           or ("generic quality tags" in catalog["en-US"]["llm.video_system"]), None)

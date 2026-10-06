@@ -32,7 +32,7 @@ from .diagnostics import (
     inspect_models,
 )
 from .i18n import build_translator
-from .llm_service import LLMService
+from .llm_service import LLMService, PROMPT_STYLE_NATURAL, PROMPT_STYLE_TAGS
 from .pages import register_pages_routes
 from .permission import PermissionManager
 from .queue_gate import ConcurrencyGate, QueueTimeout
@@ -46,6 +46,7 @@ from .workflow_templates import (
     arch_profile,
     guess_arch,
     load_templates,
+    looks_like_natural_language_encoder,
     pick_template,
 )
 from .error_hints import (
@@ -59,7 +60,7 @@ from .error_hints import (
 
 PLUGIN_NAME = "astrbot_plugin_comfyui_smart"
 # 与 metadata.yaml 的 version 保持一致（tests/test_logic.py 会校验二者不漂移）
-PLUGIN_VERSION = "0.30.0"
+PLUGIN_VERSION = "0.31.0"
 
 # ControlNet 的深度预处理器权重是「按需下载」的（不在 models/ 下），
 # 探测结果按（后端 + 节点 + 权重名）缓存这么久，避免每次出图都多一次往返。
@@ -1907,13 +1908,30 @@ class ComfyUISmartPlugin(Star):
 
         profile = arch_profile(selection["arch"])
 
+        # 输出风格：由 LLM 按**它自己选中的底模**声明（改写那一刻插件还不知道架构，
+        # 所以这件事只能由选型的那次调用一并决定，见 llm_service 的规则 14）。
+        # natural = 自然语言编码器（Qwen-Image 一类）：再给它补 CLIP 时代的质量词/分数前缀
+        # 只会稀释句子，所以跳过。
+        # **注意负面词不跟着关**：那是「采样器用不用 CFG」的问题，仍由架构档案的
+        # negative 决定（Flux 那种 CFG=1 的才关），跟提示词写成句子还是 tag 无关。
+        prompt_style = str(opt.get("prompt_style") or "").strip() or PROMPT_STYLE_TAGS
+        natural_style = prompt_style == PROMPT_STYLE_NATURAL
+        if not natural_style and looks_like_natural_language_encoder(selection["model"]):
+            # 交叉校验：底模像是自然语言编码器，这次却给了 tag —— 不静默，写进结果说明
+            logger.warning(
+                "底模 %s 是自然语言编码器（如 Qwen-Image），但本次输出的是英文 tag"
+                "（prompt_style=%s）", selection["model"], prompt_style,
+            )
+            llm_note += self.t("result.natural_hint")
+
         # 正向：按架构补质量词（SD1.5 系模型不加质量词出图会明显发糊）
-        if bool(draw_conf.get("add_quality_tags", True)) and profile.get("quality_tags"):
+        if (not natural_style and bool(draw_conf.get("add_quality_tags", True))
+                and profile.get("quality_tags")):
             positive = merge_tags(profile["quality_tags"], positive)
 
         # Pony 系需要分数前缀
         prefix = profile.get("score_prefix")
-        if prefix and "score_" not in positive:
+        if prefix and not natural_style and "score_" not in positive:
             positive = prefix + positive
 
         # 负向词策略（配置项 negative_mode）：

@@ -700,6 +700,30 @@ _ARCH_HINTS: tuple[tuple[tuple[str, ...], str], ...] = (
 )
 
 
+# 「自然语言编码器」底模的模型名线索。
+#
+# 这类底模的文本编码器是 LLM（Qwen-Image 用 Qwen3-VL 一类），吃的是**通顺的句子**，
+# 不是 CLIP 时代的逗号 tag —— 给它堆 tag、补 masterpiece、塞 ((强调)) 都是白费。
+# 这里按**模型名**识别而不是按架构：改写提示词时插件还不知道架构（底模是 LLM 自己选的），
+# 事后才拿这个名字与 LLM 声称的 prompt_style 交叉校验。
+NATURAL_LANGUAGE_HINTS: tuple[str, ...] = ("qwen-image", "qwen_image", "qwenimage")
+
+
+def looks_like_natural_language_encoder(model_name: str) -> bool:
+    """按模型名判断是否属于「自然语言编码器」底模（Qwen-Image 一类）。
+
+    只做名字匹配，**不**代表插件能跑这个底模（Qwen-Image 需要专用工作流模板）。
+
+    Args:
+        model_name: 模型文件名，可含子目录。
+
+    Returns:
+        True 表示这类底模更适合自然语言句子而不是逗号 tag。
+    """
+    lowered = (model_name or "").lower()
+    return any(hint in lowered for hint in NATURAL_LANGUAGE_HINTS)
+
+
 def profile_pixels(arch: str) -> int:
     """返回该架构的推荐总像素（宽 × 高）。
 
