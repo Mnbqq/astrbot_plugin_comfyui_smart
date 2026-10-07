@@ -10,7 +10,7 @@ desc: >-
   出图结果可合并成一条「转发消息」发送（QQ 个人号），多张图不再刷屏；
   另有 ControlNet 深度控制与放大（可指定精确宽高）；对「按需从 HuggingFace 下载」的
   预处理权重会在提交前先探测，探不通就自动降级为图生图保构图，而不是跑到一半才报错。
-version: "0.32.0"
+version: "0.33.0"
 author: Mnbqq
 repo: "https://github.com/Mnbqq/astrbot_plugin_comfyui_smart"
 astrbot_version: ">=4.26.0"

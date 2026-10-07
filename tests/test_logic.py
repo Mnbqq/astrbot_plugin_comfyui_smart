@@ -616,6 +616,15 @@ def main() -> int:
     check("--detail 等价写法", _o.get("detail") == "1" and _d == "", (_o, repr(_d)))
     _d, _o = m.parse_inline_params("--分析 看看光线")
     check("中文别名 --分析 同样认", _o.get("detail") == "1" and _d == "看看光线", (_o, repr(_d)))
+    _d, _o = m.parse_inline_params("--委托 帮我看看构图")
+    check("--委托 是纯开关，后面的文字留给描述（不被当成它的值）",
+          _o.get("commission") == "1" and _d == "帮我看看构图", (_o, repr(_d)))
+    _d, _o = m.parse_inline_params("一个少女 --严格")
+    check("--严格 同样认", _o.get("strict") == "1" and _d == "一个少女", (_o, repr(_d)))
+    _d, _o = m.parse_inline_params("--commission --strict 少女")
+    check("两个开关同时给时解析器都记下来（谁生效由 resolve_completion_mode 定）",
+          _o.get("commission") == "1" and _o.get("strict") == "1" and _d == "少女",
+          (_o, repr(_d)))
 
     # 截断检测：只提示、不改写（自动吞词同样是一种静默出错）
     check("裸粘含空格的负面词会被识别为截断",
@@ -956,6 +965,29 @@ def main() -> int:
               '{"positive":"a","prompt_style":"%s"}' % v)["prompt_style"] == "tags"
               for v in ("", "prose?", "tags", "TAGS", "散文")), None)
 
+    # 补全尺度（v0.33.0 委托模式）：默认严格，认不出来也按严格
+    check("补全尺度默认 strict、认不出也 strict（放开「不要新增」必须显式选）",
+          llm.normalize_completion_mode("") == "strict"
+          and llm.normalize_completion_mode("乱填") == "strict"
+          and llm.normalize_completion_mode("strict") == "strict", None)
+    check("委托模式的几种写法都认（commission / 委托 / 自由发挥）",
+          all(llm.normalize_completion_mode(v) == "commission"
+              for v in ("commission", "Commission", " 委托 ", "委托模式", "自由发挥")), None)
+
+    # added：模型报账「我补了什么」，给数组或整段文本都收、最多 3 条
+    check("added 解析：数组原样收，空项丢掉",
+          llm.parse_optimize_result('{"positive":"a","added":["侧逆光",""," 布料纹理 "]}'
+                                    )["added"] == ["侧逆光", "布料纹理"])
+    check("added 解析：一整段带序号/符号的文本也能拆",
+          llm.parse_optimize_result('{"positive":"a","added":"1. 侧逆光\\n· 浅景深"}'
+                                    )["added"] == ["侧逆光", "浅景深"])
+    check("added 解析：没写就是空数组（严格模式下的正常情况）",
+          llm.parse_optimize_result('{"positive":"a"}')["added"] == [])
+    check("added 最多 3 条（与提示词里的上限一致）",
+          len(llm.parse_optimize_result(json.dumps(
+              {"positive": "a", "added": [f"第{i}条" for i in range(9)]},
+              ensure_ascii=False))["added"]) == llm.MAX_ADDED)
+
     print("\n=== 插件装配与 Pages ===")
     StarTools.set_root(tempfile.mkdtemp(prefix="smart_root_"))
     ctx = Context()
@@ -1261,6 +1293,55 @@ def main() -> int:
     check("模型写的质量词与架构补的自动去重（masterpiece 只出现一次）",
           q_pos.count("masterpiece") == 1 and "film grain" in q_pos and "best quality" in q_pos,
           q_pos[:70])
+    plugin.llm.optimize_prompt = fake_opt      # 复原：后面几段还依赖它的负面词
+
+    # 委托模式（v0.33.0）：补了什么要报账；严格模式下模型多报的 added 一律忽略
+    async def fake_opt_commission(user_desc, catalog, defaults=None, event=None, **kw):
+        return {"positive": "1girl, standing", "negative": "", "checkpoint": "", "lora": "",
+                "lora_strength": 1.0, "vae": "", "width": 0, "height": 0,
+                "prompt_style": "tags", "added": ["侧逆光", "布料纹理"], "raw_ok": True}
+
+    plugin.llm.optimize_prompt = fake_opt_commission
+    plugin.config["draw_settings"] = {"default_negative": "lowres",
+                                      "completion_mode": "commission"}
+    comm_result = asyncio.run(plugin.generate(user_desc="一个少女", opts={}))
+    check("委托模式把「补了什么」报给用户（走 llm_note，不新增结果字段）",
+          "侧逆光" in comm_result["llm_note"] and "布料纹理" in comm_result["llm_note"],
+          comm_result["llm_note"])
+
+    plugin.config["draw_settings"] = {"default_negative": "lowres", "completion_mode": "strict"}
+    strict_result = asyncio.run(plugin.generate(user_desc="一个少女", opts={}))
+    check("严格模式下模型多报的 added 被忽略（不给用户看，也不写进结果）",
+          "侧逆光" not in str(strict_result.get("llm_note") or ""),
+          strict_result.get("llm_note"))
+    check("严格模式 + 模型没补东西时不显示报账行",
+          asyncio.run(plugin.generate(user_desc="一个少女", opts={}))["llm_note"] == "", None)
+
+    # 委托模式的「连采样参数一起放开」是可选项：默认关，且行内/配置显式值永远优先
+    _sd_off = plugin._resolve_sampling("sd15", {}, {}, {"completion_mode": "commission"})
+    _sd_on = plugin._resolve_sampling("sd15", {}, {},
+                                      {"completion_mode": "commission", "commission_params": True})
+    _sd_inline = plugin._resolve_sampling("sd15", {}, {"cfg": "7"},
+                                          {"completion_mode": "commission", "commission_params": True})
+    _sd_strict = plugin._resolve_sampling("sd15", {}, {},
+                                          {"completion_mode": "strict", "commission_params": True})
+    check("委托模式默认不动采样参数",
+          _sd_off["cfg"] == 7.0, _sd_off["cfg"])
+    check("勾了子项且委托模式时，SD 系 CFG 降到 5.95（7.0 × 0.85）",
+          abs(_sd_on["cfg"] - 5.95) < 1e-6, _sd_on["cfg"])
+    check("行内 --cfg 永远优先（不会被子项改掉）",
+          _sd_inline["cfg"] == 7.0, _sd_inline["cfg"])
+    check("严格模式下即使勾了子项也不动参数",
+          _sd_strict["cfg"] == 7.0, _sd_strict["cfg"])
+    _flux_on = plugin._resolve_sampling("flux", {}, {},
+                                        {"completion_mode": "commission", "commission_params": True})
+    check("Flux 系降的是 guidance（CFG 本来就 =1），3.5 → 2.5",
+          _flux_on["cfg"] == 1.0 and abs(_flux_on["guidance"] - 2.5) < 1e-6,
+          (_flux_on["cfg"], _flux_on["guidance"]))
+    _flux_floor = plugin._resolve_sampling("flux_schnell", {}, {},
+                                           {"completion_mode": "commission", "commission_params": True})
+    check("guidance 有下限：schnell 的 1.0 不会被降到 0",
+          _flux_floor["guidance"] == 1.0, _flux_floor["guidance"])
     plugin.llm.optimize_prompt = fake_opt      # 复原：后面几段还依赖它的负面词
 
     # custom_only：只用你自己的词，不追加任何内容，也不采纳 LLM 的
@@ -2120,6 +2201,38 @@ def main() -> int:
           and llm.normalize_quality_words_by(" llm ") == "llm"
           and llm.normalize_quality_words_by("") == "plugin"
           and llm.normalize_quality_words_by("plugin") == "plugin", None)
+
+    # 补全尺度：同一套系统提示词，靠用户消息那一行切换（v0.33.0）
+    ctx.llm_calls = []
+    asyncio.run(svc_q.optimize_prompt("一个少女", {"checkpoints": ["a.safetensors"]}))
+    _c_strict = ctx.llm_calls[-1].get("prompt") or ""
+    check("默认（strict）在用户消息里写明「只画我描述的、added 留空」",
+          "【补全尺度】" in _c_strict and "严格" in _c_strict and "added 留空" in _c_strict,
+          _c_strict[-50:])
+
+    ctx.llm_calls = []
+    asyncio.run(svc_q.optimize_prompt("一个少女", {"checkpoints": ["a.safetensors"]},
+                                      completion_mode="commission"))
+    _c_comm = ctx.llm_calls[-1].get("prompt") or ""
+    check("委托模式下同一行改成「允许补呈现层细节并报账」",
+          "【补全尺度】" in _c_comm and "委托" in _c_comm and "added" in _c_comm, _c_comm[-50:])
+    check("两种补全尺度共用同一套系统提示词",
+          ctx.llm_calls[-1].get("system_prompt") == llm.PROMPT_SYSTEM, None)
+
+    ctx.llm_calls = []
+    asyncio.run(svc_q.optimize_prompt("一个少女", {"checkpoints": ["a.safetensors"]},
+                                      completion_mode="乱填"))
+    check("非法补全尺度退回 strict（不会静默变成委托）",
+          "严格" in (ctx.llm_calls[-1].get("prompt") or ""), None)
+
+    # 行内 --委托 / --严格 优先于配置
+    check("行内 --委托 压过配置里的 strict",
+          m.resolve_completion_mode({"commission": "1"}, {"completion_mode": "strict"}) == "commission")
+    check("行内 --严格 压过配置里的 commission（默认委托时能单次压回）",
+          m.resolve_completion_mode({"strict": "1"}, {"completion_mode": "commission"}) == "strict")
+    check("没有行内参数时看配置，配置缺省按 strict",
+          m.resolve_completion_mode({}, {"completion_mode": "commission"}) == "commission"
+          and m.resolve_completion_mode({}, {}) == "strict")
 
     # 配置里的 vision_provider 生效（无需行内指定）
     # LLMService 接收的是完整插件配置（不是 llm_settings 子字典）
@@ -3995,7 +4108,7 @@ def main() -> int:
         _cap_rev = 2100 if _loc == "zh-CN" else len(
             catalog["zh-CN"]["llm.reverse_system"]) * 2.2
         check(f"[{_loc}] 生图：要求不新增用户没提到的内容（防脑补）",
-              ("不要新增" in _opt) or ("Do NOT invent" in _opt), None)
+              ("不要新增" in _opt) or ("do not invent" in _opt.lower()), None)
         check(f"[{_loc}] 生图：禁止重复插件按架构自动补的通用质量词",
               ("写通用质量词" in _opt)
               or ("do not emit generic quality tags" in _opt.lower()), None)
@@ -4026,6 +4139,16 @@ def main() -> int:
               "{quality_rule}" in catalog[_loc]["llm.optimize_user"]
               and catalog[_loc]["llm.quality_rule_plugin"]
               and catalog[_loc]["llm.quality_rule_llm"], None)
+        # 补全尺度（v0.33.0）：系统提示词必须指向用户消息那一行，且两套规则文案都在
+        check(f"[{_loc}] 生图：补全尺度由用户消息那一行决定（系统提示词要指过去）",
+              (("【补全尺度】" in _opt) or ("[Detail level]" in _opt)) and ("added" in _opt), None)
+        check(f"[{_loc}] 生图：用户消息带补全尺度占位符，且两套规则文案都在",
+              "{completion_rule}" in catalog[_loc]["llm.optimize_user"]
+              and catalog[_loc]["llm.completion_rule_strict"]
+              and catalog[_loc]["llm.completion_rule_commission"], None)
+        check(f"[{_loc}] 生图：委托模式只放开「呈现层」细节，且要求写进 added 报账",
+              ("呈现层" in _opt and "报账" in _opt)
+              or ("presentation-layer" in _opt and "report them in added" in _opt), None)
         check(f"[{_loc}] 反推：必须忽略签名 / 水印 / 画面文字",
               ("签名" in _rev and "水印" in _rev)
               or ("signature" in _rev.lower() and "watermark" in _rev.lower()), None)

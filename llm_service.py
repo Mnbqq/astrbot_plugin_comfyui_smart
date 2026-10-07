@@ -29,8 +29,9 @@ PROMPT_SYSTEM = (
     "你是 ComfyUI 绘图提示词工程师：把用户的中文描述改写成能直接出图的英文 tag 提示词，"
     "并从清单里挑选模型。\n"
     "【改写】\n"
-    "1. 忠于原意 —— 只画用户说过的内容。角色、服装、道具、场景都**不要新增**；"
-    "只有明显留白处才补必要信息（画幅、光线、构图），且要克制。\n"
+    "1. **忠于原意**：只画用户说过的内容。**补全尺度**由用户消息里的【补全尺度】那一行决定 —— "
+    "严格时角色、服装、道具、场景都**不要新增**（只有明显留白处补必要信息：画幅、光线、构图，要克制）；"
+    "委托时才允许补少量**呈现层**细节，并且必须写进 added 报账。\n"
     "2. 英文逗号分隔、全小写，不要句子、不要解释、不要编号。\n"
     "3. 15~30 个 tag。太少说不清画面，太多会稀释每个词的权重。\n"
     "4. **七段都要尽量覆盖**：主体（数量与类型）／场景与环境／动作与状态／细节特征／光照氛围／"
@@ -70,7 +71,10 @@ PROMPT_SYSTEM = (
     "【输出】\n"
     "15. 只输出一个 JSON 对象：不要 markdown 代码块、不要前后说明、不要注释、不要多余字段。\n"
     '{"positive": "...", "negative": "...", "checkpoint": "...", "lora": "", '
-    '"lora_strength": 0.8, "vae": "", "width": 0, "height": 0, "prompt_style": "tags"}'
+    '"lora_strength": 0.8, "vae": "", "width": 0, "height": 0, "prompt_style": "tags", '
+    '"added": []}\n'
+    "added 是你**额外补的**、用户没提的呈现层细节（委托模式才允许非空），每条一句话，最多 3 条；"
+    "严格模式下必须是空数组。"
 )
 # positive/negative 之外的可选覆盖字段：宽高为 0 表示沿用架构默认
 OPTIONAL_KEYS = ("positive", "negative", "checkpoint", "lora", "vae")
@@ -84,6 +88,12 @@ _PROMPT_STYLE_ALIASES = frozenset({
 # 质量修饰词（七段的最后一段）由谁写：plugin = 插件按架构补（默认）；llm = 也允许模型自己写
 QUALITY_WORDS_BY_PLUGIN = "plugin"
 QUALITY_WORDS_BY_LLM = "llm"
+# 补全尺度：strict = 只画用户说过的（默认，v0.27.0 防脑补那条）；commission = 委托模式
+COMPLETION_MODE_STRICT = "strict"
+COMPLETION_MODE_COMMISSION = "commission"
+_COMMISSION_ALIASES = frozenset({"commission", "委托", "委托模式", "自由", "自由发挥"})
+# 委托模式下最多允许补几条（提示词里写的也是 3，插件侧再兜一次）
+MAX_ADDED = 3
 
 
 def normalize_quality_words_by(value) -> str:
@@ -99,6 +109,22 @@ def normalize_quality_words_by(value) -> str:
     """
     text = str(value or "").strip().lower()
     return QUALITY_WORDS_BY_LLM if text == QUALITY_WORDS_BY_LLM else QUALITY_WORDS_BY_PLUGIN
+
+
+def normalize_completion_mode(value) -> str:
+    """把配置值归一成 strict / commission。
+
+    **认不出来一律按 strict**：委托模式会放开「不要新增」那条约束，猜错方向的代价
+    （用户没要的东西被画进去）比「没放开」大得多 —— 跟 `prompt_style` 同一个取舍。
+
+    Args:
+        value: 配置里的 `draw_settings.completion_mode`，或行内参数。
+
+    Returns:
+        `COMPLETION_MODE_STRICT` 或 `COMPLETION_MODE_COMMISSION`。
+    """
+    text = str(value or "").strip().lower()
+    return COMPLETION_MODE_COMMISSION if text in _COMMISSION_ALIASES else COMPLETION_MODE_STRICT
 MAX_CHECKPOINTS = 60
 MAX_LORAS = 80
 MAX_OTHERS = 40
@@ -552,6 +578,7 @@ class LLMService:
         defaults: dict | None = None,
         *,
         quality_words_by: str = QUALITY_WORDS_BY_PLUGIN,
+        completion_mode: str = COMPLETION_MODE_STRICT,
         event=None,
     ) -> dict:
         """把中文描述转成提示词并选型。
@@ -562,11 +589,13 @@ class LLMService:
             defaults: 默认参数（负面词/宽高），用于填充缺省。
             quality_words_by: 质量修饰词（七段的最后一段）由谁写；见
                 `normalize_quality_words_by()`。
+            completion_mode: 补全尺度；见 `normalize_completion_mode()`。
+                `strict` 只画用户说过的，`commission` 允许补少量呈现层细节并要求报账。
             event: 可选消息事件。
 
         Returns:
             规范化后的结果字典，含 positive / negative / checkpoint / lora /
-            lora_strength / vae / width / height / prompt_style，
+            lora_strength / vae / width / height / prompt_style / added，
             以及 raw_ok 标记解析是否成功。
 
         Raises:
@@ -577,12 +606,16 @@ class LLMService:
         rule_key = ("llm.quality_rule_llm"
                     if normalize_quality_words_by(quality_words_by) == QUALITY_WORDS_BY_LLM
                     else "llm.quality_rule_plugin")
+        completion_key = ("llm.completion_rule_commission"
+                          if normalize_completion_mode(completion_mode) == COMPLETION_MODE_COMMISSION
+                          else "llm.completion_rule_strict")
         user = self._t(
             "llm.optimize_user",
             desc=user_desc,
             negative=defaults.get("negative") or "（无）",
             catalog=catalog_text,
             quality_rule=self._t(rule_key),
+            completion_rule=self._t(completion_key),
         )
         system = self._t("llm.optimize_system") or PROMPT_SYSTEM
         text = await self.generate(system, user, event=event)
@@ -831,6 +864,7 @@ def parse_optimize_result(text: str) -> dict:
         "width": 0,
         "height": 0,
         "prompt_style": PROMPT_STYLE_TAGS,
+        "added": [],
         "raw_ok": False,
     }
     data = _load_json_object(text)
@@ -842,6 +876,9 @@ def parse_optimize_result(text: str) -> dict:
         value = data.get(key)
         result[key] = value.strip() if isinstance(value, str) else ""
     result["prompt_style"] = _normalize_prompt_style(data.get("prompt_style"))
+    # added：模型报账「我补了什么」。给数组或给一整段带 `-`/序号的文本都收，
+    # 空项丢掉、最多 MAX_ADDED 条（与提示词里的上限一致）。
+    result["added"] = _normalize_anomalies(data.get("added"))[:MAX_ADDED]
     strength = data.get("lora_strength")
     if isinstance(strength, (int, float)):
         result["lora_strength"] = max(0.0, min(float(strength), 2.0))

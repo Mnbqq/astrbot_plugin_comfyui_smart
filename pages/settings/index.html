@@ -251,6 +251,18 @@
             <p data-i18n-html="ui.text.058" class="field-hint">选 <code>llm</code> 时插件补的通用词仍会合并，重复的自动去掉；想完全交给 AI 写，请把上面的「按架构自动补质量词」关掉。</p>
           </div>
           <div class="form-group full-width">
+            <label data-i18n="ui.label.061" for="draw_completion_mode">补全尺度</label>
+            <select id="draw_completion_mode" class="input-modern">
+              <option data-i18n="ui.opt.016" value="strict">strict —— 严格照做：只画我描述的（默认）</option>
+              <option data-i18n="ui.opt.017" value="commission">commission —— 委托模式：允许 AI 补少量呈现层细节</option>
+            </select>
+            <p data-i18n-html="ui.text.059" class="field-hint">委托模式会放开「不要新增」，但只允许补<b>呈现层</b>细节（光与质感、材质纹理、构图景深、氛围），<b>不得改动</b>主体数量/外貌/服装款式/动作/场景类型；补了什么会列在结果里。一次可用 <code>/画图 … --委托</code> 或 <code>--严格</code> 覆盖。</p>
+          </div>
+          <div class="setting-row">
+            <div><h3 data-i18n="ui.title.048">委托模式连采样参数一起放开</h3><p data-i18n="ui.text.060">默认关。开启后，委托模式下在你没显式指定参数时做温和调整：SD 系 CFG ×0.85（不低于 1.5），Flux 系 guidance −1.0（不低于 1.0）。行内 <code>--cfg</code> 与配置默认值永远优先。</p></div>
+            <label class="switch-wrapper"><input type="checkbox" id="draw_commission_params" class="ios-switch" /></label>
+          </div>
+          <div class="form-group full-width">
             <label data-i18n="ui.label.024" for="draw_negative_mode">负面提示词策略</label>
             <select id="draw_negative_mode" class="input-modern">
               <option data-i18n="ui.opt.004" value="merge">merge —— 合并全部（默认词 + 手部规避词 + 架构词 + LLM 词，最稳）</option>

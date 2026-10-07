@@ -292,6 +292,22 @@
         "hint": "plugin=插件按底模架构自动补（默认，SD1.5 补 masterpiece、Pony 补 score_9、Flux 不补）；llm=同时允许 AI 在提示词里自己写 2~4 个与画面相关的质量词（插件补的通用词仍会合并，重复的自动去掉）。想完全交给 AI 写，就把上面的「按架构自动补质量词」关掉。",
         "default": "plugin"
       },
+      "completion_mode": {
+        "description": "补全尺度",
+        "type": "string",
+        "options": [
+          "strict",
+          "commission"
+        ],
+        "hint": "strict=严格照做（默认）：只画你描述的，AI 不新增角色/服装/道具/场景；commission=委托模式：允许 AI 补 1~3 个**呈现层**细节（光的方向与质感、材质纹理、构图与景深、氛围），但不得改动主体数量/外貌/服装款式/动作/场景类型，并且会在结果里列出「AI 补充了什么」。一次可用 /画图 … --委托 或 --严格 覆盖。",
+        "default": "strict"
+      },
+      "commission_params": {
+        "description": "委托模式连采样参数一起放开",
+        "type": "bool",
+        "hint": "默认关。开启后，委托模式下会在你没显式指定参数时做温和调整：SD 系 CFG ×0.85（不低于 1.5），Flux 系 guidance −1.0（不低于 1.0）。行内 --cfg 与配置里的默认值永远优先。",
+        "default": false
+      },
       "negative_mode": {
         "description": "负面提示词策略",
         "type": "string",

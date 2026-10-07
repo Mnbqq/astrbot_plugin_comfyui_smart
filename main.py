@@ -33,9 +33,12 @@ from .diagnostics import (
 )
 from .i18n import build_translator
 from .llm_service import (
+    COMPLETION_MODE_COMMISSION,
+    COMPLETION_MODE_STRICT,
     LLMService,
     PROMPT_STYLE_NATURAL,
     PROMPT_STYLE_TAGS,
+    normalize_completion_mode,
     normalize_quality_words_by,
 )
 from .pages import register_pages_routes
@@ -66,7 +69,7 @@ from .error_hints import (
 
 PLUGIN_NAME = "astrbot_plugin_comfyui_smart"
 # 与 metadata.yaml 的 version 保持一致（tests/test_logic.py 会校验二者不漂移）
-PLUGIN_VERSION = "0.32.0"
+PLUGIN_VERSION = "0.33.0"
 
 # ControlNet 的深度预处理器权重是「按需下载」的（不在 models/ 下），
 # 探测结果按（后端 + 节点 + 权重名）缓存这么久，避免每次出图都多一次往返。
@@ -208,6 +211,9 @@ PARAM_ALIASES = {
     "draw": "draw", "画": "draw",
     # /反推 --详细：除英文 tag 外再要一份中文分区分析
     "detail": "detail", "详细": "detail", "分析": "detail",
+    # 补全尺度（委托模式）：--委托 放开「不要新增」，--严格 本次压回默认
+    "commission": "commission", "委托": "commission", "委托模式": "commission",
+    "strict": "strict", "严格": "strict",
     "hires-steps": "hires_steps",
     "lora": "lora", "模型": "model", "model": "model",
     "negative": "negative", "负面": "negative",
@@ -290,8 +296,9 @@ SPACE_PRONE_KEYS = frozenset({"negative"})
 # 纯粹的开关（只表示「本次这么做」，本身没有取值）：解析时**不许吞掉后面的 token**。
 # `--详细` 尤其明显：用户写 `/反推 --详细 帮我看构图`，若按 `--key value` 取值，
 # 「帮我看构图」会被当成 detail 的值而**从额外要求里消失** —— 又一处静默失效。
-# 只列 detail：`--画` / `--hires` 这类历史行为不动，免得改坏既有用法。
-BOOLEAN_FLAGS = frozenset({"detail"})
+# `--委托` / `--严格` 同理：它们后面跟的通常是描述或补充要求。
+# 只列这几个：`--画` / `--hires` 这类历史行为不动，免得改坏既有用法。
+BOOLEAN_FLAGS = frozenset({"detail", "commission", "strict"})
 
 
 def _unquote(token: str) -> str:
@@ -470,6 +477,28 @@ def append_inline_hint(text: str, raw: str) -> str:
     """
     hint = inline_param_hint(raw)
     return f"{text}\n{hint}" if hint else text
+
+
+def resolve_completion_mode(opts: dict, draw_conf: dict) -> str:
+    """决定本次的「补全尺度」：行内 `--委托` / `--严格` 优先于配置。
+
+    委托模式是**显式选择**：它放开 v0.27.0 那条「不要新增」，所以认不出来一律按严格
+    （见 `normalize_completion_mode()`）。`--严格` 也要认，否则用户没法在默认已是委托的
+    配置上「本次严格一次」。
+
+    Args:
+        opts: 行内参数字典。
+        draw_conf: 配置里的 draw_settings。
+
+    Returns:
+        `COMPLETION_MODE_STRICT` 或 `COMPLETION_MODE_COMMISSION`。
+    """
+    opts = opts or {}
+    if str(opts.get("commission") or "").strip():
+        return COMPLETION_MODE_COMMISSION
+    if str(opts.get("strict") or "").strip():
+        return COMPLETION_MODE_STRICT
+    return normalize_completion_mode((draw_conf or {}).get("completion_mode"))
 
 
 def _extract_command_payload(event: AstrMessageEvent, *commands: str) -> str:
@@ -1554,7 +1583,7 @@ class ComfyUISmartPlugin(Star):
         except (TypeError, ValueError):
             batch_size = 1
 
-        return {
+        result = {
             "width": width,
             "height": height,
             "steps": _pick("steps", "steps", "default_steps", "steps", int),
@@ -1564,6 +1593,25 @@ class ComfyUISmartPlugin(Star):
             "guidance": profile.get("guidance"),
             "batch_size": batch_size,
         }
+        # 委托模式 + 勾了「连采样参数一起放开」时，再给一点自由度（默认不勾）。
+        # 三条自我约束：
+        #   1. 只在用户**没显式给过** cfg 时动手（行内 --cfg / 配置默认值永远优先）；
+        #   2. 分架构：Flux 系 CFG=1、真正管自由度的是 guidance，所以降 guidance 而不是 CFG；
+        #      CFG 本来就等于 1 的架构一律不碰（降它没有意义，还会误导）；
+        #   3. 有下限：SD 系不低于 1.5（再低构图与指令跟随会明显崩），guidance 不低于 1.0。
+        if (bool(draw_conf.get("commission_params", False))
+                and resolve_completion_mode(opts, draw_conf) == COMPLETION_MODE_COMMISSION):
+            cfg_explicit = bool(str(opts.get("cfg") or "").strip()) or (
+                use_conf and draw_conf.get("default_cfg") not in (None, "")
+            ) or (not use_conf and opt.get("cfg") not in (None, "", 0))
+            if not cfg_explicit:
+                if arch.startswith("flux"):
+                    guidance = result.get("guidance")
+                    if isinstance(guidance, (int, float)):
+                        result["guidance"] = max(1.0, round(float(guidance) - 1.0, 2))
+                elif float(result.get("cfg") or 0) > 1.0:
+                    result["cfg"] = max(1.5, round(float(result["cfg"]) * 0.85, 2))
+        return result
 
     async def generate(
         self,
@@ -1677,6 +1725,7 @@ class ComfyUISmartPlugin(Star):
                 llm_note = "（已让 AI 按视频视角补全动作与镜头）"
             llm_negative = str(opt.get("negative") or "")
         elif want_llm:
+            completion_mode = resolve_completion_mode(opts, draw_conf)
             try:
                 opt = await self.llm.optimize_prompt(
                     user_desc,
@@ -1689,6 +1738,7 @@ class ComfyUISmartPlugin(Star):
                     quality_words_by=normalize_quality_words_by(
                         draw_conf.get("quality_words_by")
                     ),
+                    completion_mode=completion_mode,
                     event=event,
                 )
             except RuntimeError as e:
@@ -1698,6 +1748,14 @@ class ComfyUISmartPlugin(Star):
                 llm_note = "（未启用/无可用 LLM，已直接用你的原话出图）"
             if opt.get("positive"):
                 positive = opt["positive"]
+                # 委托模式：把「模型补了什么」报账给用户看（补了不报 = 退回 v0.27.0 那个事故）。
+                # 走 llm_note 是因为它已经有现成的渲染路径（result.note），不必新增结果字段
+                # —— 新增字段会牵动「画廊弹窗字段 ↔ 后端记录」那对一致性测试。
+                if completion_mode == COMPLETION_MODE_COMMISSION:
+                    added = [str(x) for x in (opt.get("added") or []) if str(x).strip()]
+                    llm_note = self.t(
+                        "result.commission_added", items="、".join(added)
+                    ) if added else self.t("result.commission_none")
             # LLM 的负面词**不再整体替换**默认词：具体合并见下方（需要先知道架构）
             llm_negative = str(opt.get("negative") or "")
         else:
