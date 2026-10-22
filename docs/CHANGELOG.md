@@ -3,6 +3,36 @@
 > 从 v0.1.0 到最新的逐版本记录（主 README 只保留最近几条）。
 
 ## 更新日志
+**v0.34.1** — 修 v0.34.0 的 i18n 事故：`config` 多包了一层 `items`
+
+v0.34.0 把 i18n 改成嵌套结构时，`config` 段照搬了 `_conf_schema.json` 的 `items` 层：
+
+```
+config.features.items.t2i.description      ← 写成了这样
+```
+
+而官方 / 前端 / Core 认的是 `config.<组>.<字段>.description`，**不含 items**。三处证据一致：
+
+- 官方《插件国际化》「嵌套配置」的示例就是 `config.sub_config.name`，没有 items；
+- Core `astrbot/core/config/i18n_utils.py::ConfigMetadataI18n.convert_to_i18n_keys()`
+  拼键时只串字段名 —— `field_path = f"{prefix}.{field_name}" if prefix else field_name`，
+  递归子项时也不会把 `items` 写进路径；
+- 分组标题则是 `f"{group}.{section}.description"`。
+
+后果很隐蔽：**分组标题能翻译**（`config.features.description` 正好对上，看着像生效了），
+而 **85 个字段说明 + 71 条 hint 一条都不生效** —— 英文界面下表现为「英文里夹中文」，
+不报错、不抛异常，很难发现。
+
+- 修法：把 `config` 下的 `items` 层摊平进父层，键变成 `config.features.t2i.description` /
+  `config.features.t2i.hint`。14 个分组说明保持不变（本来就对），英文文案全部沿用。
+- **补两条守卫**（本来能直接抓住这个错）：
+  1. 按 `_conf_schema.json` 遍历（**跳过 items 层**），逐项要求
+     `config.<组>.<字段>.description` 存在，schema 里有 hint 的还要求 `.hint`；
+  2. 断言 `config` 里不允许出现 `items` 键。
+- 根因是我给翻译的**指令写错了**（把 schema 的 `items` 层当成了 i18n 结构），
+  不是翻译内容的问题。
+- Python 845 / 前端 54 全绿。
+
 **v0.34.0** — 多附图不再静默丢弃 + 四则合规性修复 + i18n 改官方嵌套结构
 
 三批改动合成一个版本：先修一个「静默丢弃」，再做对照 AstrBot 源码/官方文档的四项合规修复，

@@ -7,398 +7,370 @@
   "config": {
     "features": {
       "description": "Feature switches",
-      "items": {
-        "t2i": {
-          "description": "Text-to-image (/draw)",
-          "hint": "Enabled by default. The most basic generation capability."
-        },
-        "i2i": {
-          "description": "Image-to-image (/i2i)",
-          "hint": "Disabled by default. Image-to-image is VRAM-hungry and could also be used to alter someone else's image, so enable it only as needed."
-        },
-        "outpaint": {
-          "description": "Outpaint (/outpaint)",
-          "hint": "Disabled by default. Extends the canvas outwards; VRAM usage rises with the expansion amount."
-        },
-        "inpaint": {
-          "description": "Inpaint (paint the mask in the config page)",
-          "hint": "Disabled by default. The “Inpaint” tab in the config page reports that it is unavailable while this is off."
-        },
-        "t2v": {
-          "description": "Text-to-video (/video)",
-          "hint": "Disabled by default. Video is the most VRAM- and time-hungry feature (74–281 seconds per clip on an 8G machine); when off, /video does nothing and stays silent."
-        },
-        "i2v": {
-          "description": "Image-to-video (/i2v)",
-          "hint": "Disabled by default. Makes a still image move; also VRAM-hungry."
-        },
-        "reverse_prompt": {
-          "description": "Reverse-prompt from an image (/img2prompt)",
-          "hint": "Disabled by default. Strictly speaking this is not a generation feature, but it calls a vision model too, so it is exposed as a switch as well; when off, /img2prompt does nothing and stays silent."
-        },
-        "control": {
-          "description": "ControlNet depth control (/draw --control depth)",
-          "hint": "Disabled by default. Attach a reference image + --control depth to constrain composition and pose with a depth map. Requires a ControlNet model (control-depth-sdxl-small-fp16) and the depth preprocessor weights (depth_anything_v2_vits.pth, in controlnet_aux's ckpts). Set strength with --control-strength (default 0.8) and the stop point with --control-end (default 0.7). ⚠️ The preprocessor weights are not under models/; they are downloaded from HuggingFace on demand, so if they are missing the job fails halfway through. The plugin probes before submitting and, if the probe fails, automatically falls back to image-to-image to preserve composition (denoise 0.45); use `/health --probe` to check manually."
-        },
-        "upscale": {
-          "description": "Upscale (/upscale, --upscale)",
-          "hint": "Disabled by default. `/upscale --scale 2` upscales with a 4x model and scales back down to the target factor (default 2, max 4); `/upscale --scale-to 1920x1088` outputs the exact width and height (use this when you need a fixed size); adding `--upscale 2` or `--upscale 1920x1088` to a generation upscales the result once automatically. Model: upscale_models/4x-UltraSharp.safetensors."
-        }
+      "t2i": {
+        "description": "Text-to-image (/draw)",
+        "hint": "Enabled by default. The most basic generation capability."
+      },
+      "i2i": {
+        "description": "Image-to-image (/i2i)",
+        "hint": "Disabled by default. Image-to-image is VRAM-hungry and could also be used to alter someone else's image, so enable it only as needed."
+      },
+      "outpaint": {
+        "description": "Outpaint (/outpaint)",
+        "hint": "Disabled by default. Extends the canvas outwards; VRAM usage rises with the expansion amount."
+      },
+      "inpaint": {
+        "description": "Inpaint (paint the mask in the config page)",
+        "hint": "Disabled by default. The “Inpaint” tab in the config page reports that it is unavailable while this is off."
+      },
+      "t2v": {
+        "description": "Text-to-video (/video)",
+        "hint": "Disabled by default. Video is the most VRAM- and time-hungry feature (74–281 seconds per clip on an 8G machine); when off, /video does nothing and stays silent."
+      },
+      "i2v": {
+        "description": "Image-to-video (/i2v)",
+        "hint": "Disabled by default. Makes a still image move; also VRAM-hungry."
+      },
+      "reverse_prompt": {
+        "description": "Reverse-prompt from an image (/img2prompt)",
+        "hint": "Disabled by default. Strictly speaking this is not a generation feature, but it calls a vision model too, so it is exposed as a switch as well; when off, /img2prompt does nothing and stays silent."
+      },
+      "control": {
+        "description": "ControlNet depth control (/draw --control depth)",
+        "hint": "Disabled by default. Attach a reference image + --control depth to constrain composition and pose with a depth map. Requires a ControlNet model (control-depth-sdxl-small-fp16) and the depth preprocessor weights (depth_anything_v2_vits.pth, in controlnet_aux's ckpts). Set strength with --control-strength (default 0.8) and the stop point with --control-end (default 0.7). ⚠️ The preprocessor weights are not under models/; they are downloaded from HuggingFace on demand, so if they are missing the job fails halfway through. The plugin probes before submitting and, if the probe fails, automatically falls back to image-to-image to preserve composition (denoise 0.45); use `/health --probe` to check manually."
+      },
+      "upscale": {
+        "description": "Upscale (/upscale, --upscale)",
+        "hint": "Disabled by default. `/upscale --scale 2` upscales with a 4x model and scales back down to the target factor (default 2, max 4); `/upscale --scale-to 1920x1088` outputs the exact width and height (use this when you need a fixed size); adding `--upscale 2` or `--upscale 1920x1088` to a generation upscales the result once automatically. Model: upscale_models/4x-UltraSharp.safetensors."
       }
     },
     "general": {
       "description": "General",
-      "items": {
-        "language": {
-          "description": "Language",
-          "hint": "auto=follow the AstrBot UI language (fall back to Chinese if unavailable). Chat text, LLM prompts and config-page navigation switch along with it. The text files live under .astrbot-plugin/i18n/ and can be extended yourself."
-        }
+      "language": {
+        "description": "Language",
+        "hint": "auto=follow the AstrBot UI language (fall back to Chinese if unavailable). Chat text, LLM prompts and config-page navigation switch along with it. The text files live under .astrbot-plugin/i18n/ and can be extended yourself."
       }
     },
     "server": {
       "description": "ComfyUI server",
-      "items": {
-        "base_url": {
-          "description": "ComfyUI server address",
-          "hint": "An address reachable from AstrBot, for example http://127.0.0.1:8188"
-        },
-        "timeout": {
-          "description": "Generation wait limit (seconds)",
-          "hint": "Excludes queue time. When tasks are ahead in the queue, the wait is extended automatically."
-        },
-        "poll_interval": {
-          "description": "Progress polling interval (seconds)"
-        },
-        "max_tasks_ahead": {
-          "description": "Queue compensation cap (tasks ahead)",
-          "hint": "Each task ahead adds 60 seconds of compensation; this value caps how many tasks are counted, so one stuck task cannot cause an endless wait."
-        },
-        "free_before_switch": {
-          "description": "Unload the previous set before switching to a large model",
-          "hint": "Before switching to a large model (SDXL / Flux / Lumina / Wan video, i.e. anything above 4GB), ask ComfyUI to unload the previous set first to free memory. Strongly recommended on 16G machines — measured: without unloading, loading a 6.5GB SDXL reports “paging file is too small, os error 1455” and makes ComfyUI crash. With it off, switching models skips the reload wait, but memory pressure can easily crash ComfyUI."
-        }
+      "base_url": {
+        "description": "ComfyUI server address",
+        "hint": "An address reachable from AstrBot, for example http://127.0.0.1:8188"
+      },
+      "timeout": {
+        "description": "Generation wait limit (seconds)",
+        "hint": "Excludes queue time. When tasks are ahead in the queue, the wait is extended automatically."
+      },
+      "poll_interval": {
+        "description": "Progress polling interval (seconds)"
+      },
+      "max_tasks_ahead": {
+        "description": "Queue compensation cap (tasks ahead)",
+        "hint": "Each task ahead adds 60 seconds of compensation; this value caps how many tasks are counted, so one stuck task cannot cause an endless wait."
+      },
+      "free_before_switch": {
+        "description": "Unload the previous set before switching to a large model",
+        "hint": "Before switching to a large model (SDXL / Flux / Lumina / Wan video, i.e. anything above 4GB), ask ComfyUI to unload the previous set first to free memory. Strongly recommended on 16G machines — measured: without unloading, loading a 6.5GB SDXL reports “paging file is too small, os error 1455” and makes ComfyUI crash. With it off, switching models skips the reload wait, but memory pressure can easily crash ComfyUI."
       }
     },
     "queue": {
       "description": "Generation queue and concurrency (prevents several simultaneous generations from exhausting VRAM)",
-      "items": {
-        "max_concurrent": {
-          "description": "Max simultaneous generations",
-          "hint": "How many tasks may run in ComfyUI at once; the rest queue on the plugin side. 1 is recommended for a single GPU (ComfyUI itself executes them one by one); raise it with multiple GPUs or when ComfyUI has parallel execution enabled."
-        },
-        "per_user_limit": {
-          "description": "Max simultaneous generations per user",
-          "hint": "How many tasks one person may run at once; the rest go to the end of the queue, so one person cannot fill it by sending a dozen requests. 0 means unlimited."
-        },
-        "wait_timeout": {
-          "description": "Queue wait limit (seconds)",
-          "hint": "How long a request may queue on the plugin side; on timeout it is clearly reported and the generation is cancelled instead of hanging silently. 0 means unlimited."
-        }
+      "max_concurrent": {
+        "description": "Max simultaneous generations",
+        "hint": "How many tasks may run in ComfyUI at once; the rest queue on the plugin side. 1 is recommended for a single GPU (ComfyUI itself executes them one by one); raise it with multiple GPUs or when ComfyUI has parallel execution enabled."
+      },
+      "per_user_limit": {
+        "description": "Max simultaneous generations per user",
+        "hint": "How many tasks one person may run at once; the rest go to the end of the queue, so one person cannot fill it by sending a dozen requests. 0 means unlimited."
+      },
+      "wait_timeout": {
+        "description": "Queue wait limit (seconds)",
+        "hint": "How long a request may queue on the plugin side; on timeout it is clearly reported and the generation is cancelled instead of hanging silently. 0 means unlimited."
       }
     },
     "backends": {
       "description": "Multi-backend scheduling (automatically distribute by load when several ComfyUI instances exist)",
-      "items": {
-        "endpoints": {
-          "description": "Other ComfyUI addresses",
-          "hint": "One per line, “address|name” is supported, for example http://192.168.1.20:8188|Line 2. The primary address is still the “server address” above. Leave empty = use only the primary backend."
-        },
-        "strategy": {
-          "description": "Scheduling strategy",
-          "hint": "least_queue=send to whichever is idle (default); round_robin=rotate; primary=use only the primary backend."
-        },
-        "fail_cooldown": {
-          "description": "Failure cooldown (seconds)",
-          "hint": "After a node fails submission or cannot be reached, no tasks are dispatched to it during this period. 0=no cooldown."
-        }
+      "endpoints": {
+        "description": "Other ComfyUI addresses",
+        "hint": "One per line, “address|name” is supported, for example http://192.168.1.20:8188|Line 2. The primary address is still the “server address” above. Leave empty = use only the primary backend."
+      },
+      "strategy": {
+        "description": "Scheduling strategy",
+        "hint": "least_queue=send to whichever is idle (default); round_robin=rotate; primary=use only the primary backend."
+      },
+      "fail_cooldown": {
+        "description": "Failure cooldown (seconds)",
+        "hint": "After a node fails submission or cannot be reached, no tasks are dispatched to it during this period. 0=no cooldown."
       }
     },
     "llm_settings": {
       "description": "LLM settings (used to turn Chinese descriptions into prompts and to pick models)",
-      "items": {
-        "enable_prompt_optimize": {
-          "description": "Enable prompt optimization and smart model selection",
-          "hint": "When off, your exact wording is used directly as the positive prompt and the first available checkpoint is used — no LLM needed at all. When on: Chinese descriptions are rewritten into English tags (faithful to the original, adding nothing you did not mention), and the checkpoint/LoRA is chosen by style; generic quality words and hand-avoidance words are added locally by the plugin, so the LLM does not write them twice."
-        },
-        "provider": {
-          "description": "LLM provider ID",
-          "hint": "Leave empty to use the current session's model (that is, AstrBot's default chat model). IDs can be viewed on AstrBot's “Service Providers” page."
-        },
-        "base_url": {
-          "description": "Custom OpenAI-compatible endpoint",
-          "hint": "When filled, AstrBot's provider is no longer used and the plugin connects to this endpoint directly (for example https://api.openai.com/v1)."
-        },
-        "api_key": {
-          "description": "API key for the custom endpoint"
-        },
-        "model": {
-          "description": "Model name for the custom endpoint"
-        },
-        "optimize_for_video": {
-          "description": "Have the AI rewrite video prompts too",
-          "hint": "When on, /video and /i2v first rewrite your description into a “video prompt”: filling in **motion** (slowly turning the head, gently swaying), **camera movement** (static/push-in/pan) and lighting mood, while keeping your original language (Chinese in, Chinese out — Wan natively understands Chinese). Unlike the image path — images stack English tags, video needs natural-language motion descriptions. The video model is decided by video.t2v_model / video.i2v_model; the LLM only rewrites the prompt and never picks models. Override per request in chat: --llm forces a rewrite, --no-llm skips it for this request."
-        }
+      "enable_prompt_optimize": {
+        "description": "Enable prompt optimization and smart model selection",
+        "hint": "When off, your exact wording is used directly as the positive prompt and the first available checkpoint is used — no LLM needed at all. When on: Chinese descriptions are rewritten into English tags (faithful to the original, adding nothing you did not mention), and the checkpoint/LoRA is chosen by style; generic quality words and hand-avoidance words are added locally by the plugin, so the LLM does not write them twice."
+      },
+      "provider": {
+        "description": "LLM provider ID",
+        "hint": "Leave empty to use the current session's model (that is, AstrBot's default chat model). IDs can be viewed on AstrBot's “Service Providers” page."
+      },
+      "base_url": {
+        "description": "Custom OpenAI-compatible endpoint",
+        "hint": "When filled, AstrBot's provider is no longer used and the plugin connects to this endpoint directly (for example https://api.openai.com/v1)."
+      },
+      "api_key": {
+        "description": "API key for the custom endpoint"
+      },
+      "model": {
+        "description": "Model name for the custom endpoint"
+      },
+      "optimize_for_video": {
+        "description": "Have the AI rewrite video prompts too",
+        "hint": "When on, /video and /i2v first rewrite your description into a “video prompt”: filling in **motion** (slowly turning the head, gently swaying), **camera movement** (static/push-in/pan) and lighting mood, while keeping your original language (Chinese in, Chinese out — Wan natively understands Chinese). Unlike the image path — images stack English tags, video needs natural-language motion descriptions. The video model is decided by video.t2v_model / video.i2v_model; the LLM only rewrites the prompt and never picks models. Override per request in chat: --llm forces a rewrite, --no-llm skips it for this request."
       }
     },
     "vision_settings": {
       "description": "Reverse-prompt model (used when reading an image to produce a prompt; same structure as the LLM settings above)",
-      "items": {
-        "provider": {
-          "description": "AstrBot provider ID",
-          "hint": "Recommended: add a vision-capable model in AstrBot “Service Providers” (such as qwen-vl-max, glm-4v, gpt-4o) and fill its ID in here. Leave empty to use the current session's chat model."
-        },
-        "base_url": {
-          "description": "Custom OpenAI-compatible endpoint",
-          "hint": "Once filled, the provider above is no longer used and the plugin connects to this endpoint directly (for example https://dashscope.aliyuncs.com/compatible-mode/v1)."
-        },
-        "api_key": {
-          "description": "API key for the custom endpoint"
-        },
-        "model": {
-          "description": "Model name for the custom endpoint",
-          "hint": "Must be a vision-capable model, for example qwen-vl-max."
-        }
+      "provider": {
+        "description": "AstrBot provider ID",
+        "hint": "Recommended: add a vision-capable model in AstrBot “Service Providers” (such as qwen-vl-max, glm-4v, gpt-4o) and fill its ID in here. Leave empty to use the current session's chat model."
+      },
+      "base_url": {
+        "description": "Custom OpenAI-compatible endpoint",
+        "hint": "Once filled, the provider above is no longer used and the plugin connects to this endpoint directly (for example https://dashscope.aliyuncs.com/compatible-mode/v1)."
+      },
+      "api_key": {
+        "description": "API key for the custom endpoint"
+      },
+      "model": {
+        "description": "Model name for the custom endpoint",
+        "hint": "Must be a vision-capable model, for example qwen-vl-max."
       }
     },
     "draw_settings": {
       "description": "Default generation parameters",
-      "items": {
-        "override_arch_defaults": {
-          "description": "Force the parameters below (ignore automatic architecture adaptation)",
-          "hint": "When off: the plugin selects the correct resolution, CFG and sampler automatically by checkpoint architecture (SD1.5/SDXL/Pony/Flux); the values below are only a fallback when the architecture is not recognized."
-        },
-        "arch_override": {
-          "description": "Force a checkpoint architecture",
-          "hint": "Leave empty = detect from the file name (containing xl means SDXL, pony/illustrious means Pony, flux means Flux, otherwise SD1.5). Fill in one of sd15 / sdxl / pony / flux / sd3 when detection is wrong."
-        },
-        "default_width": {
-          "description": "Fallback width"
-        },
-        "default_height": {
-          "description": "Fallback height"
-        },
-        "default_steps": {
-          "description": "Fallback steps"
-        },
-        "default_cfg": {
-          "description": "Fallback CFG"
-        },
-        "default_sampler": {
-          "description": "Fallback sampler"
-        },
-        "add_quality_tags": {
-          "description": "Add quality words automatically by architecture",
-          "hint": "When on, positive prompts for SD1.5/Pony models automatically carry quality words (not added for SDXL/Flux — adding them can make results worse)."
-        },
-        "quality_words_by": {
-          "description": "Who writes the quality words",
-          "hint": "plugin=the plugin adds them by checkpoint architecture (default: masterpiece for SD1.5, score_9 for Pony, nothing for Flux); llm=also let the AI write 2–4 image-related quality words itself in the prompt (the plugin's generic words are still merged in, duplicates removed automatically). To leave it entirely to the AI, turn off “Add quality words automatically by architecture” above."
-        },
-        "completion_mode": {
-          "description": "Completion scope",
-          "hint": "strict=follow instructions exactly (default): only what you described is drawn, the AI adds no characters/clothing/props/scenes; commission=commission mode: the AI may add 1–3 **presentation-layer** details (light direction and texture, material texture, composition and depth of field, mood), but must not change the subject count/appearance/clothing style/actions/scene type, and it lists “what the AI added” in the result. Override once with /draw … --commission or --strict."
-        },
-        "commission_params": {
-          "description": "Release sampling parameters as well in commission mode",
-          "hint": "Off by default. When on, in commission mode gentle adjustments are made if you did not specify parameters explicitly: CFG ×0.85 for the SD family (not below 1.5), guidance −1.0 for the Flux family (not below 1.0). Inline --cfg and the configured defaults always take priority."
-        },
-        "negative_mode": {
-          "description": "Negative prompt strategy",
-          "hint": "merge=merge everything (default words + hand-avoidance words + architecture words + LLM words, the most stable); guard_only=your words + hand-avoidance words, ignoring the LLM's negative words; custom_only=only your own words, deduplicated automatically; raw=exactly as given, not even deduplicated. Inline --negative merges under merge/guard_only/custom_only and overrides directly under raw."
-        },
-        "force_vae": {
-          "description": "Force a specific VAE",
-          "hint": "Leave empty = use the checkpoint's built-in VAE. If images come out with a color cast or washed out, fill in the full VAE file name to correct it (put the VAE into ComfyUI's models/vae first)."
-        },
-        "default_negative": {
-          "description": "Default negative prompt",
-          "hint": "Negative prompts are not used for the Flux architecture. Keeping it short and putting the most important words first is recommended; duplicates are removed automatically (((x)) and x count as the same word)."
-        }
+      "override_arch_defaults": {
+        "description": "Force the parameters below (ignore automatic architecture adaptation)",
+        "hint": "When off: the plugin selects the correct resolution, CFG and sampler automatically by checkpoint architecture (SD1.5/SDXL/Pony/Flux); the values below are only a fallback when the architecture is not recognized."
+      },
+      "arch_override": {
+        "description": "Force a checkpoint architecture",
+        "hint": "Leave empty = detect from the file name (containing xl means SDXL, pony/illustrious means Pony, flux means Flux, otherwise SD1.5). Fill in one of sd15 / sdxl / pony / flux / sd3 when detection is wrong."
+      },
+      "default_width": {
+        "description": "Fallback width"
+      },
+      "default_height": {
+        "description": "Fallback height"
+      },
+      "default_steps": {
+        "description": "Fallback steps"
+      },
+      "default_cfg": {
+        "description": "Fallback CFG"
+      },
+      "default_sampler": {
+        "description": "Fallback sampler"
+      },
+      "add_quality_tags": {
+        "description": "Add quality words automatically by architecture",
+        "hint": "When on, positive prompts for SD1.5/Pony models automatically carry quality words (not added for SDXL/Flux — adding them can make results worse)."
+      },
+      "quality_words_by": {
+        "description": "Who writes the quality words",
+        "hint": "plugin=the plugin adds them by checkpoint architecture (default: masterpiece for SD1.5, score_9 for Pony, nothing for Flux); llm=also let the AI write 2–4 image-related quality words itself in the prompt (the plugin's generic words are still merged in, duplicates removed automatically). To leave it entirely to the AI, turn off “Add quality words automatically by architecture” above."
+      },
+      "completion_mode": {
+        "description": "Completion scope",
+        "hint": "strict=follow instructions exactly (default): only what you described is drawn, the AI adds no characters/clothing/props/scenes; commission=commission mode: the AI may add 1–3 **presentation-layer** details (light direction and texture, material texture, composition and depth of field, mood), but must not change the subject count/appearance/clothing style/actions/scene type, and it lists “what the AI added” in the result. Override once with /draw … --commission or --strict."
+      },
+      "commission_params": {
+        "description": "Release sampling parameters as well in commission mode",
+        "hint": "Off by default. When on, in commission mode gentle adjustments are made if you did not specify parameters explicitly: CFG ×0.85 for the SD family (not below 1.5), guidance −1.0 for the Flux family (not below 1.0). Inline --cfg and the configured defaults always take priority."
+      },
+      "negative_mode": {
+        "description": "Negative prompt strategy",
+        "hint": "merge=merge everything (default words + hand-avoidance words + architecture words + LLM words, the most stable); guard_only=your words + hand-avoidance words, ignoring the LLM's negative words; custom_only=only your own words, deduplicated automatically; raw=exactly as given, not even deduplicated. Inline --negative merges under merge/guard_only/custom_only and overrides directly under raw."
+      },
+      "force_vae": {
+        "description": "Force a specific VAE",
+        "hint": "Leave empty = use the checkpoint's built-in VAE. If images come out with a color cast or washed out, fill in the full VAE file name to correct it (put the VAE into ComfyUI's models/vae first)."
+      },
+      "default_negative": {
+        "description": "Default negative prompt",
+        "hint": "Negative prompts are not used for the Flux architecture. Keeping it short and putting the most important words first is recommended; duplicates are removed automatically (((x)) and x count as the same word)."
       }
     },
     "hires": {
       "description": "Hires Fix (generate small, then upscale and redraw)",
-      "items": {
-        "enable": {
-          "description": "Enable Hires Fix automatically for text-to-image",
-          "hint": "Every /draw (text-to-image) automatically goes through an upscale-and-redraw pass. One of the most effective ways to improve hands, faces and detail, but it roughly doubles generation time."
-        },
-        "enable_for_i2i": {
-          "description": "Enable Hires Fix automatically for image-to-image too",
-          "hint": "Only takes effect together with “Enable Hires Fix automatically for text-to-image” above; to use Hires for image-to-image only, enable this option and disable the text-to-image one above, then use inline --hires (per-request override must be allowed)."
-        },
-        "allow_inline": {
-          "description": "Allow per-request overrides of Hires settings",
-          "hint": "When on, users can send /draw description --hires 2.0 or --hires 0 themselves; when off, the configuration above always applies (so nobody can blow up VRAM with a large factor)."
-        },
-        "scale": {
-          "description": "Upscale factor",
-          "hint": "1.5 is a common compromise; 2.0 is sharper but slower and uses more VRAM."
-        },
-        "denoise": {
-          "description": "Second-pass denoise strength",
-          "hint": "0.4–0.6 is typical: too low gains little detail, too high changes the composition."
-        },
-        "steps": {
-          "description": "Second-pass steps (0 = same as the first pass)"
-        },
-        "method": {
-          "description": "Upscale algorithm"
-        }
+      "enable": {
+        "description": "Enable Hires Fix automatically for text-to-image",
+        "hint": "Every /draw (text-to-image) automatically goes through an upscale-and-redraw pass. One of the most effective ways to improve hands, faces and detail, but it roughly doubles generation time."
+      },
+      "enable_for_i2i": {
+        "description": "Enable Hires Fix automatically for image-to-image too",
+        "hint": "Only takes effect together with “Enable Hires Fix automatically for text-to-image” above; to use Hires for image-to-image only, enable this option and disable the text-to-image one above, then use inline --hires (per-request override must be allowed)."
+      },
+      "allow_inline": {
+        "description": "Allow per-request overrides of Hires settings",
+        "hint": "When on, users can send /draw description --hires 2.0 or --hires 0 themselves; when off, the configuration above always applies (so nobody can blow up VRAM with a large factor)."
+      },
+      "scale": {
+        "description": "Upscale factor",
+        "hint": "1.5 is a common compromise; 2.0 is sharper but slower and uses more VRAM."
+      },
+      "denoise": {
+        "description": "Second-pass denoise strength",
+        "hint": "0.4–0.6 is typical: too low gains little detail, too high changes the composition."
+      },
+      "steps": {
+        "description": "Second-pass steps (0 = same as the first pass)"
+      },
+      "method": {
+        "description": "Upscale algorithm"
       }
     },
     "i2i": {
       "description": "Image-to-image (redraw based on the image you send, following your description)",
-      "items": {
-        "enable": {
-          "description": "Use image-to-image automatically when /draw includes an image",
-          "hint": "When off, an attached image is handled as text-to-image; /i2i can still be called explicitly."
-        },
-        "denoise": {
-          "description": "Default denoise strength",
-          "hint": "Measured guidance: 0.30–0.40 changes details only, 0.40–0.50 keeps composition and color, 0.55–0.65 starts changing the art style, above 0.70 is close to a full redraw. Inline --denoise overrides a single request, and you can pass several tiers at once to compare directly (--denoise 0.4,0.55,0.7, sorted ascending with duplicates removed, max 4 tiers)."
-        },
-        "max_side": {
-          "description": "Max long side of the input image (pixels)",
-          "hint": "Larger images are scaled down proportionally so a big image cannot exhaust VRAM; 0 means unlimited."
-        },
-        "subfolder": {
-          "description": "Subdirectory to upload into ComfyUI input",
-          "hint": "Placed under input/astrbot by default, so your input root directory stays clean."
-        }
+      "enable": {
+        "description": "Use image-to-image automatically when /draw includes an image",
+        "hint": "When off, an attached image is handled as text-to-image; /i2i can still be called explicitly."
+      },
+      "denoise": {
+        "description": "Default denoise strength",
+        "hint": "Measured guidance: 0.30–0.40 changes details only, 0.40–0.50 keeps composition and color, 0.55–0.65 starts changing the art style, above 0.70 is close to a full redraw. Inline --denoise overrides a single request, and you can pass several tiers at once to compare directly (--denoise 0.4,0.55,0.7, sorted ascending with duplicates removed, max 4 tiers)."
+      },
+      "max_side": {
+        "description": "Max long side of the input image (pixels)",
+        "hint": "Larger images are scaled down proportionally so a big image cannot exhaust VRAM; 0 means unlimited."
+      },
+      "subfolder": {
+        "description": "Subdirectory to upload into ComfyUI input",
+        "hint": "Placed under input/astrbot by default, so your input root directory stays clean."
       }
     },
     "video": {
       "description": "Video (text-to-video / image-to-video)",
-      "items": {
-        "default_seconds": {
-          "description": "Default duration (seconds)",
-          "hint": "Used when --seconds is not given. The Wan family handles native pacing automatically: with nothing specified it uses 81 frames (24fps ≈ 3.4 seconds); with only --seconds given, the frame count is converted at 24fps. Video is much slower than images — the official example is 121 frames / 5 seconds."
-        },
-        "default_fps": {
-          "description": "Default frame rate",
-          "hint": "Only applies to non-Wan video models. The Wan family is trained at 24fps and automatically uses 24fps — rendering at 8–16fps and playing at normal speed turns into “a blurry image that barely moves” (learned from real testing). To force slow motion, write --fps inline. Frame counts are aligned to 4n+1 automatically."
-        },
-        "max_seconds": {
-          "description": "Max duration (seconds)",
-          "hint": "Requests beyond this are truncated to it with a note in the log, so nobody can ask for 60 seconds and blow up VRAM. 0=unlimited."
-        },
-        "send_video": {
-          "description": "Send the video directly to the chat",
-          "hint": "When off, only the local save path is given in the chat (use this on platforms that cannot send videos)."
-        },
-        "machine": {
-          "description": "Machine tier",
-          "hint": "The tier caps resolution/frames/steps so low-end machines do not get overwhelmed. auto=decided by VRAM (≤10G→low, 12–20G→mid, ≥24G→high; with RAM <20G drop one tier). Low-end example: 8G VRAM/16G RAM → 480p, ≤97 frames, distilled models ≤12 steps; standard example: 12–20G VRAM/32G RAM → 720p, ≤121 frames, ≤30 steps; high-end example: ≥24G VRAM/64G RAM → 720p, ≤161 frames, ≤50 steps. To exceed the caps, pick a higher tier manually (whether it can run is your responsibility)."
-        },
-        "t2v_model": {
-          "description": "Default text-to-video model",
-          "hint": "Used when --model is not given (fill in the file name; a partial keyword is enough). Leave empty = automatically pick the first video weights. Low-end recommendation: Wan2_2-TI2V-5B-Turbo-Q4_K_M.gguf (fast) or Wan2.2-TI2V-5B-Q4_K_M.gguf (quality); standard recommendation: wan2.2_ti2v_5B_fp16.safetensors. Put models in diffusion_models/ or unet_gguf/."
-        },
-        "i2v_model": {
-          "description": "Default image-to-video model",
-          "hint": "Used when --model is not given. Wan 2.2 TI2V-5B shares one model for text-to-video and image-to-video, so both entries can be the same on low-end setups; if you have separate I2V weights (such as wan2.2_i2v_* or Wan2.1 I2V), fill that in instead. Leave empty = auto-pick."
-        }
+      "default_seconds": {
+        "description": "Default duration (seconds)",
+        "hint": "Used when --seconds is not given. The Wan family handles native pacing automatically: with nothing specified it uses 81 frames (24fps ≈ 3.4 seconds); with only --seconds given, the frame count is converted at 24fps. Video is much slower than images — the official example is 121 frames / 5 seconds."
+      },
+      "default_fps": {
+        "description": "Default frame rate",
+        "hint": "Only applies to non-Wan video models. The Wan family is trained at 24fps and automatically uses 24fps — rendering at 8–16fps and playing at normal speed turns into “a blurry image that barely moves” (learned from real testing). To force slow motion, write --fps inline. Frame counts are aligned to 4n+1 automatically."
+      },
+      "max_seconds": {
+        "description": "Max duration (seconds)",
+        "hint": "Requests beyond this are truncated to it with a note in the log, so nobody can ask for 60 seconds and blow up VRAM. 0=unlimited."
+      },
+      "send_video": {
+        "description": "Send the video directly to the chat",
+        "hint": "When off, only the local save path is given in the chat (use this on platforms that cannot send videos)."
+      },
+      "machine": {
+        "description": "Machine tier",
+        "hint": "The tier caps resolution/frames/steps so low-end machines do not get overwhelmed. auto=decided by VRAM (≤10G→low, 12–20G→mid, ≥24G→high; with RAM <20G drop one tier). Low-end example: 8G VRAM/16G RAM → 480p, ≤97 frames, distilled models ≤12 steps; standard example: 12–20G VRAM/32G RAM → 720p, ≤121 frames, ≤30 steps; high-end example: ≥24G VRAM/64G RAM → 720p, ≤161 frames, ≤50 steps. To exceed the caps, pick a higher tier manually (whether it can run is your responsibility)."
+      },
+      "t2v_model": {
+        "description": "Default text-to-video model",
+        "hint": "Used when --model is not given (fill in the file name; a partial keyword is enough). Leave empty = automatically pick the first video weights. Low-end recommendation: Wan2_2-TI2V-5B-Turbo-Q4_K_M.gguf (fast) or Wan2.2-TI2V-5B-Q4_K_M.gguf (quality); standard recommendation: wan2.2_ti2v_5B_fp16.safetensors. Put models in diffusion_models/ or unet_gguf/."
+      },
+      "i2v_model": {
+        "description": "Default image-to-video model",
+        "hint": "Used when --model is not given. Wan 2.2 TI2V-5B shares one model for text-to-video and image-to-video, so both entries can be the same on low-end setups; if you have separate I2V weights (such as wan2.2_i2v_* or Wan2.1 I2V), fill that in instead. Leave empty = auto-pick."
       }
     },
     "output": {
       "description": "Result delivery and image retention",
-      "items": {
-        "mention_trigger_user": {
-          "description": "Mention the triggering user when generating in a group chat"
-        },
-        "show_params": {
-          "description": "Attach parameter info to the image",
-          "hint": "Shows the template name, checkpoint, resolution, seed and elapsed time, making results easy to reproduce."
-        },
-        "merge_forward": {
-          "description": "Merge into a single forwarded message",
-          "hint": "Packs the parameter text and images into **a single “merged forward” message**, so generating several images no longer floods the chat (QQ personal account / OneBot v11 only). ⚠️ Images are embedded as base64, so three cases fall back to normal sending automatically: the platform is not aiocqhttp, the result is a video, or the total image size exceeds 20MB."
-        },
-        "merge_forward_name": {
-          "description": "Nickname on the forwarded card",
-          "hint": "The sender nickname shown in the merged forward card; leave empty to use “ComfyUI Smart Drawing”."
-        },
-        "show_progress": {
-          "description": "Send live progress while generating",
-          "hint": "Shows “step n / total steps” via ComfyUI's WebSocket push. If the WebSocket cannot connect it falls back to polling automatically, without affecting generation. When off, results are sent only on completion."
-        },
-        "progress_interval": {
-          "description": "Minimum interval between progress updates (seconds)",
-          "hint": "Step events are very dense (one per step); they are throttled to this interval to avoid flooding. 0 means no throttling."
-        },
-        "keep_images": {
-          "description": "Max images kept locally",
-          "hint": "Beyond this, the oldest images are deleted by time so the disk does not fill up. 0 means no count-based cleanup."
-        },
-        "image_max_age_days": {
-          "description": "Days to keep local images",
-          "hint": "Images older than this are deleted. 0 means no time-based cleanup."
-        }
+      "mention_trigger_user": {
+        "description": "Mention the triggering user when generating in a group chat"
+      },
+      "show_params": {
+        "description": "Attach parameter info to the image",
+        "hint": "Shows the template name, checkpoint, resolution, seed and elapsed time, making results easy to reproduce."
+      },
+      "merge_forward": {
+        "description": "Merge into a single forwarded message",
+        "hint": "Packs the parameter text and images into **a single “merged forward” message**, so generating several images no longer floods the chat (QQ personal account / OneBot v11 only). ⚠️ Images are embedded as base64, so three cases fall back to normal sending automatically: the platform is not aiocqhttp, the result is a video, or the total image size exceeds 20MB."
+      },
+      "merge_forward_name": {
+        "description": "Nickname on the forwarded card",
+        "hint": "The sender nickname shown in the merged forward card; leave empty to use “ComfyUI Smart Drawing”."
+      },
+      "show_progress": {
+        "description": "Send live progress while generating",
+        "hint": "Shows “step n / total steps” via ComfyUI's WebSocket push. If the WebSocket cannot connect it falls back to polling automatically, without affecting generation. When off, results are sent only on completion."
+      },
+      "progress_interval": {
+        "description": "Minimum interval between progress updates (seconds)",
+        "hint": "Step events are very dense (one per step); they are throttled to this interval to avoid flooding. 0 means no throttling."
+      },
+      "keep_images": {
+        "description": "Max images kept locally",
+        "hint": "Beyond this, the oldest images are deleted by time so the disk does not fill up. 0 means no count-based cleanup."
+      },
+      "image_max_age_days": {
+        "description": "Days to keep local images",
+        "hint": "Images older than this are deleted. 0 means no time-based cleanup."
       }
     },
     "permission": {
       "description": "Permissions and quotas (admin identity follows AstrBot's built-in administrator setting)",
-      "items": {
-        "whitelist_user_ids": {
-          "description": "User whitelist",
-          "hint": "Leave empty for no restriction. Only users in the list (and administrators) may generate images."
-        },
-        "blacklist_user_ids": {
-          "description": "User blacklist",
-          "hint": "The blacklist has the highest priority, administrators included."
-        },
-        "daily_limit": {
-          "description": "Daily generation limit per user",
-          "hint": "0 means unlimited. Counts are written to disk and are not reset by a restart."
-        },
-        "cooldown_seconds": {
-          "description": "Per-user cooldown (seconds)"
-        },
-        "admin_bypass": {
-          "description": "Administrators bypass the whitelist, cooldown and quotas"
-        },
-        "feature_rules": {
-          "description": "Per-group/per-user feature whitelist",
-          "hint": "One rule per line; lines starting with `#` are comments. Format:\nuser:123456=t2i,i2v ← this user may use text-to-image and image-to-video\ngroup:987654=t2i   ← this group may only use text-to-image\ndefault=t2i,i2i    ← features available to everyone else\nFeature names: t2i / i2i / outpaint / inpaint / t2v / i2v / reverse_prompt; you may also write all (everything) or none (all disabled).\nPriority: user > group > default > the “Feature switches” above. Administrators are not restricted here while “bypass” is on.\nLeave empty = everyone follows the global feature switches."
-        },
-        "video_daily_limit": {
-          "description": "Daily video limit per user (0 = unlimited)",
-          "hint": "A single video often takes minutes, so a separate limit makes sense; the daily image limit above is still used for images."
-        },
-        "video_cooldown": {
-          "description": "Video cooldown (seconds, 0 = unlimited)",
-          "hint": "Video-specific cooldown; the cooldown above is still used for images."
-        },
-        "nsfw_filter": {
-          "description": "Content filter (block explicit descriptions)",
-          "hint": "Descriptions that match the word list are blocked outright (silent by default; enable the notice below). Both the user's wording and the AI-rewritten prompt are checked."
-        },
-        "nsfw_words": {
-          "description": "Content filter word list (one per line, empty = built-in)",
-          "hint": "Leave empty to use the built-in generic list; once filled, the built-in list plus your entries apply. Case-insensitive."
-        },
-        "nsfw_negative": {
-          "description": "Negative words added while the content filter is on",
-          "hint": "For example `nsfw, nude, explicit`; appended to the negative prompt only while the content filter is on, to reduce borderline results."
-        },
-        "nsfw_notify": {
-          "description": "Notify the user when the content filter blocks a request",
-          "hint": "Off by default (silently ignored, consistent with the feature switches); when on, it replies “blocked by the content filter”."
-        },
-        "audit_log": {
-          "description": "Write an audit log",
-          "hint": "Records every generation (who/when/purpose/which model/elapsed time/first 60 characters of the prompt) and content-filter blocks. Administrators view it with /audit [count] [--user ID]; the config-page API is at /audit. The file is audit.jsonl in the plugin data directory and keeps only the latest 2000 entries."
-        }
+      "whitelist_user_ids": {
+        "description": "User whitelist",
+        "hint": "Leave empty for no restriction. Only users in the list (and administrators) may generate images."
+      },
+      "blacklist_user_ids": {
+        "description": "User blacklist",
+        "hint": "The blacklist has the highest priority, administrators included."
+      },
+      "daily_limit": {
+        "description": "Daily generation limit per user",
+        "hint": "0 means unlimited. Counts are written to disk and are not reset by a restart."
+      },
+      "cooldown_seconds": {
+        "description": "Per-user cooldown (seconds)"
+      },
+      "admin_bypass": {
+        "description": "Administrators bypass the whitelist, cooldown and quotas"
+      },
+      "feature_rules": {
+        "description": "Per-group/per-user feature whitelist",
+        "hint": "One rule per line; lines starting with `#` are comments. Format:\nuser:123456=t2i,i2v ← this user may use text-to-image and image-to-video\ngroup:987654=t2i   ← this group may only use text-to-image\ndefault=t2i,i2i    ← features available to everyone else\nFeature names: t2i / i2i / outpaint / inpaint / t2v / i2v / reverse_prompt; you may also write all (everything) or none (all disabled).\nPriority: user > group > default > the “Feature switches” above. Administrators are not restricted here while “bypass” is on.\nLeave empty = everyone follows the global feature switches."
+      },
+      "video_daily_limit": {
+        "description": "Daily video limit per user (0 = unlimited)",
+        "hint": "A single video often takes minutes, so a separate limit makes sense; the daily image limit above is still used for images."
+      },
+      "video_cooldown": {
+        "description": "Video cooldown (seconds, 0 = unlimited)",
+        "hint": "Video-specific cooldown; the cooldown above is still used for images."
+      },
+      "nsfw_filter": {
+        "description": "Content filter (block explicit descriptions)",
+        "hint": "Descriptions that match the word list are blocked outright (silent by default; enable the notice below). Both the user's wording and the AI-rewritten prompt are checked."
+      },
+      "nsfw_words": {
+        "description": "Content filter word list (one per line, empty = built-in)",
+        "hint": "Leave empty to use the built-in generic list; once filled, the built-in list plus your entries apply. Case-insensitive."
+      },
+      "nsfw_negative": {
+        "description": "Negative words added while the content filter is on",
+        "hint": "For example `nsfw, nude, explicit`; appended to the negative prompt only while the content filter is on, to reduce borderline results."
+      },
+      "nsfw_notify": {
+        "description": "Notify the user when the content filter blocks a request",
+        "hint": "Off by default (silently ignored, consistent with the feature switches); when on, it replies “blocked by the content filter”."
+      },
+      "audit_log": {
+        "description": "Write an audit log",
+        "hint": "Records every generation (who/when/purpose/which model/elapsed time/first 60 characters of the prompt) and content-filter blocks. Administrators view it with /audit [count] [--user ID]; the config-page API is at /audit. The file is audit.jsonl in the plugin data directory and keeps only the latest 2000 entries."
       }
     },
     "agent": {
       "description": "Instruction-free generation (let the chat model call the drawing capability directly)",
-      "items": {
-        "enable_llm_tool": {
-          "description": "Enable instruction-free generation",
-          "hint": "When on, users can simply say “draw me a …” to get an image without typing /draw. The model in use must support tool calling (function calling)."
-        }
+      "enable_llm_tool": {
+        "description": "Enable instruction-free generation",
+        "hint": "When on, users can simply say “draw me a …” to get an image without typing /draw. The model in use must support tool calling (function calling)."
       }
     }
   },

@@ -4129,6 +4129,42 @@ def main() -> int:
     )
     check("每种语言的键完全一致（metadata/config 允许只在一侧，靠官方回退）",
           not _one_sided, _one_sided[:5])
+
+    # config 的键路径必须**不含 items 层**。
+    # AstrBot 的 ConfigMetadataI18n.convert_to_i18n_keys() 拼键时只串字段名：
+    #     field_path = f"{prefix}.{field_name}" ...
+    #     description -> f"{group}.{section}.{field_path}.description"
+    # 分组标题则是 f"{group}.{section}.description"。
+    # 多写一层 items（config.features.items.t2i.description）会**静默失效**：
+    # 分组标题因为正好对上仍然能翻译，而所有字段说明与 hint 一条都不生效 ——
+    # 界面上表现为「英文里夹中文」，不报错、极难发现。这条守卫就是为它加的。
+    _schema_cfg = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+    _cfg_missing: list[str] = []
+
+    def _walk_cfg(node, path):
+        for key, spec in (node or {}).items():
+            if not isinstance(spec, dict):
+                continue
+            here = path + [key]
+            dotted = ".".join(here)
+            if spec.get("type") == "object" and isinstance(spec.get("items"), dict):
+                if not (cat("en-US", f"config.{dotted}.description") or "").strip():
+                    _cfg_missing.append(f"{dotted} (分组 description)")
+                _walk_cfg(spec["items"], here)
+            else:
+                if not (cat("en-US", f"config.{dotted}.description") or "").strip():
+                    _cfg_missing.append(f"{dotted} (description)")
+                if spec.get("hint") and not (
+                    cat("en-US", f"config.{dotted}.hint") or ""
+                ).strip():
+                    _cfg_missing.append(f"{dotted} (hint)")
+
+    _walk_cfg(_schema_cfg, [])
+    check("en-US 的 config 按官方键路径逐项覆盖 schema（无 items 层）",
+          not _cfg_missing, _cfg_missing[:6])
+    check("config 里不允许出现 items 这一层（官方键不含它）",
+          "items" not in json.dumps(catalog["en-US"].get("config") or {}),
+          sorted({p for p in _flat(catalog["en-US"]) if "items" in p})[:5])
     check("中英文案确实不同（不是复制粘贴糊弄）",
           cat("zh-CN", "perm.whitelist") != cat("en-US", "perm.whitelist")
           and any("\u4e00" <= ch <= "\u9fff" for ch in cat("zh-CN", "perm.whitelist"))
