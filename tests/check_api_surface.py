@@ -23,7 +23,8 @@ PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 # (说明, 相对 AstrBot 根目录的路径, 类名, 需要存在的成员)
 MEMBER_TARGETS: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
     ("Star Context", "astrbot/core/star/context.py", "Context",
-     ("register_web_api", "activate_llm_tool", "deactivate_llm_tool",
+     # 用 _async 版：同步的 activate_llm_tool / deactivate_llm_tool 上游已标 @deprecated
+     ("register_web_api", "activate_llm_tool_async", "deactivate_llm_tool_async",
       "get_all_providers", "get_provider_by_id", "llm_generate",
       "get_current_chat_provider_id")),
     ("StarTools", "astrbot/core/star/star_tools.py", "StarTools", ("get_data_dir",)),

@@ -447,16 +447,62 @@ const zhCatalog = JSON.parse(fs.readFileSync(
   path.join(__dirname, '..', '.astrbot-plugin', 'i18n', 'zh-CN.json'), 'utf8'));
 const enCatalog = JSON.parse(fs.readFileSync(
   path.join(__dirname, '..', '.astrbot-plugin', 'i18n', 'en-US.json'), 'utf8'));
+
+/* 官方 i18n 要求**嵌套**结构（不支持点号扁平 key），所以这里按点号路径下钻取值，
+   并把整份文案拍平成点号键集合用于「中英是否一一对应」的比较。 */
+function lookupKey(root, dotted) {
+  let cur = root;
+  for (const part of String(dotted).split('.')) {
+    if (!cur || typeof cur !== 'object' || !(part in cur)) return undefined;
+    cur = cur[part];
+  }
+  return cur;
+}
+
+function flattenKeys(node, prefix = '') {
+  const out = {};
+  for (const [k, v] of Object.entries(node || {})) {
+    const path = prefix ? `${prefix}.${k}` : k;
+    if (v && typeof v === 'object' && !Array.isArray(v)) Object.assign(out, flattenKeys(v, path));
+    else out[path] = v;
+  }
+  return out;
+}
+
+const zhFlat = flattenKeys(zhCatalog);
+const enFlat = flattenKeys(enCatalog);
 const usedKeys = [...panelHtml.matchAll(/data-i18n(?:-html|-placeholder|-title)?="([^"]+)"/g)]
   .map((m) => m[1]);
-const missingZh = usedKeys.filter((k) => !(k in zhCatalog));
-const missingEn = usedKeys.filter((k) => !(k in enCatalog));
+const missingZh = usedKeys.filter((k) => lookupKey(zhCatalog, k) === undefined);
+const missingEn = usedKeys.filter((k) => lookupKey(enCatalog, k) === undefined);
 check('data-i18n 用到的键在中英目录里都有（' + usedKeys.length + ' 个）',
   missingZh.length === 0 && missingEn.length === 0, { missingZh, missingEn });
-check('中英语言目录键集合一致（不会出现只翻一半）',
-  Object.keys(zhCatalog).length === Object.keys(enCatalog).length
-  && Object.keys(zhCatalog).every((k) => k in enCatalog),
-  { zh: Object.keys(zhCatalog).length, en: Object.keys(enCatalog).length });
+// 中英文案集合要一一对应，但有两类**故意只在一侧**：
+//   metadata.*：zh-CN 不写，回退到 metadata.yaml（本来就是中文）；
+//   config.*  ：zh-CN 不写，回退到 _conf_schema.json 的 description/hint（本来就是中文）。
+// 这两类只在 en-US 补英文覆盖，所以从「差异」里排除，其余任何单侧键都算漏翻。
+const onlyZh = Object.keys(zhFlat).filter((k) => !(k in enFlat));
+const onlyEn = Object.keys(enFlat).filter((k) => !(k in zhFlat));
+const allowedOneSided = (k) => k.startsWith('metadata.') || k.startsWith('config.');
+const unexpectedOneSided = [...onlyZh, ...onlyEn].filter((k) => !allowedOneSided(k));
+check('中英语言目录键集合一致（不会出现只翻一半；metadata/config 靠官方回退）',
+  unexpectedOneSided.length === 0,
+  { onlyZh: onlyZh.slice(0, 5), onlyEn: onlyEn.slice(0, 5), zh: Object.keys(zhFlat).length,
+    en: Object.keys(enFlat).length });
+check('语言文件是嵌套结构，没有点号扁平 key（官方硬性要求）',
+  Object.keys(zhCatalog).every((k) => !k.includes('.'))
+  && Object.keys(enCatalog).every((k) => !k.includes('.')),
+  Object.keys(zhCatalog).filter((k) => k.includes('.')));
+check('插件卡片文案走官方 metadata 段（否则英文界面显示中文）',
+  ['display_name', 'short_desc', 'desc'].every(
+    (f) => typeof lookupKey(enCatalog, `metadata.${f}`) === 'string'
+      && lookupKey(enCatalog, `metadata.${f}`).length > 0),
+  Object.keys(enCatalog.metadata || {}));
+check('视图标题走官方 views.<目录>.title（否则侧边栏显示裸目录名）',
+  ['title', 'description'].every(
+    (f) => typeof lookupKey(zhCatalog, `views.settings.${f}`) === 'string'
+      && typeof lookupKey(enCatalog, `views.settings.${f}`) === 'string'),
+  { zh: zhCatalog.views, en: enCatalog.views });
 
 /* ---------- 配置面板与字段定义必须同步（真出过：FIELDS 加了、HTML 没加控件） ---------- */
 const htmlSource = fs.readFileSync(

@@ -69,7 +69,7 @@ from .error_hints import (
 
 PLUGIN_NAME = "astrbot_plugin_comfyui_smart"
 # 与 metadata.yaml 的 version 保持一致（tests/test_logic.py 会校验二者不漂移）
-PLUGIN_VERSION = "0.33.0"
+PLUGIN_VERSION = "0.34.0"
 
 # ControlNet 的深度预处理器权重是「按需下载」的（不在 models/ 下），
 # 探测结果按（后端 + 节点 + 权重名）缓存这么久，避免每次出图都多一次往返。
@@ -544,12 +544,21 @@ class ComfyUISmartPlugin(Star):
         # 保留 AstrBotConfig 实例本身，绝不替换成普通 dict —— 否则无法落盘
         self.config: AstrBotConfig | dict = config if config is not None else {}
 
-        # 官方数据目录（>=4.9.2 可用 self.name）
+        # 官方数据目录：data/plugin_data/<插件名>（>=4.9.2 可用，metadata 已要求 >=4.26.0）。
+        # **刻意不做「退回插件目录」的兜底**：插件目录在更新时会被整包覆盖，
+        # 数据写进去等于等着被删 —— 官方文档明确不让这么做。
+        # 建目录失败就记一条 error 再抛出去，让 AstrBot 把问题暴露在启动日志里，
+        # 而不是静默落到一个「能跑但迟早丢数据」的位置。
         try:
             self.data_dir = Path(StarTools.get_data_dir(PLUGIN_NAME))
-        except Exception:
-            self.data_dir = Path(__file__).resolve().parent / "data"
-            self.data_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            logger.error(
+                "无法创建插件数据目录 data/plugin_data/%s：%s。"
+                "请检查 AstrBot 数据目录的写权限与磁盘空间；"
+                "插件不会退回到自身目录（那里升级时会被覆盖）",
+                PLUGIN_NAME, e,
+            )
+            raise
         self.storage = Storage(self.data_dir)
 
         # 国际化：按官方约定读 .astrbot-plugin/i18n/*.json（配置项 language 可切）
@@ -738,7 +747,7 @@ class ComfyUISmartPlugin(Star):
         removed = self.storage.prune_images(keep=keep, max_age_days=age)
         if removed:
             logger.info("已清理 %d 张过期图片", removed)
-        self._sync_llm_tool()
+        await self._sync_llm_tool()
 
     async def terminate(self) -> None:
         """插件被禁用/重载时调用：收口连接与在途任务。"""
@@ -813,20 +822,38 @@ class ComfyUISmartPlugin(Star):
 
         self.reload_components()
         await self._flush_retired_pools()
-        self._sync_llm_tool()
+        await self._sync_llm_tool()
         logger.info("配置已通过 Pages 更新并落盘")
         return {"saved": True, "keys": sorted(payload.keys())}
 
-    def _sync_llm_tool(self) -> None:
-        """按配置启用/停用「无指令出图」工具。"""
-        enabled = bool((self.config.get("agent") or {}).get("enable_llm_tool", False))
+    async def _sync_llm_tool(self) -> None:
+        """按配置启用/停用「无指令出图」工具（`generate_image`）。
+
+        这里要同时判**两个口径**，少判一个就会错位：
+
+        - `agent.enable_llm_tool`：用户想不想开这个功能；
+        - `features.t2i`：插件整体还允不允许出图。
+
+        只判前者会出现「文生图全局关了、工具却还挂着」：模型照样看得到这个工具、
+        照样会调用，进了 handler 才被 `feature_enabled` 拦下、静默 `return None` ——
+        用户没拿到图，token 已经烧掉了。所以两个都满足才激活。
+
+        handler 里那句带 event 的 `feature_enabled("t2i", event)` 仍然保留、**不能删**：
+        它负责按群/用户的功能白名单再判一次，这是全局开关替代不了的。
+
+        用 `_async` 版而不是 `activate_llm_tool`：后者在 AstrBot 里已标 `@deprecated`。
+        等上游删掉同步版时，下面的 `except` 会把它悄悄吞掉、工具静默失效，
+        所以失败改用 warning 记 —— 宁可日志吵一点，也不要静默。
+        """
+        agent_conf = self.config.get("agent", {}) or {}
+        enabled = bool(agent_conf.get("enable_llm_tool", False)) and self.feature_enabled("t2i")
         try:
             if enabled:
-                self.context.activate_llm_tool("generate_image")
+                await self.context.activate_llm_tool_async("generate_image")
             else:
-                self.context.deactivate_llm_tool("generate_image")
+                await self.context.deactivate_llm_tool_async("generate_image")
         except Exception as e:
-            logger.debug("切换 LLM 工具状态失败：%s", e)
+            logger.warning("切换 LLM 工具状态失败（generate_image 可能不可用）：%s", e)
 
     async def refresh_models(self) -> dict:
         """重新发现 ComfyUI 模型并写入缓存。
@@ -2473,12 +2500,18 @@ class ComfyUISmartPlugin(Star):
 
         return _on_wait, _on_queued, _on_progress
 
-    @filter.command("取消", alias={"停止", "cancel", "stop", "中断"})
+    # 注意：别名里**不能有 stop**。AstrBot 主程序内置了 `@filter.command("stop")`
+    # （astrbot/builtin_stars/builtin_commands/main.py，用来停止当前会话的 Agent 任务），
+    # 而且它只 set_result、不 stop_event，本插件这边也不 stop_event ——
+    # 两边都不中止事件传播，用户发 /stop 会同时收到内置那句
+    # 「No running tasks in the current session.」和本插件的「你现在没有正在排队的任务」，
+    # 一个英文一个中文并排出现。而且语义本来就不一样：那个停 Agent，这个取消出图。
+    @filter.command("取消", alias={"停止", "cancel", "中断"})
     async def cmd_cancel(self, event: AstrMessageEvent):
         """取消自己正在排队或正在出图的任务。"""
         uid = str(event.get_sender_id())
         is_admin = bool(event.is_admin())
-        raw = _extract_command_payload(event, "取消", "停止", "cancel", "stop", "中断")
+        raw = _extract_command_payload(event, "取消", "停止", "cancel", "中断")
         want_all = bool(is_admin and raw.strip() in ("全部", "所有", "--all", "--全部", "all"))
 
         running: list[str] = []
@@ -2575,6 +2608,8 @@ class ComfyUISmartPlugin(Star):
 
         received = (self.t("cmd.draw.received_image") if source_image
                     else self.t("cmd.draw.received"))
+        # 带图出图只取第一张：多附的图要说清楚，别静默丢弃
+        received += self._extra_image_hint(images, 1)
         yield event.plain_result(append_inline_hint(received, raw))
 
         on_wait, on_queued, on_progress = self._queue_notifiers(event)
@@ -2848,6 +2883,27 @@ class ComfyUISmartPlugin(Star):
             if path and str(path) not in paths:
                 paths.append(str(path))
         return paths
+
+    def _extra_image_hint(self, images: list[str], used: int) -> str:
+        """多附图、但只有前 N 张参与出图时给一句提示。
+
+        为什么必须说：`/图生图`（以及 `/画图` 带图、`/扩图`）只取 `images[0]`，
+        `/图生视频` 取前两张当首尾帧 —— 多附的图**会被静默忽略**。
+        真机上最容易踩的形态是「参考图一（身份）+ 目标图（姿势）」：用户以为插件会分工，
+        实际只用第一张，于是姿势/构图跟预期完全不同，而消息里没有任何线索指向这里。
+        插件确实没有「身份来自 A、姿势来自 B」的能力（那要 IPAdapter / ControlNet 的自定义模板），
+        但**至少要让人知道这次用了哪张**。
+
+        Args:
+            images: 本次收集到的图片路径列表。
+            used: 实际参与出图的张数。
+
+        Returns:
+            提示文案；不需要提示时返回空串。
+        """
+        if len(images) <= used:
+            return ""
+        return self.t("cmd.image.extra_ignored", total=len(images), used=used)
 
     def _dump_failed_graph(self, graph: dict, error) -> Path:
         """把提交失败的工作流写到数据目录，供排查。
@@ -3344,7 +3400,8 @@ class ComfyUISmartPlugin(Star):
             yield event.plain_result(self.t("cmd.img2img.need_desc"))
             return
 
-        yield event.plain_result(append_inline_hint(self.t("cmd.img2img.received"), raw))
+        yield event.plain_result(append_inline_hint(
+            self.t("cmd.img2img.received") + self._extra_image_hint(images, 1), raw))
 
         on_wait, on_queued, on_progress = self._queue_notifiers(event)
 
@@ -3407,7 +3464,8 @@ class ComfyUISmartPlugin(Star):
             # 不给描述也能用：给一句通用的「往外延伸」，交给 LLM 改写（若开启）
             desc = self.t("cmd.outpaint.default_prompt")
 
-        yield event.plain_result(append_inline_hint(self.t("cmd.outpaint.received"), raw))
+        yield event.plain_result(append_inline_hint(
+            self.t("cmd.outpaint.received") + self._extra_image_hint(images, 1), raw))
         on_wait, on_queued, on_progress = self._queue_notifiers(event)
 
         try:
@@ -3472,7 +3530,8 @@ class ComfyUISmartPlugin(Star):
         start_image = images[0]
         end_image = images[1] if len(images) > 1 else ""
         tip_key = "cmd.i2v.received_frames" if end_image else "cmd.i2v.received"
-        yield event.plain_result(append_inline_hint(self.t(tip_key), raw))
+        received = self.t(tip_key) + self._extra_image_hint(images, 2 if end_image else 1)
+        yield event.plain_result(append_inline_hint(received, raw))
 
         on_wait, on_queued, on_progress = self._queue_notifiers(event)
         try:

@@ -80,6 +80,29 @@ def _lookup(flat: dict, key: str) -> str:
     return current if isinstance(current, str) else ""
 
 
+def _flatten(node: dict, prefix: str = "") -> dict[str, str]:
+    """把嵌套文案拍平成点号键。
+
+    官方 i18n 要求语言文件用**嵌套**结构（`"views": {"settings": {"title": ...}}`），
+    但插件页是按 `data-i18n="ui.nav.server"` 这种点号键取值的，所以这里拍回去。
+
+    Args:
+        node: 嵌套字典。
+        prefix: 当前层级的前缀。
+
+    Returns:
+        `{"ui.nav.server": "服务器", ...}`；非字符串的叶子会被忽略。
+    """
+    out: dict[str, str] = {}
+    for key, value in (node or {}).items():
+        path = f"{prefix}.{key}" if prefix else str(key)
+        if isinstance(value, dict):
+            out.update(_flatten(value, path))
+        elif isinstance(value, str):
+            out[path] = value
+    return out
+
+
 class Translator:
     """把键翻译成当前语言文案。"""
 
@@ -179,12 +202,19 @@ class Translator:
         return self.t(key, **kwargs)
 
     def ui_strings(self) -> dict:
-        """插件页要用的那部分文案（`ui.` 前缀）。"""
+        """插件页要用的那部分文案（`ui` 子树，拍平成点号键）。
+
+        语言文件是**嵌套**结构（官方要求，不支持点号扁平 key），所以这里把 `ui` 子树
+        拍平回 `ui.nav.server` 这样的键 —— 页面里的 `data-i18n` 属性不用改。
+
+        Returns:
+            `{"ui.nav.server": "服务器", ...}`；先取兜底语言，再用当前语言覆盖。
+        """
         merged: dict = {}
         for locale in (self._default, self._locale):
-            for key, value in (self._catalog.get(locale) or {}).items():
-                if key.startswith("ui."):
-                    merged[key] = value
+            root = (self._catalog.get(locale) or {}).get("ui")
+            if isinstance(root, dict):
+                merged.update(_flatten(root, "ui"))
         return merged
 
 

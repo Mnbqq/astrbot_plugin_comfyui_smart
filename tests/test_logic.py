@@ -345,6 +345,8 @@ class Context:
     def __init__(self):
         self.registered_web_apis = []
         self.active_tools = set()
+        # 记录 _sync_llm_tool 到底调了哪个 API（用来断言走的是 _async 版）
+        self.llm_tool_calls = []
         self._providers = {}
         self.llm_calls = []
         self.llm_reply = "{}"
@@ -368,11 +370,17 @@ class Context:
         text = self.llm_reply
         return type("Resp", (), {"completion_text": text})()
 
-    def activate_llm_tool(self, name):
+    # 只保留 _async 版，且刻意不提供同步的 activate_llm_tool / deactivate_llm_tool：
+    # 那两个在 AstrBot 里已标 @deprecated，插件一旦退回同步版就会 AttributeError，
+    # 而 _sync_llm_tool 里的 except 会把它吞掉 → 下面的断言会看到「工具没被激活」而失败。
+    # 这是有意为之的回归守卫，别把同步桩加回来。
+    async def activate_llm_tool_async(self, name):
+        self.llm_tool_calls.append(("activate", name))
         self.active_tools.add(name)
         return True
 
-    def deactivate_llm_tool(self, name):
+    async def deactivate_llm_tool_async(self, name):
+        self.llm_tool_calls.append(("deactivate", name))
         self.active_tools.discard(name)
         return True
 
@@ -1093,8 +1101,10 @@ def main() -> int:
           and saved_config["server"]["base_url"] == "127.0.0.1:8188", saved_config.get("server"))
     check("Pages 保存确实落盘", getattr(plugin.config, "saved", 0) >= 1)
     plugin.config["agent"] = {"enable_llm_tool": True}
-    plugin._sync_llm_tool()
+    asyncio.run(plugin._sync_llm_tool())
     check("开关可激活 LLM 工具", "generate_image" in ctx.active_tools, ctx.active_tools)
+    check("激活走的是 _async 版 API（同步版上游已废弃）",
+          ("activate", "generate_image") in ctx.llm_tool_calls, ctx.llm_tool_calls)
 
     print("\n=== 出图主流程（mock ComfyUI）===")
     s4 = api.aiohttp.ClientSession()
@@ -2386,6 +2396,41 @@ def main() -> int:
           any("图生图" in x.get("text", "") for x in out_i2i if x.get("type") == "plain")
           or any(x.get("type") == "chain" for x in out_i2i),
           [x.get("type") for x in out_i2i])
+
+    # 多附图只会用第一张（v0.34.0）：必须说清楚，别静默丢弃
+    # 真机形态：「参考图一（身份）+ 目标图（姿势）」—— 用户以为会分工，实际只用第一张
+    # 注意用独立 sender_id：默认冷却 10 秒，别把后面几条用例的用户冷却掉
+    sess_multi = i2i_session(pid="i2i-multi")
+    ev_multi = AstrMessageEvent(
+        sender_id="img-multi-user", message_str="/图生图 换成红发少女",
+        message=[StubImage(str(png_path)), StubImage("/tmp/second.png")])
+    out_multi = asyncio.run(drive(plugin.cmd_img2img(ev_multi)))
+    text_multi = "\n".join(x.get("text", "") for x in out_multi)
+    check("多附图时明确提示只用前 1 张（不静默丢弃）",
+          "2 张图" in text_multi and "只用前 1 张" in text_multi, text_multi[:80])
+    sub_multi = None
+    for method, path, kw in sess_multi.calls:
+        if method == "POST" and path == "/prompt":
+            sub_multi = kw["json"]["prompt"]
+    uploaded = [c for c in sess_multi.calls if c[0] == "POST" and c[1] == "/upload/image"]
+    uploaded_names = []
+    for call in uploaded:
+        fields = getattr(call[2].get("data"), "fields", {}) or {}
+        uploaded_names.append(str((fields.get("image") or {}).get("kwargs", {}).get("filename", "")))
+    check("多附图时只上传第一张（第二张根本没进流水线）",
+          len(uploaded) == 1 and uploaded_names[0].endswith(".png"),
+          (len(uploaded), uploaded_names))
+    check("提交的工作流里没有第二张图的痕迹",
+          sub_multi is not None and "second" not in json.dumps(sub_multi, ensure_ascii=False), None)
+    check("只附一张时不出现这条提示（不误报）",
+          "张图" not in "\n".join(x.get("text", "") for x in out_i2i), None)
+    # 计数逻辑本身（四条指令共用这一个方法：/画图带图、/图生图、/扩图、/图生视频）
+    check("提示只在「多给了图」时出现，且带上一共几张、用了几张",
+          plugin._extra_image_hint(["/a.png"], 1) == ""
+          and "2 张图" in plugin._extra_image_hint(["/a.png", "/b.png"], 1)
+          and "只用前 1 张" in plugin._extra_image_hint(["/a.png", "/b.png"], 1)
+          and plugin._extra_image_hint(["/a.png", "/b.png"], 2) == ""
+          and "3 张图" in plugin._extra_image_hint(["/a", "/b", "/c"], 2), None)
 
     # --denoise 覆盖
     sess2 = i2i_session(pid="i2i-2")
@@ -4053,14 +4098,42 @@ def main() -> int:
     catalog = i18n_mod.load_translations(i18n_mod.i18n_dir(ROOT))
     check("按官方约定读到 .astrbot-plugin/i18n 下的文案",
           {"zh-CN", "en-US"} <= set(catalog), sorted(catalog))
-    check("每种语言的键完全一致（少一条就是漏翻译）",
-          set(catalog["zh-CN"]) == set(catalog["en-US"]),
-          sorted(set(catalog["zh-CN"]) ^ set(catalog["en-US"]))[:5])
+    # 官方 i18n 要求语言文件是**嵌套**结构（不支持点号扁平 key），
+    # 所以测试也按嵌套读；_flat() 用于比较「键集合」。
+    def _flat(node, prefix=""):
+        out = {}
+        for k, v in (node or {}).items():
+            path = f"{prefix}.{k}" if prefix else k
+            if isinstance(v, dict):
+                out.update(_flat(v, path))
+            else:
+                out[path] = v
+        return out
+
+    def cat(locale, key):
+        """按点号键读嵌套文案；取不到返回 None（区别于空字符串）。"""
+        cur = catalog.get(locale) or {}
+        for part in str(key).split("."):
+            if not isinstance(cur, dict) or part not in cur:
+                return None
+            cur = cur[part]
+        return cur if isinstance(cur, str) else None
+    # metadata.* 与 config.* 是**故意只写在 en-US** 的：
+    #   metadata 回退到 metadata.yaml（本来就是中文），
+    #   config   回退到 _conf_schema.json 的 description/hint（本来就是中文）。
+    # 除这两类之外，任何只在单侧出现的键都算漏翻译。
+    _zh_keys, _en_keys = set(_flat(catalog["zh-CN"])), set(_flat(catalog["en-US"]))
+    _one_sided = sorted(
+        k for k in (_zh_keys ^ _en_keys)
+        if not (k.startswith("metadata.") or k.startswith("config."))
+    )
+    check("每种语言的键完全一致（metadata/config 允许只在一侧，靠官方回退）",
+          not _one_sided, _one_sided[:5])
     check("中英文案确实不同（不是复制粘贴糊弄）",
-          catalog["zh-CN"]["perm.whitelist"] != catalog["en-US"]["perm.whitelist"]
-          and any("\u4e00" <= ch <= "\u9fff" for ch in catalog["zh-CN"]["perm.whitelist"])
-          and not any("\u4e00" <= ch <= "\u9fff" for ch in catalog["en-US"]["perm.whitelist"]),
-          (catalog["zh-CN"]["perm.whitelist"], catalog["en-US"]["perm.whitelist"]))
+          cat("zh-CN", "perm.whitelist") != cat("en-US", "perm.whitelist")
+          and any("\u4e00" <= ch <= "\u9fff" for ch in cat("zh-CN", "perm.whitelist"))
+          and not any("\u4e00" <= ch <= "\u9fff" for ch in cat("en-US", "perm.whitelist")),
+          (cat("zh-CN", "perm.whitelist"), cat("en-US", "perm.whitelist")))
 
     # 源码里用到的键必须两个语言都有（这份守卫防止「改了代码忘了加文案」）
     used_keys: set[str] = set()
@@ -4072,7 +4145,7 @@ def main() -> int:
     ):
         for match in _re.finditer(r'["\']((?:cmd|common|queue|result|error|perm|llm|ui)\.[a-z0-9_.]+)["\']', text):
             used_keys.add(match.group(1))
-    missing_keys = sorted(k for k in used_keys if k not in catalog["zh-CN"] or k not in catalog["en-US"])
+    missing_keys = sorted(k for k in used_keys if cat("zh-CN", k) is None or cat("en-US", k) is None)
     check("源码里引用到的文案键在两个语言里都存在",
           used_keys and not missing_keys, missing_keys or f"{len(used_keys)} 个键全部有文案")
     check("文案键有分层前缀（cmd./queue./result./error./perm./llm./ui.）",
@@ -4082,31 +4155,31 @@ def main() -> int:
 
     # LLM 提示词：中文文案必须与代码里的常量一致（防止两边漂移）
     check("LLM 系统提示词的中文文案与代码常量一致",
-          catalog["zh-CN"]["llm.optimize_system"] == _llm.PROMPT_SYSTEM
-          and catalog["zh-CN"]["llm.reverse_system"] == _llm.REVERSE_SYSTEM
-          and catalog["zh-CN"]["llm.reverse_detail_system"] == _llm.REVERSE_DETAIL_SYSTEM,
-          (len(catalog["zh-CN"]["llm.optimize_system"]), len(_llm.PROMPT_SYSTEM)))
+          cat("zh-CN", "llm.optimize_system") == _llm.PROMPT_SYSTEM
+          and cat("zh-CN", "llm.reverse_system") == _llm.REVERSE_SYSTEM
+          and cat("zh-CN", "llm.reverse_detail_system") == _llm.REVERSE_DETAIL_SYSTEM,
+          (len(cat("zh-CN", "llm.optimize_system") or ""), len(_llm.PROMPT_SYSTEM)))
     check("英文提示词也要求只输出 JSON（换语言不能丢格式约束）",
-          "JSON" in catalog["en-US"]["llm.optimize_system"]
-          and "JSON" in catalog["en-US"]["llm.reverse_system"]
-          and "JSON" in catalog["en-US"]["llm.reverse_detail_system"], True)
+          "JSON" in cat("en-US", "llm.optimize_system")
+          and "JSON" in cat("en-US", "llm.reverse_system")
+          and "JSON" in cat("en-US", "llm.reverse_detail_system"), True)
     check("LLM 视频系统提示词的中文文案也与代码常量一致",
-          catalog["zh-CN"]["llm.video_system"] == _llm.VIDEO_PROMPT_SYSTEM,
-          (len(catalog["zh-CN"]["llm.video_system"]), len(_llm.VIDEO_PROMPT_SYSTEM)))
+          cat("zh-CN", "llm.video_system") == _llm.VIDEO_PROMPT_SYSTEM,
+          (len(cat("zh-CN", "llm.video_system") or ""), len(_llm.VIDEO_PROMPT_SYSTEM)))
 
     # 提示词质量约束（v0.27.0）。这些规则就是**产品行为**，必须有断言兜着：
     # 改提示词最容易「顺手删掉一条」，而出图质量是慢慢变差的，没人会立刻发现。
     for _loc in ("zh-CN", "en-US"):
-        _opt = catalog[_loc]["llm.optimize_system"]
-        _rev = catalog[_loc]["llm.reverse_system"]
+        _opt = cat(_loc, "llm.optimize_system")
+        _rev = cat(_loc, "llm.reverse_system")
         # 长度守卫：**中文是本体**（规则有没有失控看它），英文是它的翻译，同义表达天然长 ~2 倍
         # （实测 optimize 1.97x、reverse 2.02x、reverse_detail 1.95x），所以英文按
         # 「不超过中文长度 × 2.2」兜 —— 用同一把尺子量两种语言，只会逼着人砍英文，
         # 而英文砍掉的往往是必要的约束说明。
         _cap_opt = 2600 if _loc == "zh-CN" else len(
-            catalog["zh-CN"]["llm.optimize_system"]) * 2.2
+            cat("zh-CN", "llm.optimize_system")) * 2.2
         _cap_rev = 2100 if _loc == "zh-CN" else len(
-            catalog["zh-CN"]["llm.reverse_system"]) * 2.2
+            cat("zh-CN", "llm.reverse_system")) * 2.2
         check(f"[{_loc}] 生图：要求不新增用户没提到的内容（防脑补）",
               ("不要新增" in _opt) or ("do not invent" in _opt.lower()), None)
         check(f"[{_loc}] 生图：禁止重复插件按架构自动补的通用质量词",
@@ -4136,16 +4209,16 @@ def main() -> int:
               or ("subject → setting and environment → action and state → detail → "
                   "lighting and mood → style and medium" in _opt), None)
         check(f"[{_loc}] 生图：用户消息带质量词占位符，且两套规则文案都在",
-              "{quality_rule}" in catalog[_loc]["llm.optimize_user"]
-              and catalog[_loc]["llm.quality_rule_plugin"]
-              and catalog[_loc]["llm.quality_rule_llm"], None)
+              "{quality_rule}" in cat(_loc, "llm.optimize_user")
+              and cat(_loc, "llm.quality_rule_plugin")
+              and cat(_loc, "llm.quality_rule_llm"), None)
         # 补全尺度（v0.33.0）：系统提示词必须指向用户消息那一行，且两套规则文案都在
         check(f"[{_loc}] 生图：补全尺度由用户消息那一行决定（系统提示词要指过去）",
               (("【补全尺度】" in _opt) or ("[Detail level]" in _opt)) and ("added" in _opt), None)
         check(f"[{_loc}] 生图：用户消息带补全尺度占位符，且两套规则文案都在",
-              "{completion_rule}" in catalog[_loc]["llm.optimize_user"]
-              and catalog[_loc]["llm.completion_rule_strict"]
-              and catalog[_loc]["llm.completion_rule_commission"], None)
+              "{completion_rule}" in cat(_loc, "llm.optimize_user")
+              and cat(_loc, "llm.completion_rule_strict")
+              and cat(_loc, "llm.completion_rule_commission"), None)
         check(f"[{_loc}] 生图：委托模式只放开「呈现层」细节，且要求写进 added 报账",
               ("呈现层" in _opt and "报账" in _opt)
               or ("presentation-layer" in _opt and "report them in added" in _opt), None)
@@ -4162,7 +4235,7 @@ def main() -> int:
               len(_opt) <= _cap_opt and len(_rev) <= _cap_rev, (len(_opt), len(_rev)))
 
         # 详细分析模板（v0.30.0）：分区是这份模板的**产品行为**，同样逐条兜住
-        _det = catalog[_loc]["llm.reverse_detail_system"]
+        _det = cat(_loc, "llm.reverse_detail_system")
         check(f"[{_loc}] 反推详细：复用同一份 tag 规则（不许精简时把 tag 规则删掉）",
               (("15~45" in _det) or ("15-45" in _det)) and "hands on hips" in _det, None)
         check(f"[{_loc}] 反推详细：四个分区齐全（构图 / 光线 / 画风 / 可疑处）",
@@ -4174,20 +4247,20 @@ def main() -> int:
         check(f"[{_loc}] 反推详细：看不清要写「无法判断」而不是猜",
               ("无法判断" in _det) or ("cannot tell" in _det), None)
         check(f"[{_loc}] 反推详细：要求与普通模式不同的用户指令",
-              "{hint}" in catalog[_loc]["llm.reverse_detail_user"], None)
+              "{hint}" in cat(_loc, "llm.reverse_detail_user"), None)
         # 详细分析模板同样按上面那条规则给预算（中文绝对、英文 2.2 倍）
         _cap_det = 2600 if _loc == "zh-CN" else len(
-            catalog["zh-CN"]["llm.reverse_detail_system"]) * 2.2
+            cat("zh-CN", "llm.reverse_detail_system")) * 2.2
         check(f"[{_loc}] 反推详细模板也没失控（≤{int(_cap_det)} 字符）",
               len(_det) <= _cap_det, len(_det))
     check("视频提示词也不再要求堆通用质量词",
-          ("写通用质量词" in catalog["zh-CN"]["llm.video_system"])
-          or ("generic quality tags" in catalog["en-US"]["llm.video_system"]), None)
+          ("写通用质量词" in cat("zh-CN", "llm.video_system"))
+          or ("generic quality tags" in cat("en-US", "llm.video_system")), None)
 
     # Translator 行为
     tr_zh = i18n_mod.Translator(catalog, locale="zh-CN")
     tr_en = i18n_mod.Translator(catalog, locale="en-US")
-    check("按选定语言取文案", tr_en("perm.blacklist") == catalog["en-US"]["perm.blacklist"],
+    check("按选定语言取文案", tr_en("perm.blacklist") == cat("en-US", "perm.blacklist"),
           tr_en("perm.blacklist"))
     check("格式化参数生效（带 {n} 的文案）",
           tr_zh("perm.cooldown", seconds=12) == "⏱️ 冷却中，请 12 秒后再试",
@@ -4206,7 +4279,7 @@ def main() -> int:
           [i18n_mod.Translator(catalog, locale=x).locale for x in ("zh", "EN", "en_us")])
     check("Translator 可以直接当函数用（传给别的组件）",
           callable(tr_en) and tr_en("perm.daily_limit", limit=3)
-          == catalog["en-US"]["perm.daily_limit"].format(limit=3), tr_en("perm.daily_limit", limit=3))
+          == cat("en-US", "perm.daily_limit").format(limit=3), tr_en("perm.daily_limit", limit=3))
     check("插件页文案只挑 ui. 前缀那部分",
           set(tr_en.ui_strings()) and all(k.startswith("ui.") for k in tr_en.ui_strings()),
           sorted(tr_en.ui_strings())[:3])
@@ -4215,10 +4288,10 @@ def main() -> int:
     en_perm = _perm.PermissionManager({"whitelist_user_ids": ["a"]}, translate=tr_en)
     ok_en, why_en = asyncio.run(en_perm.check("b", is_admin=False, storage=plugin.storage))
     check("英文模式下权限提示是英文",
-          not ok_en and why_en == catalog["en-US"]["perm.whitelist"], why_en)
+          not ok_en and why_en == cat("en-US", "perm.whitelist"), why_en)
     llm_en = _llm.LLMService(ctx, plugin.config, translate=tr_en)
     check("英文模式下 LLM 用的是英文系统提示词",
-          llm_en._t("llm.optimize_system") == catalog["en-US"]["llm.optimize_system"]
+          llm_en._t("llm.optimize_system") == cat("en-US", "llm.optimize_system")
           and "prompt engineer" in llm_en._t("llm.optimize_system"),
           llm_en._t("llm.optimize_system")[:40])
     check("没注入翻译器时权限/LLM 也不会返回键名（默认中文文案兜底）",
@@ -6005,6 +6078,89 @@ def main() -> int:
     plugin._collect_images = original_collect
     plugin.config["features"] = dict(ALL_FEATURES)
     plugin.config["draw_settings"] = {}
+
+    print("\n=== 合规性修复（v0.34.0）===")
+    import ast as _ast
+
+    # ② /取消 的 stop 别名必须去掉：主程序内置 @filter.command("stop")（停 Agent 任务），
+    #    两边都不 stop_event，用户发 /stop 会同时收到内置那句英文和插件的「没有任务」。
+    def _command_aliases(func_name: str):
+        """从 main.py 源码里挑出某个指令处理器的装饰器别名集合。"""
+        tree = _ast.parse(_src("main.py"))
+        for node in _ast.walk(tree):
+            if not (isinstance(node, _ast.AsyncFunctionDef) and node.name == func_name):
+                continue
+            for dec in node.decorator_list:
+                if not (isinstance(dec, _ast.Call) and isinstance(dec.func, _ast.Attribute)
+                        and dec.func.attr == "command"):
+                    continue
+                names = {e.value for e in dec.args if isinstance(e, _ast.Constant)}
+                for kw in dec.keywords:
+                    if kw.arg == "alias" and isinstance(kw.value, _ast.Set):
+                        names |= {e.value for e in kw.value.elts
+                                  if isinstance(e, _ast.Constant)}
+                return names
+            return set()
+        return None
+
+    cancel_names = _command_aliases("cmd_cancel")
+    check("/取消 的别名里不再有 stop（与内置指令撞名）",
+          cancel_names is not None and "stop" not in cancel_names, cancel_names)
+    check("/取消 的中英别名都还在（只删 stop，别的别误删）",
+          cancel_names is not None
+          and {"取消", "停止", "cancel", "中断"} <= cancel_names, cancel_names)
+    check("cancel 的指令剥离参数里也不含 stop",
+          "stop" not in _src("main.py").split("_extract_command_payload(event, \"取消\"")[1]
+          .split(")")[0], None)
+
+    # ③ 两个口径必须一起判（这组会临时改开关，测完还原）
+    _saved_feat = dict(plugin.config.get("features") or {})
+    _saved_agent = dict(plugin.config.get("agent") or {})
+    try:
+        ctx.active_tools.clear()
+        ctx.llm_tool_calls.clear()
+        plugin.config["agent"] = {"enable_llm_tool": True}
+        plugin.config["features"] = {"t2i": False}
+        asyncio.run(plugin._sync_llm_tool())
+        check("t2i 全局关闭时，即使 enable_llm_tool 开着也不激活工具",
+              "generate_image" not in ctx.active_tools, ctx.llm_tool_calls)
+
+        plugin.config["features"] = {"t2i": True}
+        asyncio.run(plugin._sync_llm_tool())
+        check("两个开关都开才激活",
+              "generate_image" in ctx.active_tools, ctx.llm_tool_calls)
+
+        plugin.config["agent"] = {"enable_llm_tool": False}
+        asyncio.run(plugin._sync_llm_tool())
+        check("tool 开关关掉就停用",
+              "generate_image" not in ctx.active_tools, ctx.llm_tool_calls)
+        check("停用走的也是 _async 版 API",
+              ("deactivate", "generate_image") in ctx.llm_tool_calls, ctx.llm_tool_calls)
+    finally:
+        plugin.config["features"] = _saved_feat
+        plugin.config["agent"] = _saved_agent
+        ctx.active_tools.clear()
+        ctx.llm_tool_calls.clear()
+
+    # ④ 数据目录建不出来时必须抛错，而不是退回插件目录（那里升级会被覆盖）
+    _real_get_data_dir = StarTools.__dict__["get_data_dir"]
+
+    def _denied(cls, plugin_name=None):
+        raise RuntimeError("permission denied（模拟）")
+
+    StarTools.get_data_dir = classmethod(_denied)
+    try:
+        _raised = ""
+        try:
+            m.ComfyUISmartPlugin(Context(), AstrBotConfig({"server": {"base_url": "127.0.0.1:8188"}}))
+        except Exception as _e:      # noqa: BLE001 - 就是要在意它抛了什么
+            _raised = f"{type(_e).__name__}: {_e}"
+    finally:
+        StarTools.get_data_dir = _real_get_data_dir
+    check("数据目录建不出来时构造直接抛错（不静默降级）",
+          "permission denied" in _raised, _raised or "没有抛错")
+    check("并且没有在插件目录里偷偷建 data/（升级会被覆盖）",
+          not (ROOT / "data").exists(), ROOT / "data")
 
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）
