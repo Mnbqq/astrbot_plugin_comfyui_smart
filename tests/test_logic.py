@@ -4212,7 +4212,11 @@ def main() -> int:
         # （实测 optimize 1.97x、reverse 2.02x、reverse_detail 1.95x），所以英文按
         # 「不超过中文长度 × 2.2」兜 —— 用同一把尺子量两种语言，只会逼着人砍英文，
         # 而英文砍掉的往往是必要的约束说明。
-        _cap_opt = 2600 if _loc == "zh-CN" else len(
+        # 上限是防「无节制堆规则」的护栏，不是死的字数指标。
+        # v0.35.0 把 2600 提到 3600：新增的是 **4 组少样本示例**（中文输入→完整 JSON），
+        # 依据是对 56 个同类插件的源码扫查 —— 做得深的那几家（nai_plus 16 条规则 + 8 组示例）
+        # 都靠示例而非更多规则来收敛输出格式。示例是「养料」不是「规则」，所以放宽。
+        _cap_opt = 3600 if _loc == "zh-CN" else len(
             cat("zh-CN", "llm.optimize_system")) * 2.2
         _cap_rev = 2100 if _loc == "zh-CN" else len(
             cat("zh-CN", "llm.reverse_system")) * 2.2
