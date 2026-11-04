@@ -6348,6 +6348,47 @@ def main() -> int:
     check("画面类型被追加进优化器的用户消息",
           bool(_calls) and "人物、室内" in _calls[-1], (_calls or [""])[-1][-60:])
 
+    print("\n=== 风格预设 / 出口安全后缀 ===")
+    from astrbot_plugin_comfyui_smart import style_presets as _sp
+
+    check("内置预设都能规范化且都有正向词",
+          all(_sp.normalize_preset(v) for v in _sp.BUILTIN_PRESETS.values())
+          and _sp.normalize_all(_sp.BUILTIN_PRESETS).keys() == _sp.BUILTIN_PRESETS.keys(),
+          list(_sp.BUILTIN_PRESETS))
+    check("预设接受字符串写法", _sp.normalize_preset(" foo, bar ") == {"prompt": "foo, bar", "negative": ""}, None)
+    check("空预设被丢掉", _sp.normalize_preset("   ") is None and _sp.normalize_preset({}) is None, None)
+
+    _once = _sp.ensure_safe_suffix("my tag")
+    _twice = _sp.ensure_safe_suffix(_once)
+    check("安全后缀幂等（重复调用不会越叠越长）", _once == _twice, (_once, _twice))
+    check("安全后缀只补缺的，已有词原样保留",
+          "my tag" in _once and "watermark" in _once
+          and _sp.ensure_safe_suffix("watermark, my tag") == "watermark, my tag, signature, text, username, logo, web address",
+          _once)
+
+    _style_path = plugin.data_dir / "style_presets.json"
+    if _style_path.exists():
+        _style_path.unlink()
+    _presets = plugin.load_style_presets()
+    check("首次读取会用内置预设播种，并落盘",
+          set(_presets) == set(_sp.BUILTIN_PRESETS) and _style_path.is_file(), list(_presets))
+
+    asyncio.run(drive(plugin.cmd_style(AstrMessageEvent(
+        sender_id="8951", message_str="/风格 添加 测试风 一条测试词, 另一条"))))
+    check("指令能新增预设",
+          plugin.load_style_presets().get("测试风", {}).get("prompt") == "一条测试词, 另一条",
+          plugin.load_style_presets().get("测试风"))
+    _list = asyncio.run(drive(plugin.cmd_style(AstrMessageEvent(
+        sender_id="8952", message_str="/风格"))))
+    check("列表里能看到新增的预设", any("测试风" in o["text"] for o in _list), _list)
+    asyncio.run(drive(plugin.cmd_style(AstrMessageEvent(
+        sender_id="8953", message_str="/风格 删除 测试风"))))
+    check("指令能删除预设", "测试风" not in plugin.load_style_presets(), plugin.load_style_presets().keys())
+
+    # 恢复干净状态，别把播种文件留给后面的用例
+    if _style_path.exists():
+        _style_path.unlink()
+
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）
     field_re = _re.compile(

@@ -58,6 +58,9 @@ from .workflow_templates import (
     matched_arch_hint,
     pick_template,
 )
+from .style_presets import (
+    BUILTIN_PRESETS, ensure_safe_suffix, normalize_all, normalize_preset,
+)
 from .error_hints import (
     build_probe_graph,
     describe_probe_failure,
@@ -217,6 +220,8 @@ PARAM_ALIASES = {
     "hires-steps": "hires_steps",
     "lora": "lora", "模型": "model", "model": "model",
     "negative": "negative", "负面": "negative",
+    # 风格预设：--风格 手办化 / --style figure
+    "style": "style", "风格": "style", "画风": "style",
     # 提示词优化开关（本次生效）：--llm 强制改写 / --no-llm 本次不改写
     "llm": "llm", "优化": "llm", "no-llm": "no_llm", "no_llm": "no_llm", "不优化": "no_llm",
     # ControlNet 控制 / 放大
@@ -2077,6 +2082,23 @@ class ComfyUISmartPlugin(Star):
             neg_chunks.append(str(opts.get("negative") or ""))
             negative = merge_tags(*neg_chunks)
 
+        # 风格预设：正向词放到**最前面**（越靠前权重越大），负向词并入
+        style_name = str(opts.get("style") or "").strip()
+        if style_name:
+            preset = self.load_style_presets().get(style_name)
+            if preset:
+                positive = merge_tags(preset["prompt"], positive)
+                negative = merge_tags(negative, preset["negative"])
+                logger.info("套用风格预设：%s", style_name)
+            else:
+                logger.warning("未知的风格预设：%s（本次忽略，不影响出图）", style_name)
+
+        # 出口统一安全后缀：所有入口、所有预设都走这一处，幂等所以不会越叠越长。
+        # 只对 merge / guard_only 生效 —— 另外两档是用户明说要「只用我自己写的词」
+        # （custom_only）或「一个字符都不改」（raw），这里不能擅自加。
+        if neg_mode in ("merge", "guard_only"):
+            negative = ensure_safe_suffix(negative)
+
         # LLM 改写后的正向词也要再查一遍（模型可能自己加进露骨词）
         hit = self.permission.nsfw_hit(positive)
         if hit:
@@ -2901,6 +2923,40 @@ class ComfyUISmartPlugin(Star):
                 paths.append(str(path))
         return paths
 
+    def style_presets_path(self) -> Path:
+        """风格预设表（JSON：{名称: {prompt, negative}}）。"""
+        return self.data_dir / "style_presets.json"
+
+    def load_style_presets(self) -> dict[str, dict]:
+        """读预设表；文件不存在就用内置预设**播种**一份，方便用户直接改。
+
+        文件坏掉时退回内置预设并告警 —— 出图不该因为一个坏 JSON 就失败。
+        """
+        path = self.style_presets_path()
+        try:
+            if path.is_file():
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                presets = normalize_all(raw)
+                if presets:
+                    return presets
+                logger.warning("风格预设表为空或格式不对，改用内置预设：%s", path)
+        except (OSError, ValueError) as e:
+            logger.warning("风格预设表读取失败，改用内置预设：%s（%s）", path, e)
+        presets = normalize_all(BUILTIN_PRESETS)
+        try:
+            self.save_style_presets(presets)
+        except OSError as e:
+            logger.warning("内置风格预设落盘失败（不影响本次出图）：%s", e)
+        return presets
+
+    def save_style_presets(self, presets: dict[str, dict]) -> None:
+        """写回预设表（原子替换）。"""
+        path = self.style_presets_path()
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(presets, ensure_ascii=False, indent=2) + "\n",
+                       encoding="utf-8")
+        tmp.replace(path)
+
     def _model_tags_path(self) -> Path:
         """手动覆盖的「模型适合标签」表（JSON，{关键词或文件名: [标签...]}）。"""
         return self.data_dir / "model_tags.json"
@@ -3436,6 +3492,40 @@ class ComfyUISmartPlugin(Star):
         except Exception as e:
             logger.debug("读取对话模型信息失败：%s", e)
         yield event.plain_result("\n".join(lines))
+
+    @filter.command("风格", alias={"风格预设", "styles", "style"})
+    async def cmd_style(self, event: AstrMessageEvent):
+        """查看/增删风格预设（`/画图 --风格 名称` 用）。"""
+        raw = _extract_command_payload(event, "风格", "风格预设", "styles", "style").strip()
+        presets = self.load_style_presets()
+
+        if not raw:
+            lines = [self.t("cmd.style.title", count=len(presets))]
+            for name, preset in list(presets.items())[:30]:
+                lines.append(f"　· {name}：{preset['prompt'][:48]}…")
+            lines.append(self.t("cmd.style.usage"))
+            yield event.plain_result("\n".join(lines))
+            return
+
+        head, _, rest = raw.partition(" ")
+        head, rest = head.strip().lower(), rest.strip()
+        if head in ("删除", "del", "remove") and rest:
+            if rest in presets:
+                presets.pop(rest)
+                self.save_style_presets(presets)
+                yield event.plain_result(self.t("cmd.style.removed", model=rest))
+            else:
+                yield event.plain_result(self.t("cmd.style.not_found", model=rest))
+            return
+        if head in ("添加", "add", "set") and rest:
+            name, _, body = rest.partition(" ")
+            preset = normalize_preset(body)
+            if name and preset:
+                presets[name] = preset
+                self.save_style_presets(presets)
+                yield event.plain_result(self.t("cmd.style.saved", model=name))
+                return
+        yield event.plain_result(self.t("cmd.style.usage"))
 
     @filter.command("模型标签", alias={"标签", "modeltags"})
     async def cmd_model_tags(self, event: AstrMessageEvent):

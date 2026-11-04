@@ -155,6 +155,13 @@
       "saved": "✅ 已记下：{model} → {tags}",
       "removed": "🗑 已清除 {model} 的覆盖",
       "not_found": "🤔 覆盖表里没有 {model}"
+    },
+    "style": {
+      "title": "🎨 风格预设（共 {count} 条）",
+      "usage": "用法：\n　/画图 一个女孩 --风格 手办化\n　/风格 添加 <名称> <正向词>\n　/风格 删除 <名称>\n　/风格（查看）",
+      "saved": "✅ 已保存风格预设：{model}",
+      "removed": "🗑 已删除风格预设：{model}",
+      "not_found": "🤔 没有这个风格预设：{model}"
     }
   },
   "common": {
