@@ -14,7 +14,7 @@ import json
 import re
 
 from .i18n import default_translator
-from .workflow_templates import guess_arch
+from .workflow_templates import guess_arch, guess_model_tags
 
 # 提示词模板：要求只输出 JSON，避免解析歧义
 #
@@ -77,6 +77,14 @@ PROMPT_SYSTEM = (
     "严格模式下必须是空数组。"
 )
 # positive/negative 之外的可选覆盖字段：宽高为 0 表示沿用架构默认
+# 第一段：画面类型识别（只输出 JSON，尽量短）
+SCENE_SYSTEM = (
+    "你是生图需求分类器。读用户的一句描述，判断它属于哪些**画面类型**。\n"
+    "从这些里挑 1~3 个最贴切的：人物、自拍、人像特写、室内、室外、城市、郊区、建筑、"
+    "风景、动物、静物、二次元、动漫、插画、写实、摄影、3D、手办、Q版。\n"
+    "规则：只输出 JSON，不要解释；只选上面列出的词，不要自创。\n"
+    '{"scenes": ["人物", "室内"]}'
+)
 OPTIONAL_KEYS = ("positive", "negative", "checkpoint", "lora", "vae")
 # 提示词输出风格：tags = 逗号 tag（CLIP 系底模）；natural = 通顺句子（LLM 编码器底模）
 PROMPT_STYLE_TAGS = "tags"
@@ -436,7 +444,9 @@ class LLMService:
         if checkpoints:
             lines.append("【checkpoints（单文件底模，可被直接选用）】")
             for name in checkpoints[:MAX_CHECKPOINTS]:
-                lines.append(f"- {name}  [架构: {guess_arch(name)}]")
+                tags = guess_model_tags(name)
+                suffix = f" | 适合: {'、'.join(tags)}" if tags else ""
+                lines.append(f"- {name}  [架构: {guess_arch(name)}{suffix}]")
             if len(checkpoints) > MAX_CHECKPOINTS:
                 lines.append(f"… 另有 {len(checkpoints) - MAX_CHECKPOINTS} 个未列出")
         if unets:
@@ -571,6 +581,35 @@ class LLMService:
         parsed["_raw"] = text
         return parsed
 
+    async def classify_scene(self, user_desc: str, *, event=None) -> list[str]:
+        """第一段识别：这句描述属于哪些**画面类型**。
+
+        底模选错的主因往往不是清单太长，而是**没先定性** —— 同一个 SDXL 架构下，
+        写实系和二次元系适合的画面完全不同。先判「人物/自拍/室内/建筑/二次元插画…」，
+        第二段选模型才有依据。
+
+        Returns:
+            画面类型标签（最多 3 个）；失败返回空列表，绝不阻断出图。
+        """
+        try:
+            text = await self.generate(
+                self._t("llm.scene_system") or SCENE_SYSTEM,
+                self._t("llm.scene_user", desc=user_desc),
+                event=event,
+            )
+        except RuntimeError:
+            return []
+        data = _load_json_object(text) or {}
+        raw = data.get("scenes")
+        if not isinstance(raw, list):
+            return []
+        out: list[str] = []
+        for item in raw:
+            tag = str(item).strip()
+            if tag and tag not in out:
+                out.append(tag)
+        return out[:3]
+
     async def optimize_prompt(
         self,
         user_desc: str,
@@ -580,6 +619,7 @@ class LLMService:
         quality_words_by: str = QUALITY_WORDS_BY_PLUGIN,
         completion_mode: str = COMPLETION_MODE_STRICT,
         event=None,
+        scenes: list[str] | None = None,
     ) -> dict:
         """把中文描述转成提示词并选型。
 

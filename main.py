@@ -1755,10 +1755,17 @@ class ComfyUISmartPlugin(Star):
             llm_negative = str(opt.get("negative") or "")
         elif want_llm:
             completion_mode = resolve_completion_mode(opts, draw_conf)
+            scenes: list[str] = []
+            if purpose_preview == "t2i":
+                # 第一段：先定性（人物/自拍/室内/二次元…），第二段选模型才有依据
+                scenes = await self.llm.classify_scene(user_desc, event=event)
+                if scenes:
+                    logger.info("画面类型（第一段识别）：%s", "、".join(scenes))
             try:
                 opt = await self.llm.optimize_prompt(
                     user_desc,
                     catalog,
+                    scenes=scenes,
                     defaults={
                         "negative": default_negative,
                         "width": draw_conf.get("default_width") or 1024,

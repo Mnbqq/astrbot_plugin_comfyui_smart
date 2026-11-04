@@ -772,6 +772,59 @@ def guess_arch(model_name: str, override: str = "") -> str:
     return matched_arch_hint(model_name, override) or DEFAULT_ARCH
 
 
+# 模型名关键词 -> 适合的画面类型/场景。
+# 用途：`/画图` 时把「这个底模擅长什么」一并给 LLM，让它按画面类型选模型，
+# 而不是只看架构（SDXL 既可能是写实也可能是二次元，光看架构分不出来）。
+# 规则是**加分项**：命中什么加什么，一个都不命中就不打标签。
+MODEL_SCENE_RULES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
+    # 写实 / 摄影系
+    (("realvis", "realistic", "epicrealism", "majicmix", "chilloutmix", "realisticvision",
+      "newreality", "realism", "photo", "analog", "portraiture", "juggernaut",
+      "absolutereality", "beautifulrealistic", "nightvision", "cyberrealistic"),
+     ("写实", "摄影", "人像", "室内", "室外", "城市", "建筑", "风景")),
+    # 二次元 / 动漫系
+    (("animagine", "anything", "anime", "counterfeit", "abyssorange", "cetus",
+      "meinamix", "pastel", "bluepencil", "arthemy", "illustrious", "noobai", "pony",
+      "yesmix", "basil", "animerge", "aniverse", "aingdiffusion", "dreamshaper",
+      "aom3", "aom2"),
+     ("二次元", "动漫", "插画", "人物", "自拍")),
+    # 通用 / 混合向
+    (("mix", "merge", "butter", "majic"),
+     ("通用", "插画", "人物")),
+    # 3D / 玩具 / 手办
+    (("3d", "fumo", "figurine", "chibi", "anime3d"),
+     ("3D", "手办", "Q版")),
+    # 偏人像的命名
+    (("portrait", "idol", "kpop", "selfie"),
+     ("人像", "自拍", "人物")),
+)
+
+
+def guess_model_tags(name: str, limit: int = 6) -> list[str]:
+    """按模型名猜它适合的画面类型/场景。
+
+    为什么只能靠名字：ComfyUI 的 `/models` 只给文件名，拿不到 civitai 上的分类信息。
+    所以这里做**保守的关键词匹配** —— 命中就给标签，没命中就返回空列表，
+    不猜、不硬凑。用户也可以用 `/模型列表` 里看到的标签来复核。
+
+    Args:
+        name: 模型文件名（可含子目录）。
+        limit: 最多返回几个标签。
+
+    Returns:
+        去重后按命中顺序的标签列表，例如 ["二次元", "动漫", "人物"]。
+    """
+    low = str(name or "").lower()
+    out: list[str] = []
+    for keywords, tags in MODEL_SCENE_RULES:
+        if not any(keyword in low for keyword in keywords):
+            continue
+        for tag in tags:
+            if tag not in out:
+                out.append(tag)
+    return out[:limit]
+
+
 def arch_profile(arch: str) -> dict:
     """取架构档案，未知架构回退默认。"""
     return ARCH_PROFILES.get(arch) or ARCH_PROFILES[DEFAULT_ARCH]
