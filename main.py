@@ -1766,6 +1766,7 @@ class ComfyUISmartPlugin(Star):
                     user_desc,
                     catalog,
                     scenes=scenes,
+                    tag_overrides=self.model_tag_overrides(),
                     defaults={
                         "negative": default_negative,
                         "width": draw_conf.get("default_width") or 1024,
@@ -2897,6 +2898,34 @@ class ComfyUISmartPlugin(Star):
                 paths.append(str(path))
         return paths
 
+    def _model_tags_path(self) -> Path:
+        """手动覆盖的「模型适合标签」表（JSON，{关键词或文件名: [标签...]}）。"""
+        return self.data_dir / "model_tags.json"
+
+    def model_tag_overrides(self) -> dict[str, list[str]]:
+        """读取手动覆盖表；文件不存在/坏掉都当没有覆盖，不影响出图。"""
+        path = self._model_tags_path()
+        try:
+            if not path.is_file():
+                return {}
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            logger.warning("模型标签覆盖表读取失败，本次按自动猜测处理：%s", path)
+            return {}
+        return {
+            str(key): [str(tag).strip() for tag in value if str(tag).strip()]
+            for key, value in (raw or {}).items()
+            if isinstance(value, list)
+        }
+
+    def save_model_tag_overrides(self, overrides: dict[str, list[str]]) -> None:
+        """写回覆盖表（原子替换，避免写一半把文件弄坏）。"""
+        path = self._model_tags_path()
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(overrides, ensure_ascii=False, indent=2) + "\n",
+                       encoding="utf-8")
+        tmp.replace(path)
+
     def _remember_draw(self, event, user_desc: str, opts: dict, source_image: str) -> None:
         """记下这次成功绘制的参数，供 `/换一张` 复用。
 
@@ -3404,6 +3433,44 @@ class ComfyUISmartPlugin(Star):
         except Exception as e:
             logger.debug("读取对话模型信息失败：%s", e)
         yield event.plain_result("\n".join(lines))
+
+    @filter.command("模型标签", alias={"标签", "modeltags"})
+    async def cmd_model_tags(self, event: AstrMessageEvent):
+        """查看/设置底模的「适合」标签（覆盖按模型名自动猜的结果）。"""
+        raw = _extract_command_payload(event, "模型标签", "标签", "modeltags").strip()
+        overrides = self.model_tag_overrides()
+
+        if not raw:
+            lines = [self.t("cmd.modeltags.title", count=len(overrides))]
+            for key, tags in list(overrides.items())[:20]:
+                lines.append(f"　· {key} → {'、'.join(tags)}")
+            if not overrides:
+                lines.append(self.t("cmd.modeltags.empty"))
+            lines.append(self.t("cmd.modeltags.usage"))
+            yield event.plain_result("\n".join(lines))
+            return
+
+        head, _, rest = raw.partition(" ")
+        head, rest = head.strip().lower(), rest.strip()
+        if head in ("清除", "删除", "clear") and rest:
+            if rest in overrides:
+                overrides.pop(rest)
+                self.save_model_tag_overrides(overrides)
+                yield event.plain_result(self.t("cmd.modeltags.removed", model=rest))
+            else:
+                yield event.plain_result(self.t("cmd.modeltags.not_found", model=rest))
+            return
+        if head in ("设置", "set") and rest:
+            key, _, tags_raw = rest.partition(" ")
+            tags = [x.strip() for x in tags_raw.replace("，", ",").split(",") if x.strip()]
+            if key and tags:
+                overrides[key] = tags[:6]
+                self.save_model_tag_overrides(overrides)
+                yield event.plain_result(
+                    self.t("cmd.modeltags.saved", model=key, tags="、".join(tags[:6]))
+                )
+                return
+        yield event.plain_result(self.t("cmd.modeltags.usage"))
 
     @filter.command("换一张", alias={"再来一张", "再画", "again"})
     async def cmd_again(self, event: AstrMessageEvent):

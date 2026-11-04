@@ -522,6 +522,14 @@
     "again": {
       "none": "🤔 Nothing to reuse yet. Draw once with /draw, then /again will redraw it with a new seed",
       "received": "🎨 Reusing the previous description and settings with a new seed…"
+    },
+    "modeltags": {
+      "title": "🏷 Checkpoint \"适合\" tag overrides ({count} entries)",
+      "empty": "　(nothing overridden yet — everything is inferred from model names)",
+      "usage": "Usage:\n　/modeltags set <model or keyword> <tag1,tag2>\n　/modeltags clear <keyword>\n　/modeltags (list current overrides)",
+      "saved": "✅ Saved: {model} → {tags}",
+      "removed": "🗑 Removed the override for {model}",
+      "not_found": "🤔 No override for {model}"
     }
   },
   "common": {
@@ -559,7 +567,8 @@
     "video_system": "You are an AI video prompt engineer. Rewrite the user's description as a VIDEO prompt, not image tags.\nRules:\n1. Spell out the action: who does what, and how it changes (e.g. \"slowly turns her head\", \"body sways gently\", \"looks into the camera\").\n2. Specify exactly one camera move: static / slow push-in / lateral pan / slight handheld.\n3. Cover the scene as \"subject + look and clothing → environment → lighting and mood\", one or two sentences each; do not pile up adjectives.\n4. Keep the user's language: if they wrote Chinese, answer in Chinese (Wan models understand Chinese natively).\n5. 40-80 Chinese characters (or 25-50 English words).\n6. Never write \"static\", \"motionless\", \"video\" or \"frame\", and do not name models or parameters.\n7. Do not emit generic quality tags (masterpiece, best quality, 8k, 4k); the plugin already adds generic quality and deformity-avoidance tags, so do not repeat them in negative.\n8. Output JSON only: {\"positive\": \"the rewritten prompt\", \"negative\": \"one image-specific negative tag, or an empty string\"}; keep negative to the one or two flaws that matter here.\nOutput JSON only, no explanation.",
     "video_user": "User description: {desc}\nTask type: {kind}\nRequirements: {hint}\nPlanned duration ~{seconds}s at {fps} fps.\nDefault negative prompt (for reference, do not copy): {negative}",
     "scene_system": "You classify image requests. Read the user's one-line description and decide which **image types** it belongs to.\nPick 1-3 of: people, selfie, portrait close-up, indoor, outdoor, city, suburb, architecture, landscape, animal, still life, anime, manga, illustration, realistic, photography, 3D, figurine, chibi.\nRules: JSON only, no explanation; only use the words listed above.\n{\"scenes\": [\"people\", \"indoor\"]}",
-    "scene_user": "User description: {desc}"
+    "scene_user": "User description: {desc}",
+    "scene_line": "Image types (from the classifier; prefer checkpoints whose \"适合\" tags include these, and treat architecture as secondary): {scenes}"
   },
   "perm": {
     "blacklist": "🚫 You are blacklisted",

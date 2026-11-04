@@ -6296,6 +6296,54 @@ def main() -> int:
 
     plugin._last_draw.clear()
 
+    print("\n=== 模型标签覆盖 / 画面类型回灌 ===")
+    check("没覆盖时按模型名猜",
+          llm.resolve_model_tags("animagine-xl-4.0.safetensors")[:1] == ["二次元"], None)
+    check("整名覆盖优先",
+          llm.resolve_model_tags("animagine-xl-4.0.safetensors",
+                                 {"animagine-xl-4.0.safetensors": ["自拍"]}) == ["自拍"], None)
+    check("关键词覆盖也能命中",
+          llm.resolve_model_tags("RealVisXL_V5.0_fp16.safetensors",
+                                 {"realvis": ["风景"]}) == ["风景"], None)
+    _cat = llm.LLMService.build_catalog({"checkpoints": ["animagine-xl-4.0.safetensors"]},
+                                        {"animagine": ["自拍", "室内"]})
+    check("目录里给 LLM 看到的是覆盖后的标签", "适合: 自拍、室内" in _cat, _cat)
+
+    _tag_path = plugin.data_dir / "model_tags.json"
+    if _tag_path.exists():
+        _tag_path.unlink()
+    asyncio.run(drive(plugin.cmd_model_tags(AstrMessageEvent(
+        sender_id="8901", message_str="/模型标签 设置 animagine 自拍,室内"))))
+    check("指令能把覆盖写进文件",
+          plugin.model_tag_overrides().get("animagine") == ["自拍", "室内"],
+          plugin.model_tag_overrides())
+    _out_list = asyncio.run(drive(plugin.cmd_model_tags(AstrMessageEvent(
+        sender_id="8902", message_str="/模型标签"))))
+    check("列表里能看到刚写的覆盖",
+          any("animagine" in o["text"] for o in _out_list), _out_list)
+    asyncio.run(drive(plugin.cmd_model_tags(AstrMessageEvent(
+        sender_id="8903", message_str="/模型标签 清除 animagine"))))
+    check("清除后覆盖表为空", plugin.model_tag_overrides() == {},
+          plugin.model_tag_overrides())
+
+    # 画面类型是「渲染完再追加」的，不能动模板里的 {quality_rule} 等占位符
+    _svc = llm.LLMService(ctx, plugin.config)
+    _calls: list = []
+
+    async def _cap(system, user, **kw):
+        _calls.append(user)
+        return '{"positive": "1girl", "negative": ""}'
+
+    _real_gen_svc = _svc.generate
+    _svc.generate = _cap
+    try:
+        asyncio.run(_svc.optimize_prompt("一个女孩", {"checkpoints": []},
+                                         scenes=["人物", "室内"]))
+    finally:
+        _svc.generate = _real_gen_svc
+    check("画面类型被追加进优化器的用户消息",
+          bool(_calls) and "人物、室内" in _calls[-1], (_calls or [""])[-1][-60:])
+
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）
     field_re = _re.compile(

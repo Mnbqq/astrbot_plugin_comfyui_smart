@@ -16,6 +16,29 @@ import re
 from .i18n import default_translator
 from .workflow_templates import guess_arch, guess_model_tags
 
+
+def resolve_model_tags(name: str, overrides: dict[str, list[str]] | None = None) -> list[str]:
+    """底模的「适合」标签：**手动覆盖优先**，其次按名字猜。
+
+    覆盖匹配顺序：完整文件名精确命中 → 任一段关键词被文件名包含。
+    这样用户既能按整名精确指定，也能写 `animagine` 这种前缀一次管一排模型。
+
+    Args:
+        name: 模型文件名（可含子目录）。
+        overrides: `{关键词或文件名: [标签...]}`；为空则退回自动猜测。
+
+    Returns:
+        标签列表（可能为空）。
+    """
+    if overrides:
+        if name in overrides:
+            return list(overrides[name])
+        low = str(name or "").lower()
+        for key, tags in overrides.items():
+            if key and key.lower() in low:
+                return list(tags)
+    return guess_model_tags(name)
+
 # 提示词模板：要求只输出 JSON，避免解析歧义
 #
 # 改写原则（v0.27.0 重整）：
@@ -423,7 +446,9 @@ class LLMService:
     # 提示词优化与选型
     # ------------------------------------------------------------------ #
     @staticmethod
-    def build_catalog(catalog: dict[str, list[str]]) -> str:
+    def build_catalog(
+        catalog: dict[str, list[str]], overrides: dict[str, list[str]] | None = None
+    ) -> str:
         """把真实模型清单压缩成给 LLM 看的候选文本。
 
         只列文件名，checkpoint 额外标注本地启发式猜出的架构，帮助 LLM 正确选型。
@@ -444,7 +469,7 @@ class LLMService:
         if checkpoints:
             lines.append("【checkpoints（单文件底模，可被直接选用）】")
             for name in checkpoints[:MAX_CHECKPOINTS]:
-                tags = guess_model_tags(name)
+                tags = resolve_model_tags(name, overrides)
                 suffix = f" | 适合: {'、'.join(tags)}" if tags else ""
                 lines.append(f"- {name}  [架构: {guess_arch(name)}{suffix}]")
             if len(checkpoints) > MAX_CHECKPOINTS:
@@ -620,6 +645,7 @@ class LLMService:
         completion_mode: str = COMPLETION_MODE_STRICT,
         event=None,
         scenes: list[str] | None = None,
+        tag_overrides: dict[str, list[str]] | None = None,
     ) -> dict:
         """把中文描述转成提示词并选型。
 
@@ -642,7 +668,7 @@ class LLMService:
             RuntimeError: LLM 不可用或调用失败。
         """
         defaults = defaults or {}
-        catalog_text = self.build_catalog(catalog)
+        catalog_text = self.build_catalog(catalog, tag_overrides)
         rule_key = ("llm.quality_rule_llm"
                     if normalize_quality_words_by(quality_words_by) == QUALITY_WORDS_BY_LLM
                     else "llm.quality_rule_plugin")
@@ -657,6 +683,9 @@ class LLMService:
             quality_rule=self._t(rule_key),
             completion_rule=self._t(completion_key),
         )
+        # 第一段识别的画面类型：渲染完再追加，单占一段，不与模板里的占位符纠缠
+        if scenes:
+            user += "\n\n" + self._t("llm.scene_line", scenes="、".join(scenes))
         system = self._t("llm.optimize_system") or PROMPT_SYSTEM
         text = await self.generate(system, user, event=event)
         parsed = parse_optimize_result(text)
