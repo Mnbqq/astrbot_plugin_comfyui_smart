@@ -1756,7 +1756,10 @@ class ComfyUISmartPlugin(Star):
         elif want_llm:
             completion_mode = resolve_completion_mode(opts, draw_conf)
             scenes: list[str] = []
-            if purpose_preview == "t2i":
+            # 多一次 LLM 调用，做成可关（关掉就只按架构与描述选型）
+            if purpose_preview == "t2i" and bool(
+                llm_conf.get("classify_scene", True)
+            ):
                 # 第一段：先定性（人物/自拍/室内/二次元…），第二段选模型才有依据
                 scenes = await self.llm.classify_scene(user_desc, event=event)
                 if scenes:

@@ -149,6 +149,10 @@
             <div><h3 data-i18n="ui.title.008">视频提示词也交给 AI 改写</h3><p data-i18n-html="ui.text.009">打开后 <code>/视频</code> 与 <code>/图生视频</code> 会先把描述改写成「视频提示词」：补全<strong>动作</strong>（缓缓回头、轻轻晃动）、<strong>镜头运动</strong>（固定 / 推近 / 平移）与光影氛围，并保持你原本的语言（中文就输出中文，Wan 原生懂中文）。与图片那套不同——图片是英文 tag，视频要自然语言的动作描述。视频用哪个模型由下面的「文生视频 / 图生视频默认模型」决定，AI 只改提示词。聊天里可用 <code>--llm</code> / <code>--no-llm</code> 临时覆盖。</p></div>
             <label class="switch-wrapper"><input type="checkbox" id="llm_optimize_for_video" class="ios-switch" /></label>
           </div>
+          <div class="setting-row">
+            <div><h3 data-i18n="ui.title.901">先识别画面类型，再选底模</h3><p data-i18n-html="ui.text.901">打开后文生图会多一次很短的 LLM 调用：先判断描述属于哪些画面类型（人物 / 自拍 / 室内 / 室外 / 城市 / 建筑 / 二次元 / 动漫 / 插画…），再按类型挑底模。同一个 SDXL 架构下写实系与二次元系适合的画面完全不同，只看架构选不准。模型清单里每个底模都标了「适合」，可用 <code>/模型标签</code> 手动修正。关掉可省一次调用。</p></div>
+            <label class="switch-wrapper"><input type="checkbox" id="llm_classify_scene" class="ios-switch" /></label>
+          </div>
           <div class="form-grid">
             <div class="form-group">
               <label data-i18n="ui.label.011" for="llm_provider">LLM 提供商 ID</label>

@@ -126,6 +126,10 @@
       "optimize_for_video": {
         "description": "Have the AI rewrite video prompts too",
         "hint": "When on, /video and /i2v first rewrite your description into a “video prompt”: filling in **motion** (slowly turning the head, gently swaying), **camera movement** (static/push-in/pan) and lighting mood, while keeping your original language (Chinese in, Chinese out — Wan natively understands Chinese). Unlike the image path — images stack English tags, video needs natural-language motion descriptions. The video model is decided by video.t2v_model / video.i2v_model; the LLM only rewrites the prompt and never picks models. Override per request in chat: --llm forces a rewrite, --no-llm skips it for this request."
+      },
+      "classify_scene": {
+        "description": "Classify image type before picking a checkpoint",
+        "hint": "When on, text-to-image adds one short LLM call that first decides which image types the description belongs to (people / selfie / indoor / outdoor / city / architecture / anime / manga / illustration…), then picks the checkpoint by type. Why it matters: under the same SDXL architecture, realistic and anime models suit very different scenes, so architecture alone is not enough. Every checkpoint in the catalog is tagged with \"适合\"; correct those with /modeltags. Turn it off to save the call. (Text-to-image only; image-to-image and video skip this step.)"
       }
     },
     "vision_settings": {
@@ -817,7 +821,8 @@
       "057": "Pack the parameter text and images into a single forwarded message — no more spamming when one request produces several images (QQ personal account / OneBot v11 only). Falls back to normal sending when the platform is not aiocqhttp, the result is a video, or the images exceed 20MB in total.",
       "058": "With <code>llm</code> the plugin's generic words are still merged in and duplicates are dropped; to hand quality words to the AI entirely, turn off \"auto quality tags per checkpoint\" above.",
       "059": "Commission mode relaxes \"do not invent\", but only for <b>presentation-layer</b> details (light and texture, material, composition and depth of field, mood) and never changes subject count / appearance / outfit style / action / setting type; whatever it added is listed in the result. Override once with <code>/draw … --commission</code> or <code>--strict</code>.",
-      "060": "Off by default. When on, commission mode makes a gentle adjustment — only if you did not specify the parameter yourself: SD family CFG ×0.85 (never below 1.5), Flux family guidance −1.0 (never below 1.0). Inline <code>--cfg</code> and configured defaults always win."
+      "060": "Off by default. When on, commission mode makes a gentle adjustment — only if you did not specify the parameter yourself: SD family CFG ×0.85 (never below 1.5), Flux family guidance −1.0 (never below 1.0). Inline <code>--cfg</code> and configured defaults always win.",
+      "901": "When on, text-to-image spends one extra short LLM call first: it decides which image types the description belongs to (people / selfie / indoor / outdoor / city / architecture / anime / manga / illustration…), then picks a checkpoint by type. Under the same SDXL architecture, realistic and anime models suit very different scenes, so architecture alone is a poor signal. Each checkpoint in the catalog is tagged with \"适合\"; correct them with <code>/modeltags</code>. Turn this off to save the call."
     },
     "title": {
       "001": "ComfyUI connection",
@@ -867,7 +872,8 @@
       "045": "Usage stats & gallery",
       "046": "Item detail",
       "047": "Send as one forwarded message",
-      "048": "Also relax sampling parameters in commission mode"
+      "048": "Also relax sampling parameters in commission mode",
+      "901": "Classify image type before picking a checkpoint"
     }
   }
 }
