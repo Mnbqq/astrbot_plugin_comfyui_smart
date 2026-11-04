@@ -143,6 +143,10 @@
     "video": {
       "received": "🎬 收到，正在生成视频（比出图慢很多，请耐心等）…",
       "usage": "🎬 用法：/视频 <描述> [参数]\n例如：/视频 一只猫在草地上奔跑 --seconds 5 --fps 16\n　　　/视频 赛博朋克城市延时 --ratio 16:9 --steps 30\n参数：--seconds（时长，默认 {seconds} 秒，上限 {max_seconds} 秒）、--fps（帧率，默认 {fps}）、--length（直接给帧数，按 4n+1 对齐）\n尺寸用 --size/--ratio/--width/--height，其余参数与 /画图 相同\n⚠️ 需要 ComfyUI 里已装好视频模型与节点（如 Wan 2.x）；缺什么会直接告诉你"
+    },
+    "again": {
+      "none": "🤔 还没有可复用的上一次绘制。先发 /画图 画一张，再来 /换一张 就能换种子重画",
+      "received": "🎨 沿用上次的描述与参数，换个种子重新画…"
     }
   },
   "common": {
@@ -214,7 +218,8 @@
     "video": "🎬 视频 {seconds} 秒",
     "video_meta": "（{length} 帧 / {fps:.0f} fps）\n",
     "video_saved": "🎬 视频 {seconds} 秒（已保存到 {path}）",
-    "warning": "\n⚠️ {text}"
+    "warning": "\n⚠️ {text}",
+    "again_hint": "\n💡 想换一张？发 /换一张（同描述同参数，只换种子）"
   },
   "ui": {
     "action": {

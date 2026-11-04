@@ -6198,6 +6198,104 @@ def main() -> int:
     check("并且没有在插件目录里偷偷建 data/（升级会被覆盖）",
           not (ROOT / "data").exists(), ROOT / "data")
 
+    print("\n=== 文生图 / LLM 生图优化 ===")
+    plugin.config["features"] = dict(ALL_FEATURES)
+    # 前面治理用例可能留了按群/用户的功能白名单，会让工具在 feature_enabled 处静默返回
+    plugin.config["permission"] = {}
+    plugin.permission.reload({})
+
+    # ① LLM 工具：模型已经写好提示词时，别再让优化器改写一遍
+    check("纯英文 tag 不需要再过优化器",
+          m.needs_prompt_optimize("1girl, solo, red hair, smile") is False, None)
+    check("中文提示词必须过优化器（CLIP 系底模不认）",
+          m.needs_prompt_optimize("一个红发女孩在笑") is True, None)
+    check("英文句子也要过（优化器负责压成 tag）",
+          m.needs_prompt_optimize("a girl with red hair smiling") is True, None)
+    check("空提示词不优化", m.needs_prompt_optimize("   ") is False, None)
+
+    # 工具入口第一句就判 agent.enable_llm_tool，默认关着 —— 不打开会直接 return
+    _saved_agent_cfg = dict(plugin.config.get("agent") or {})
+    plugin.config["agent"] = {"enable_llm_tool": True}
+    _seen: dict = {}
+
+    async def _fake_gen(**kw):
+        _seen.clear(); _seen.update(kw)
+        return {"images": [], "videos": [], "video": {}, "template": "t", "model": "m",
+                "width": 1, "height": 1, "seed": 1, "seconds": 0.1, "arch": "sdxl",
+                "lora": "", "vae": "", "denoise": 1.0, "i2i": False, "positive": "",
+                "negative": "", "purpose": "t2i", "backend": "", "queued_seconds": 0}
+
+    _real_gen, _real_rec = plugin.generate, plugin._record_generation
+    _real_perm = plugin.permission.check
+
+    async def _noop_rec(*a, **k):
+        return None
+
+    async def _allow(*a, **k):
+        return True, ""
+
+    # 这里只测「工具怎么决定要不要优化提示词」，权限/配额不在范围内，
+    # 直接放行 —— 否则前面用例留下的冷却/配额会让工具静默 return，测试变成假绿。
+    plugin.generate, plugin._record_generation = _fake_gen, _noop_rec
+    plugin.permission.check = _allow
+    try:
+        asyncio.run(drive(plugin.tool_generate_image(
+            AstrMessageEvent(sender_id="8801", message_str="x"),
+            prompt="1girl, solo, red hair, smile")))
+        _en = dict(_seen.get("opts") or {})
+        asyncio.run(drive(plugin.tool_generate_image(
+            AstrMessageEvent(sender_id="8802", message_str="x"), prompt="一个红发女孩")))
+        _zh = dict(_seen.get("opts") or {})
+    finally:
+        plugin.generate, plugin._record_generation = _real_gen, _real_rec
+        plugin.permission.check = _real_perm
+        plugin.config["agent"] = _saved_agent_cfg
+    check("英文 tag 走工具时跳过二次优化（省一次 LLM 调用）",
+          _en.get("no_llm") == "1", _en)
+    check("中文走工具时仍交给优化器翻译", _zh.get("no_llm") is None, _zh)
+
+    # ② /换一张：记住上次参数，换个种子重跑
+    plugin._last_draw.clear()
+    _out_none = asyncio.run(drive(plugin.cmd_again(
+        AstrMessageEvent(sender_id="8810", message_str="/换一张"))))
+    check("没画过时 /换一张 给可操作提示",
+          _out_none and "换一张" in _out_none[0]["text"], _out_none)
+
+    _ev = AstrMessageEvent(sender_id="8811", message_str="/画图 x")
+    plugin._remember_draw(_ev, "一个红发女孩",
+                          {"ratio": "16:9", "seed": "42", "no_llm": "1", "control": "depth"}, "")
+    _saved = plugin._last_draw.get("8811") or {}
+    check("记住上次参数，但去掉种子与本次开关",
+          _saved.get("desc") == "一个红发女孩"
+          and "seed" not in (_saved.get("opts") or {})
+          and "no_llm" not in (_saved.get("opts") or {})
+          and "control" not in (_saved.get("opts") or {})
+          and (_saved.get("opts") or {}).get("ratio") == "16:9", _saved)
+    check("记下的用途是 t2i", _saved.get("feature") == "t2i", _saved)
+
+    _again: list = []
+
+    async def _fake_var(**kw):
+        _again.append(kw)
+        return {"images": [], "videos": [], "video": {}, "template": "t", "model": "m",
+                "width": 1, "height": 1, "seed": 2, "seconds": 0.1, "arch": "sdxl",
+                "lora": "", "vae": "", "denoise": 1.0, "i2i": False, "positive": "",
+                "negative": "", "purpose": "t2i", "backend": "", "queued_seconds": 0,
+                "again_hint": True}
+
+    _real_var = plugin._generate_variants
+    plugin._generate_variants, plugin._record_generation = _fake_var, _noop_rec
+    try:
+        asyncio.run(drive(plugin.cmd_again(
+            AstrMessageEvent(sender_id="8811", message_str="/换一张"))))
+    finally:
+        plugin._generate_variants, plugin._record_generation = _real_var, _real_rec
+    check("/换一张 复用上次描述，且不带种子（换的就是种子）",
+          bool(_again) and _again[0]["user_desc"] == "一个红发女孩"
+          and "seed" not in (_again[0].get("opts") or {}), _again[:1] if _again else None)
+
+    plugin._last_draw.clear()
+
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）
     field_re = _re.compile(

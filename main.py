@@ -594,6 +594,8 @@ class ComfyUISmartPlugin(Star):
         self._job_backend: dict[str, Backend] = {}
         # 预处理器探测结果：(后端, 节点类, 权重名) -> (时间戳, 是否可用, 失败原因)
         self._probe_cache: dict[tuple, tuple[float, bool, str]] = {}
+        # 每位用户上一次成功绘制的「可复现参数」，供 /换一张 复用（换种子重跑）
+        self._last_draw: dict[str, dict] = {}
 
         # 注册插件 Pages 的后端 API。
         # 注意：必须在 __init__ 里调用——漏掉的话，配置页/模型页/状态页的每个请求
@@ -2325,6 +2327,8 @@ class ComfyUISmartPlugin(Star):
             purpose=purpose, model=selection["model"],
             seconds=time.time() - started, ok=True, prompt=positive, seed=seed, event=event,
         )
+        # 成功出图后记下参数，/换一张 靠它复用（失败不记，免得换出来的是坏参数）
+        self._remember_draw(event, user_desc, opts, source_image)
         videos = [p for p in images if media_kind(p.name) == "video"]
         pictures = [p for p in images if media_kind(p.name) != "video"]
 
@@ -2376,6 +2380,8 @@ class ComfyUISmartPlugin(Star):
             "hires_note": hires_note,
             "upscale_note": upscale_note,
             "i2i": bool(image_ref),
+            # 只有在能复用的用途下才提示「可以换一张」
+            "again_hint": purpose in ("t2i", "i2i"),
             "denoise": denoise if denoise is not None else 1.0,
             "outpaint": outpaint_info,
             "inpaint": inpaint_info,
@@ -2884,6 +2890,33 @@ class ComfyUISmartPlugin(Star):
                 paths.append(str(path))
         return paths
 
+    def _remember_draw(self, event, user_desc: str, opts: dict, source_image: str) -> None:
+        """记下这次成功绘制的参数，供 `/换一张` 复用。
+
+        只留**可复现**的部分：种子不存（换一张就是要换种子），
+        `no_llm` / `llm` / `control` 这类「本次开关」也不存 —— 下次应当重新按配置决定。
+        """
+        if event is None or not (user_desc or "").strip():
+            return
+        try:
+            uid = str(event.get_sender_id())
+        except Exception:          # noqa: BLE001 - 事件结构异常就不记，不影响出图
+            return
+        if not uid:
+            return
+        keep = {
+            key: value for key, value in (opts or {}).items()
+            if key not in ("seed", "no_llm", "llm", "control")
+        }
+        self._last_draw[uid] = {
+            "desc": user_desc,
+            "opts": keep,
+            "source_image": source_image or "",
+            "feature": "i2i" if source_image else "t2i",
+        }
+        if len(self._last_draw) > 200:     # 长期运行别无限涨
+            self._last_draw.pop(next(iter(self._last_draw)))
+
     def _extra_image_hint(self, images: list[str], used: int) -> str:
         """多附图、但只有前 N 张参与出图时给一句提示。
 
@@ -3027,6 +3060,8 @@ class ComfyUISmartPlugin(Star):
         if result.get("queued_seconds"):
             # 排队时间与出图时间分开报，否则「这次怎么这么慢」说不清
             detail += self.t("result.queued", seconds=result["queued_seconds"])
+        if result.get("again_hint"):
+            detail += self.t("result.again_hint")
         return detail
 
     def _merge_forward_chain(
@@ -3362,6 +3397,54 @@ class ComfyUISmartPlugin(Star):
         except Exception as e:
             logger.debug("读取对话模型信息失败：%s", e)
         yield event.plain_result("\n".join(lines))
+
+    @filter.command("换一张", alias={"再来一张", "再画", "again"})
+    async def cmd_again(self, event: AstrMessageEvent):
+        """沿用上一次的描述与参数，换个种子再画一张。"""
+        uid = str(event.get_sender_id())
+        is_admin = bool(event.is_admin())
+        allowed, reason = await self.permission.check(
+            uid, is_admin=is_admin, storage=self.storage
+        )
+        if not allowed:
+            yield event.plain_result(reason)
+            return
+
+        last = self._last_draw.get(uid)
+        if not last:
+            yield event.plain_result(self.t("cmd.again.none"))
+            return
+        # 功能关掉就静默（与其它指令一致），别在这里破例
+        if not self.feature_enabled(last.get("feature") or "t2i", event):
+            return
+
+        # 原样复用上次参数，只把种子去掉 —— 换一张的核心就是换个种子
+        opts = dict(last.get("opts") or {})
+        opts.pop("seed", None)
+        yield event.plain_result(self.t("cmd.again.received"))
+
+        on_wait, on_queued, on_progress = self._queue_notifiers(event)
+        try:
+            result = await self._generate_variants(
+                user_desc=str(last.get("desc") or ""),
+                opts=opts,
+                event=event,
+                on_wait=on_wait,
+                on_queued=on_queued,
+                on_progress=on_progress,
+                source_image=str(last.get("source_image") or ""),
+            )
+        except (ComfyUIError, TemplateError) as e:
+            logger.warning("换一张失败：%s", e)
+            yield event.plain_result(self.t("error.failed", error=e))
+            return
+        except RuntimeError as e:
+            yield event.plain_result(f"💥 {e}")
+            return
+
+        await self.permission.record(uid, is_admin=is_admin, storage=self.storage)
+        await self._record_generation(uid, event, result)
+        yield event.chain_result(self._compose_result_chain(event, uid, result))
 
     @filter.command("图生图", alias={"改图", "i2i", "重绘"})
     async def cmd_img2img(self, event: AstrMessageEvent):
@@ -3818,6 +3901,10 @@ class ComfyUISmartPlugin(Star):
         ratio = (aspect_ratio or "").strip()
         if ratio in RATIO_PRESETS:
             opts["ratio"] = ratio
+        # 模型已经把提示词写好了：纯英文 tag 就别再改写一遍（省一次调用、也不会被改漂）。
+        # 还夹着中文、或只是英文句子时才交给优化器。
+        if not needs_prompt_optimize(prompt):
+            opts["no_llm"] = "1"
         try:
             result = await self.generate(user_desc=prompt, opts=opts, event=event)
         except (ComfyUIError, TemplateError, RuntimeError) as e:
@@ -4206,6 +4293,30 @@ def parse_denoise_levels(raw) -> list[float]:
             return []
         levels.append(min(1.0, max(0.05, value)))
     return sorted(set(levels))[:MAX_DENOISE_LEVELS]
+
+
+# 中日韩字符：提示词里只要还有这些，就必须过一遍优化器（CLIP 系底模吃英文 tag）。
+_CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]")
+
+
+def needs_prompt_optimize(text: str) -> bool:
+    """这段提示词还值不值得再过一遍 LLM 优化器。
+
+    为什么要判：`generate_image` 工具收到的 `prompt` **已经是大模型写好的**，
+    原样再送进优化器属于多花一次调用，还可能把意图改漂（第二次改写有自己的偏好）。
+    但有两种情况必须过：
+
+    - 还夹着中文（或日韩文）：CLIP 系底模基本不认，必须翻译 + 转 tag；
+    - 是英文句子而不是 tag 列表：优化器会把它压成逗号分隔的 tag。
+
+    判据用「有没有 CJK」+「逗号少于 3 个就算句子」，都很好解释也容易复查。
+    """
+    stripped = (text or "").strip()
+    if not stripped:
+        return False
+    if _CJK_RE.search(stripped):
+        return True
+    return stripped.count(",") < 3
 
 
 def merge_tags(*chunks: str) -> str:
