@@ -54,6 +54,52 @@ BUILTIN_PRESETS: dict[str, dict] = {
 }
 
 
+# 画面媒介类型（「这是照片还是插画还是 3D」）。
+# 与风格预设是**两个维度**：风格管玩法（手办化/证件照），媒介管画面材质。
+# 两者可以叠加：`--媒介 水彩 --风格 立绘`。
+BUILTIN_MEDIA: dict[str, dict] = {
+    "照片": {
+        "prompt": "photograph, realistic, 35mm photograph, natural lighting, film grain, sharp focus",
+        "negative": "anime, illustration, 3d render, painting",
+    },
+    "插画": {
+        "prompt": "illustration, digital painting, clean lineart, cel shading",
+        "negative": "photograph, photorealistic, 3d render",
+    },
+    "3D": {
+        "prompt": "3d render, octane render, subsurface scattering, studio lighting, high detail",
+        "negative": "flat illustration, photograph, sketch",
+    },
+    "像素": {
+        "prompt": "pixel art, 16-bit, limited palette, dithering",
+        "negative": "smooth gradients, photorealistic, blurry",
+    },
+    "水墨": {
+        "prompt": "ink wash painting, sumi-e, brush strokes, rice paper, monochrome",
+        "negative": "photograph, 3d render, digital painting",
+    },
+}
+
+
+# 画质档位（可选，默认不加）。刻意**不做成默认行为**：
+# 用户原话与反推结果应当原样提交，凭空补质量词会改变他们本来写好的东西。
+# 想要就显式 `--画质 高清`。
+BUILTIN_QUALITY: dict[str, dict] = {
+    "标准": {"prompt": "high detail, sharp focus", "negative": ""},
+    "高清": {
+        "prompt": "masterpiece, best quality, high detail, sharp focus, intricate details",
+        "negative": "blurry, jpeg artifacts",
+    },
+    "极致": {
+        "prompt": (
+            "masterpiece, best quality, ultra detailed, absurdres, highres, "
+            "intricate details, sharp focus, professional lighting"
+        ),
+        "negative": "blurry, lowres, jpeg artifacts, noise",
+    },
+}
+
+
 def normalize_preset(raw) -> dict | None:
     """把用户写的预设整理成 `{"prompt": str, "negative": str}`。
 

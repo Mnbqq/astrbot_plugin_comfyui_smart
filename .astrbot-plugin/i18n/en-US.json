@@ -540,7 +540,9 @@
       "usage": "Usage:\n　/draw a girl --style figure\n　/style add <name> <positive tags>\n　/style del <name>\n　/style (list)",
       "saved": "✅ Style preset saved: {model}",
       "removed": "🗑 Style preset removed: {model}",
-      "not_found": "🤔 No such style preset: {model}"
+      "not_found": "🤔 No such style preset: {model}",
+      "media": "📷 Media type (--media): {names}",
+      "quality": "✨ Quality tier (--quality): {names}"
     }
   },
   "common": {

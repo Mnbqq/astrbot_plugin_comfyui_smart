@@ -59,7 +59,8 @@ from .workflow_templates import (
     pick_template,
 )
 from .style_presets import (
-    BUILTIN_PRESETS, ensure_safe_suffix, normalize_all, normalize_preset,
+    BUILTIN_MEDIA, BUILTIN_PRESETS, BUILTIN_QUALITY, ensure_safe_suffix,
+    normalize_all, normalize_preset,
 )
 from .error_hints import (
     build_probe_graph,
@@ -72,7 +73,7 @@ from .error_hints import (
 
 PLUGIN_NAME = "astrbot_plugin_comfyui_smart"
 # 与 metadata.yaml 的 version 保持一致（tests/test_logic.py 会校验二者不漂移）
-PLUGIN_VERSION = "0.35.0"
+PLUGIN_VERSION = "1.0.0"
 
 # ControlNet 的深度预处理器权重是「按需下载」的（不在 models/ 下），
 # 探测结果按（后端 + 节点 + 权重名）缓存这么久，避免每次出图都多一次往返。
@@ -222,6 +223,10 @@ PARAM_ALIASES = {
     "negative": "negative", "负面": "negative",
     # 风格预设：--风格 手办化 / --style figure
     "style": "style", "风格": "style", "画风": "style",
+    # 画面媒介类型（照片/插画/3D/像素/水墨），与风格预设是两个维度
+    "media": "media", "媒介": "media",
+    # 画质档位：标准 / 高清 / 极致（默认不加，显式才生效）
+    "quality": "quality", "画质": "quality",
     # 提示词优化开关（本次生效）：--llm 强制改写 / --no-llm 本次不改写
     "llm": "llm", "优化": "llm", "no-llm": "no_llm", "no_llm": "no_llm", "不优化": "no_llm",
     # ControlNet 控制 / 放大
@@ -2093,6 +2098,29 @@ class ComfyUISmartPlugin(Star):
             else:
                 logger.warning("未知的风格预设：%s（本次忽略，不影响出图）", style_name)
 
+        # 画质档位（默认不加；显式 --画质 才生效，避免改写用户原话）
+        quality_name = str(opts.get("quality") or "").strip()
+        if quality_name:
+            q = normalize_preset(BUILTIN_QUALITY.get(quality_name))
+            if q:
+                positive = merge_tags(q["prompt"], positive)
+                negative = merge_tags(negative, q["negative"])
+                logger.info("套用画质档位：%s", quality_name)
+            else:
+                logger.warning("未知的画质档位：%s（可选 %s）", quality_name,
+                               "、".join(BUILTIN_QUALITY))
+
+        # 画面媒介类型：与风格预设并列的第二个维度（照片/插画/3D/像素/水墨）
+        media_name = str(opts.get("media") or "").strip()
+        if media_name:
+            media = normalize_preset(BUILTIN_MEDIA.get(media_name))
+            if media:
+                positive = merge_tags(media["prompt"], positive)
+                negative = merge_tags(negative, media["negative"])
+                logger.info("套用媒介类型：%s", media_name)
+            else:
+                logger.warning("未知的媒介类型：%s（可选 %s）", media_name, "、".join(BUILTIN_MEDIA))
+
         # 出口统一安全后缀：所有入口、所有预设都走这一处，幂等所以不会越叠越长。
         # 只对 merge / guard_only 生效 —— 另外两档是用户明说要「只用我自己写的词」
         # （custom_only）或「一个字符都不改」（raw），这里不能擅自加。
@@ -3503,6 +3531,8 @@ class ComfyUISmartPlugin(Star):
             lines = [self.t("cmd.style.title", count=len(presets))]
             for name, preset in list(presets.items())[:30]:
                 lines.append(f"　· {name}：{preset['prompt'][:48]}…")
+            lines.append(self.t("cmd.style.media", names="、".join(BUILTIN_MEDIA)))
+            lines.append(self.t("cmd.style.quality", names="、".join(BUILTIN_QUALITY)))
             lines.append(self.t("cmd.style.usage"))
             yield event.plain_result("\n".join(lines))
             return

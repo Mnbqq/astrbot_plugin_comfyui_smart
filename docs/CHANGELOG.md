@@ -3,6 +3,46 @@
 > 从 v0.1.0 到最新的逐版本记录（主 README 只保留最近几条）。
 
 ## 更新日志
+**v1.0.0** — 画面媒介与画质档位（版本号自此按 1.x 计）
+
+从这个版本起版本号从 1.0.0 开始。内容上是 v0.35.0 之后的两块补充：把「画面长什么样」
+拆成两个**正交维度** —— 媒介管材质，画质管精度。
+
+**一、画面媒介类型（`--媒介`）**
+
+以前只有「风格预设」一个维度（手办化/立绘/证件照…），它管的是**玩法**；
+「这是照片还是插画还是 3D」其实没人管，只能靠底模自己。现在补上：
+
+| 媒介 | 正向词（节选） | 负向词（节选） |
+|---|---|---|
+| 照片 | photograph, 35mm photograph, natural lighting, film grain | anime, illustration, 3d render |
+| 插画 | illustration, digital painting, clean lineart, cel shading | photograph, photorealistic |
+| 3D | 3d render, octane render, subsurface scattering | flat illustration, photograph |
+| 像素 | pixel art, 16-bit, limited palette, dithering | smooth gradients, photorealistic |
+| 水墨 | ink wash painting, sumi-e, brush strokes, rice paper | photograph, 3d render |
+
+与风格预设可以叠加：`/画图 一个女孩 --媒介 水彩 --风格 立绘`。
+
+**二、画质档位（`--画质`）**
+
+`标准` / `高清` / `极致`，对应的质量词逐级加多（`high detail` → `masterpiece, best quality…`
+→ 再加 `absurdres, highres, intricate details`），并附带 `blurry` / `jpeg artifacts` 这类负向词。
+
+**刻意做成「默认不生效」**：第一版我直接给 SDXL / SD3 的架构档案加了 `masterpiece, best quality`，
+结果打挂两条断言 —— 「用户原话原样提交」与「反推结果不被二次改写」。这个失败是对的：
+**凭空补质量词就是在改用户写好的东西**。所以回退成显式档位，想让插件加就自己 `--画质 高清`。
+
+**三、`/风格` 列表同时列出媒介与画质**
+
+```
+📷 画面媒介（--媒介）：照片、插画、3D、像素、水墨
+✨ 画质档位（--画质）：标准、高清、极致
+```
+
+- 配置项不变（86 项）；新增的是行内参数，不需要改配置页
+- 测试 872 → 876（媒介/画质清单完整性、档位词量递增、以及「默认不带质量词」的守卫）
+- 顺带修一个 i18n 键名写错的 bug：`cmd.style.media` 被整个塞进了嵌套字典，落成了错误的键
+
 **v0.35.0** — 选型准确率 + 提示词工程 + 风格预设（参考 56 个同类插件的源码调研）
 
 这一版的改动不是拍脑袋来的：扫了 56 个 AstrBot 生图插件的**源码**（129 段提示词原文，

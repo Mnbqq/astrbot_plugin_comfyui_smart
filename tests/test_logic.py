@@ -6389,6 +6389,24 @@ def main() -> int:
     if _style_path.exists():
         _style_path.unlink()
 
+    from astrbot_plugin_comfyui_smart import workflow_templates as wt_arch
+    check("媒介类型齐全且都能规范化",
+          set(_sp.BUILTIN_MEDIA) == {"照片", "插画", "3D", "像素", "水墨"}
+          and all(_sp.normalize_preset(v) for v in _sp.BUILTIN_MEDIA.values()),
+          list(_sp.BUILTIN_MEDIA))
+    check("画质档位齐全且都能规范化",
+          set(_sp.BUILTIN_QUALITY) == {"标准", "高清", "极致"}
+          and all(_sp.normalize_preset(v) for v in _sp.BUILTIN_QUALITY.values()),
+          list(_sp.BUILTIN_QUALITY))
+    check("画质档位越高，词越多（标准 < 高清 < 极致）",
+          len(_sp.BUILTIN_QUALITY["标准"]["prompt"])
+          < len(_sp.BUILTIN_QUALITY["高清"]["prompt"])
+          < len(_sp.BUILTIN_QUALITY["极致"]["prompt"]), None)
+    check("画质词默认不参与（不是默认行为，必须显式 --画质）",
+          not any("masterpiece" in (prof.get("quality_tags") or "")
+                  for name, prof in wt_arch.ARCH_PROFILES.items() if name != "sd15"),
+          {k: v.get("quality_tags") for k, v in wt_arch.ARCH_PROFILES.items()})
+
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）
     field_re = _re.compile(
