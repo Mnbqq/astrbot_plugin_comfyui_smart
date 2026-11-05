@@ -795,8 +795,31 @@ MODEL_SCENE_RULES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     (("3d", "fumo", "figurine", "chibi", "anime3d"),
      ("3D", "手办", "Q版")),
     # 偏人像的命名
-    (("portrait", "idol", "kpop", "selfie"),
+    (("portrait", "idol", "kpop", "selfie", "beauty", "babes", "filmgirl", "film"),
      ("人像", "自拍", "人物")),
+    # 3D / 卡通 / 皮克斯风（真人照片需求的用户要避开这类）
+    (("pixar", "disney", "cartoon", "toon", "gameicon"),
+     ("3D", "卡通", "CG")),
+    # 2.5D / 半写实
+    (("25d", "2.5d", "semireal"),
+     ("2.5D", "半写实", "插画")),
+    # 国风 / 古风
+    (("guofeng", "chinese", "hanfu", "ink", "gufeng"),
+     ("国风", "古风", "插画")),
+    # 公认的通用/混合向底模（名字本身没有具体风格倾向）
+    (("albedo", "dynavision", "allinone", "consistent", "experience", "elldreth",
+      "blazing", "cheese", "colorful", "icbinp", "rpgartist", "deliberate",
+      "helloworld", "rpg", "lumina"),
+     ("通用", "插画", "人物")),
+    # 名字里带「real」但**不是**写实系的那些，单独点名（用 "real" 当子串会误伤 meinaunreal）
+    (("realisian", "picxreal", "promptingreal", "unreal"),
+     ("写实", "摄影", "人像")),
+    # 二次元系里靠名字辨识的几家
+    (("meina", "yozora"),
+     ("二次元", "动漫", "插画", "人物", "自拍")),
+    # 插画 / 低保真 / 奇幻
+    (("lyriel", "lofi"),
+     ("插画", "奇幻")),
 )
 
 
