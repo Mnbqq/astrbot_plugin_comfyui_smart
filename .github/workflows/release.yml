@@ -52,6 +52,20 @@ jobs:
       # 为什么不用 generate_release_notes：那个「What's Changed」列表来自
       # **已合并的 PR**，本仓库直接往 main 推、不开 PR，自动生成的正文只有
       # 孤零零一行 compare 链接，等于没有说明。
+      # 检出 main 是为了回填旧 tag（v0.17~v0.29 的条目是后补进 main 的），
+      # 但**新发的 tag** 会遇到另一个问题：tag 推送往往早于 main 更新，
+      # 这时工作区里的 CHANGELOG 还是旧的，于是抽不到本次条目，正文变成
+      # 「没有该版本的条目」的兜底文案（v0.35.0 真踩到了）。
+      # 所以：tag 内那份 CHANGELOG 里有这一版，就用 tag 的；没有才回退 main。
+      - name: 按 tag 校对 CHANGELOG
+        run: |
+          if git cat-file -e "${TAG}:docs/CHANGELOG.md" 2>/dev/null              && git show "${TAG}:docs/CHANGELOG.md" | grep -q "^\*\*${TAG}\*\*"; then
+            git show "${TAG}:docs/CHANGELOG.md" > docs/CHANGELOG.md
+            echo "使用 tag 内的 CHANGELOG"
+          else
+            echo "tag 内没有 ${TAG} 的条目，沿用 main 的 CHANGELOG（回填旧版本场景）"
+          fi
+
       - name: 从 CHANGELOG 生成 Release 正文
         run: python3 .github/scripts/release_notes.py "${TAG}"
 
