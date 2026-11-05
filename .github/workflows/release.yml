@@ -59,13 +59,23 @@ jobs:
       # 所以：tag 内那份 CHANGELOG 里有这一版，就用 tag 的；没有才回退 main。
       - name: 按 tag 校对 CHANGELOG
         run: |
-          if git cat-file -e "${TAG}:docs/CHANGELOG.md" 2>/dev/null              && git show "${TAG}:docs/CHANGELOG.md" | grep -q "^\*\*${TAG}\*\*"; then
-            git show "${TAG}:docs/CHANGELOG.md" > docs/CHANGELOG.md
+          set -euo pipefail
+          echo "TAG=${TAG}  HEAD=$(git rev-parse --short HEAD)"
+          have=$(grep -c "^\*\*${TAG}\*\*" docs/CHANGELOG.md || true)
+          echo "工作区 CHANGELOG 本版条目数：${have}"
+          # 先写临时文件再判断：直接 `git show > docs/CHANGELOG.md` 一旦失败会把文件截空，
+          # 然后静默走 else —— 正文就变成「没有该版本的条目」（v0.35.0 踩过一次）。
+          git show "${TAG}:docs/CHANGELOG.md" > /tmp/changelog_tag.md 2>/tmp/show_err.txt || true
+          if [ -s /tmp/changelog_tag.md ] && grep -q "^\*\*${TAG}\*\*" /tmp/changelog_tag.md; then
+            cp /tmp/changelog_tag.md docs/CHANGELOG.md
             echo "使用 tag 内的 CHANGELOG"
           else
-            echo "tag 内没有 ${TAG} 的条目，沿用 main 的 CHANGELOG（回填旧版本场景）"
+            echo "tag 内没有本版条目或读取失败，沿用 main 的 CHANGELOG"
+            cat /tmp/show_err.txt 2>/dev/null || true
           fi
-
+          # 最终仍没有条目，说明正文注定是兜底文案 —— 直接失败，不发布坏正文
+          grep -q "^\*\*${TAG}\*\*" docs/CHANGELOG.md || {
+            echo "::error::CHANGELOG 里没有 ${TAG} 的条目，拒绝生成空正文"; exit 1; }
       - name: 从 CHANGELOG 生成 Release 正文
         run: python3 .github/scripts/release_notes.py "${TAG}"
 
