@@ -581,7 +581,8 @@
     "video_user": "User description: {desc}\nTask type: {kind}\nRequirements: {hint}\nPlanned duration ~{seconds}s at {fps} fps.\nDefault negative prompt (for reference, do not copy): {negative}",
     "scene_system": "You classify image requests. Read the user's one-line description and decide which **image types** it belongs to.\nPick 1-3 of: people, selfie, portrait close-up, indoor, outdoor, city, suburb, architecture, landscape, animal, still life, anime, manga, illustration, realistic, photography, 3D, figurine, chibi.\nRules: JSON only, no explanation; only use the words listed above.\n{\"scenes\": [\"people\", \"indoor\"]}",
     "scene_user": "User description: {desc}",
-    "scene_line": "Image types (from the classifier; prefer checkpoints whose \"适合\" tags include these, and treat architecture as secondary): {scenes}"
+    "scene_line": "Image types (from the classifier; prefer checkpoints whose \"适合\" tags include these, and treat architecture as secondary): {scenes}",
+    "glossary_line": "[Clothing glossary] (Chinese→English; use these exact English terms): {pairs}"
   },
   "perm": {
     "blacklist": "🚫 You are blacklisted",

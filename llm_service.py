@@ -666,6 +666,13 @@ class LLMService:
             quality_rule=self._t(rule_key),
             completion_rule=self._t(completion_key),
         )
+        # 中文服饰术语对照：只在命中时才追加，避免无谓拉长提示词
+        _hits = match_zh_glossary(user_desc)
+        if _hits:
+            user += "\n\n" + self._t(
+                "llm.glossary_line",
+                pairs="、".join(f"{zh}→{en}" for zh, en in _hits),
+            )
         # 第一段识别的画面类型：渲染完再追加，单占一段，不与模板里的占位符纠缠
         if scenes:
             user += "\n\n" + self._t("llm.scene_line", scenes="、".join(scenes))
@@ -792,6 +799,59 @@ REVERSE_DETAIL_SYSTEM = """你是插画提示词反推与画面分析助手：�
 【输出】
 13. 只输出一个 JSON 对象：不要 markdown 代码块、不要说明文字、不要注释。
 {"positive": "...", "negative": "...", "summary": "...", "character": "", "work": "", "bad_tags": [], "analysis": {"composition": "...", "lighting": "...", "style": "...", "anomalies": ["..."]}}"""
+
+
+_GLOSSARY_CACHE: dict[str, str] | None = None
+
+
+def load_zh_glossary() -> dict[str, str]:
+    """加载中文服饰术语表（`glossary/zh_clothing.json`）。
+
+    为什么要它：CLIP 系底模吃英文 tag，而「针织 / 荷叶边 / 乐福鞋」这类中文服饰词
+    直译经常错位。表里 86 对来自公开图库的中英对照（MIT，仅元数据，不含图片）。
+
+    Returns:
+        `{中文: 英文}`；文件缺失或损坏时返回空表（不抛，出图不该因为它失败）。
+    """
+    global _GLOSSARY_CACHE
+    if _GLOSSARY_CACHE is not None:
+        return _GLOSSARY_CACHE
+    from pathlib import Path as _P
+
+    path = _P(__file__).resolve().parent / "glossary" / "zh_clothing.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        pairs = data.get("pairs") or {}
+        _GLOSSARY_CACHE = {
+            str(k): str(v) for k, v in pairs.items() if str(k).strip() and str(v).strip()
+        }
+    except (OSError, ValueError):
+        _GLOSSARY_CACHE = {}
+    return _GLOSSARY_CACHE
+
+
+def match_zh_glossary(text: str, limit: int = 12) -> list[tuple[str, str]]:
+    """从用户描述里挑出命中的中文服饰术语。
+
+    长词优先（「运动鞋」不该被「鞋」抢先），按出现顺序截断到 limit 条。
+
+    Args:
+        text: 用户的中文描述。
+        limit: 最多返回几条，太多会稀释提示词。
+
+    Returns:
+        `[(中文, 英文), ...]`；没命中返回空列表。
+    """
+    if not text:
+        return []
+    hit = [(text.find(zh), zh, en) for zh, en in load_zh_glossary().items() if zh in text]
+    hit.sort(key=lambda x: (x[0], -len(x[1])))
+    out, seen = [], set()
+    for _, zh, en in hit:
+        if en not in seen:
+            seen.add(en)
+            out.append((zh, en))
+    return out[:limit]
 
 
 def _load_json_object(text: str) -> dict | None:

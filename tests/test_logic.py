@@ -6407,6 +6407,37 @@ def main() -> int:
                   for name, prof in wt_arch.ARCH_PROFILES.items() if name != "sd15"),
           {k: v.get("quality_tags") for k, v in wt_arch.ARCH_PROFILES.items()})
 
+    print("\n=== 中文服饰术语表 ===")
+    _gl = llm.load_zh_glossary()
+    check("术语表能加载且规模合理", len(_gl) >= 80, len(_gl))
+    check("术语表是中文→英文", all(isinstance(k, str) and isinstance(v, str)
+                                     and any("\u4e00" <= c <= "\u9fff" for c in k)
+                                     and all(ord(c) < 128 for c in v) for k, v in _gl.items()),
+          list(_gl.items())[:3])
+    _hit = dict(llm.match_zh_glossary("一个穿针织开衫和乐福鞋的女孩"))
+    check("命中服饰词并给出英文", _hit.get("针织") == "knit" and _hit.get("乐福鞋") == "loafers", _hit)
+    check("没命中就返回空（不乱加）", llm.match_zh_glossary("一只猫在草地上") == [], None)
+    check("命中条数有上限", len(llm.match_zh_glossary("针织牛仔荷叶边大衣短袜运动鞋丝巾凉鞋内裤", 3)) == 3, None)
+
+    # 注入到优化器的用户消息里
+    _svc2 = llm.LLMService(ctx, plugin.config)
+    _calls2: list = []
+
+    async def _cap2(system, user, **kw):
+        _calls2.append(user)
+        return '{"positive": "1girl", "negative": ""}'
+
+    _real2 = _svc2.generate
+    _svc2.generate = _cap2
+    try:
+        asyncio.run(_svc2.optimize_prompt("一个穿针织开衫的女孩", {"checkpoints": []}))
+        asyncio.run(_svc2.optimize_prompt("一只猫", {"checkpoints": []}))
+    finally:
+        _svc2.generate = _real2
+    check("命中术语时把对照塞进用户消息",
+          "针织→knit" in _calls2[0], _calls2[0][-80:])
+    check("没命中时不塞（不无谓拉长提示词）", "服饰术语" not in _calls2[1], _calls2[1][-40:])
+
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）
     field_re = _re.compile(
