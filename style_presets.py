@@ -51,6 +51,57 @@ BUILTIN_PRESETS: dict[str, dict] = {
         ),
         "negative": "photorealistic, 3d render",
     },
+    # 以下 7 个是「画风」取向，与上面「玩法」取向互补（参考 ai-pose-gallery-zh 的画风清单，
+    # 名字取自该仓库 README，正文措辞由本项目自己写）。
+    "复古胶片": {
+        "prompt": (
+            "analog photography, 35mm film, kodak portra, film grain, soft contrast, "
+            "warm highlights, natural skin texture"
+        ),
+        "negative": "digital art, 3d render, oversaturated, plastic skin",
+    },
+    "日韩画报": {
+        "prompt": (
+            "editorial portrait, magazine photography, beauty lighting, clean makeup, "
+            "minimal styling, soft shadow, pastel background"
+        ),
+        "negative": "harsh shadow, cluttered background, low quality",
+    },
+    "2.5D": {
+        "prompt": (
+            "2.5d, semi realistic, ray tracing, soft rim light, detailed shading, "
+            "anime proportions with realistic rendering"
+        ),
+        "negative": "flat colors, rough sketch, pure 2d",
+    },
+    "动画电影感": {
+        "prompt": (
+            "anime movie still, cinematic composition, dramatic sky, lens flare, "
+            "rich colors, detailed background, film lighting"
+        ),
+        "negative": "flat lighting, plain background, sketch",
+    },
+    "黑白漫画": {
+        "prompt": (
+            "manga, black and white, screentone, ink lineart, high contrast, "
+            "panel composition, dramatic hatching"
+        ),
+        "negative": "color, painting, 3d render, soft gradients",
+    },
+    "赛博朋克": {
+        "prompt": (
+            "cyberpunk, neon lights, rainy street, reflections, holographic signage, "
+            "teal and magenta lighting, night"
+        ),
+        "negative": "daylight, plain background, pastel colors",
+    },
+    "潮玩手办": {
+        "prompt": (
+            "designer toy, vinyl figure, glossy plastic, chibi proportions, "
+            "studio lighting, product photography, clean background"
+        ),
+        "negative": "photorealistic human, anime screenshot, messy background",
+    },
 }
 
 
