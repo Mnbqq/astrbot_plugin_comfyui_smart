@@ -40,13 +40,25 @@ jobs:
       - name: 构建源码包（与仓库快照同名）
         run: |
           set -euo pipefail
-          NAME="astrbot_plugin_comfyui_smart_${TAG}"
+          # 包内**顶层目录必须就叫插件名**：AstrBot 按插件目录名找
+          # data/config/<插件名>_config.json，目录名带版本号会让它认为这是另一个插件，
+          # 表现为「更新后配置没了」（1.1.0 真踩到了）。
+          # 资产名可以带版本，包内目录不行。
+          PKG="astrbot_plugin_comfyui_smart"
+          NAME="${PKG}_${TAG}"
           # tag 没取到就立刻失败，别产出一个内容不对的包
           git rev-parse --verify "refs/tags/${TAG}" >/dev/null
-          mkdir -p "dist/${NAME}"
-          git archive "${TAG}" | tar -x -C "dist/${NAME}"
-          (cd dist && tar -czf "${NAME}.tar.gz" "${NAME}")
+          mkdir -p "dist/${PKG}"
+          git archive "${TAG}" | tar -x -C "dist/${PKG}"
+          (cd dist && tar -czf "${NAME}.tar.gz" "${PKG}")
           ls -la dist
+          # 自检：包内顶层目录必须正好是插件名，否则直接失败，别发出装不上的包
+          TOP=$(tar tzf "dist/${NAME}.tar.gz" | head -1 | cut -d/ -f1)
+          if [ "${TOP}" != "${PKG}" ]; then
+            echo "::error::包内顶层目录是 ${TOP}，应为 ${PKG}；这会让 AstrBot 找不到原配置"
+            exit 1
+          fi
+          echo "包内顶层目录：${TOP} ✅"
 
       # 正文直接取 CHANGELOG 里这一版那一节。
       # 为什么不用 generate_release_notes：那个「What's Changed」列表来自

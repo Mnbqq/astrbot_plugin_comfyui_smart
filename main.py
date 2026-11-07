@@ -622,6 +622,17 @@ class ComfyUISmartPlugin(Star):
                 "插件 Pages 路由注册失败，配置页/状态页将无法使用：%s", e, exc_info=True
             )
 
+        # 护栏：AstrBot 按**插件目录名**找 data/config/<名>_config.json。
+        # 如果目录名带了版本号（例如从带版本的发布包解压出来），AstrBot 会当成另一个插件，
+        # 表现为「更新后配置全没了」——1.1.0 的发布包就这么坑过一次。
+        # 这里主动喊出来，别让人对着空配置页猜。
+        _dir_name = Path(__file__).resolve().parent.name
+        if _dir_name != PLUGIN_NAME:
+            logger.warning(
+                "插件目录名是 %r，与插件名 %r 不一致：AstrBot 会按目录名找配置，"
+                "可能导致配置页显示为空。请把目录改名回 %s 后重启。",
+                _dir_name, PLUGIN_NAME, PLUGIN_NAME,
+            )
         logger.info("ComfyUI 智能绘图已加载，数据目录：%s", self.data_dir)
 
     # ------------------------------------------------------------------ #
