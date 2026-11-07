@@ -305,6 +305,7 @@ class Storage:
             return 0
         files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
         removed = 0
+        dropped: set[str] = set()
         deadline = (
             time.time() - max_age_days * 86400 if max_age_days and max_age_days > 0 else 0
         )
@@ -316,6 +317,59 @@ class Storage:
             try:
                 path.unlink()
                 removed += 1
+                dropped.add(path.name)
             except OSError:
                 continue
+        if dropped:
+            self._drop_records_for(dropped)
         return removed
+
+    def _drop_records_for(self, names: set[str]) -> int:
+        """把引用了已删除图片的记录一并清掉。
+
+        为什么必须做：画廊是「记录驱动」的 —— 只要 records 里还挂着文件名，
+        前端就会渲染一张卡片。图片被保留策略删掉、记录却留着，结果就是
+        **有卡片、图裂开**（而且看起来像功能坏了）。所以删文件必须同步删记录。
+
+        Args:
+            names: 已删除的文件名集合。
+
+        Returns:
+            被移除的记录条数。
+        """
+        data = _read_json(self.stats_path, None)
+        if not isinstance(data, dict):
+            return 0
+        records = data.get("records")
+        if not isinstance(records, list):
+            return 0
+
+        def still_alive(ref: str) -> bool:
+            return Path(str(ref)).name not in names
+
+        kept = []
+        hit = 0
+        changed = False
+        for record in records:
+            images = record.get("images") if isinstance(record, dict) else None
+            if not isinstance(images, list):
+                kept.append(record)
+                continue
+            survivors = [ref for ref in images if still_alive(ref)]
+            if len(survivors) != len(images):
+                # 部分图片被删也要落盘（之前只判「整条清空」才写，导致部分删的引用留着）
+                changed = True
+            if survivors:
+                record["images"] = survivors
+                kept.append(record)
+            else:
+                hit += 1
+                changed = True
+        if not changed:
+            return 0
+        data["records"] = kept
+        try:
+            _atomic_write(self.stats_path, data)
+        except OSError:
+            return 0
+        return hit

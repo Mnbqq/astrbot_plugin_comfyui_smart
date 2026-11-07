@@ -6461,6 +6461,48 @@ def main() -> int:
         except OSError:
             pass
 
+    print("\n=== 画廊记录与图片文件必须同步清理 ===")
+    from astrbot_plugin_comfyui_smart.storage import Storage as _St
+
+    import pathlib as _pl, tempfile as _tf
+    _dir = _pl.Path(_tf.mkdtemp(prefix="prune_"))
+    try:
+        _st = _St(_dir)
+        # 造 5 张图 + 5 条记录
+        _names = []
+        for _i in range(5):
+            _f = _st.output_dir / f"shot_{_i}.png"
+            _f.write_bytes(b"x")
+            _names.append(f"images/shot_{_i}.png")
+        asyncio.run(_st.record_generation(
+            user_id="u1", user_name="n", positive="p", negative="q",
+            models={"checkpoint": "m", "lora": "", "vae": "", "template": "t"},
+            images=_names, seconds=1.0, params={}))
+        _before = len(_st.load_stats()["records"])
+        check("出图后有记录", _before == 1, _before)
+
+        _removed = _st.prune_images(keep=2, max_age_days=0)
+        _after = _st.load_stats()["records"]
+        check("超量图片会被清理", _removed == 3, _removed)
+        check("记录同步裁剪到剩余两张",
+              len(_after) == 1 and len(_after[0]["images"]) == 2,
+              _after[0].get("images") if _after else None)
+        check("留下的记录指向真实存在的文件",
+              all((_st.output_dir / _pl.Path(r).name).is_file()
+                  for r in _after[0]["images"]), None)
+
+        # 全部清空时，记录也应一并消失（否则画廊会全是裂图）
+        _st.prune_images(keep=1, max_age_days=0)
+        _st.prune_images(keep=1, max_age_days=0)
+        _last = _st.load_stats()["records"]
+        check("图片全被清理后，记录也不再有裂图引用",
+              all((_st.output_dir / _pl.Path(r).name).is_file()
+                  for rec in _last for r in rec.get("images", [])),
+              [[r for r in rec.get("images", [])] for rec in _last])
+    finally:
+        import shutil as _sh
+        _sh.rmtree(_dir, ignore_errors=True)
+
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）
     field_re = _re.compile(
