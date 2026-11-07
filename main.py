@@ -73,7 +73,7 @@ from .error_hints import (
 
 PLUGIN_NAME = "astrbot_plugin_comfyui_smart"
 # 与 metadata.yaml 的 version 保持一致（tests/test_logic.py 会校验二者不漂移）
-PLUGIN_VERSION = "1.1.0"
+PLUGIN_VERSION = "1.1.1"
 
 # ControlNet 的深度预处理器权重是「按需下载」的（不在 models/ 下），
 # 探测结果按（后端 + 节点 + 权重名）缓存这么久，避免每次出图都多一次往返。
@@ -227,6 +227,9 @@ PARAM_ALIASES = {
     "media": "media", "媒介": "media",
     # 画质档位：标准 / 高清 / 极致（默认不加，显式才生效）
     "quality": "quality", "画质": "quality",
+    # /审计 的参数（此前只能代码里传，聊天里写不出来）
+    "count": "count", "条数": "count",
+    "user": "user", "用户": "user",
     # 提示词优化开关（本次生效）：--llm 强制改写 / --no-llm 本次不改写
     "llm": "llm", "优化": "llm", "no-llm": "no_llm", "no_llm": "no_llm", "不优化": "no_llm",
     # ControlNet 控制 / 放大
