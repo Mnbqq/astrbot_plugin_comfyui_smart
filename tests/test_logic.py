@@ -6503,6 +6503,43 @@ def main() -> int:
         import shutil as _sh
         _sh.rmtree(_dir, ignore_errors=True)
 
+    print("\n=== 画廊缩略图 ===")
+    from astrbot_plugin_comfyui_smart.pages import make_thumbnail, THUMB_MAX_SIDE
+    import shutil as _sh2, tempfile as _tf2, pathlib as _pl2
+
+    _tdata = _pl2.Path(_tf2.mkdtemp(prefix="thumb_"))
+    try:
+        _tsrc = _tdata / "shot.png"
+        _tsrc.write_bytes(bytes.fromhex(
+            "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
+            "890000000d4944415478da63f8ffff3f0005fe02fea735d1e80000000049454e44ae426082"))
+        _traw, _tmime, _tthumbed = make_thumbnail(_tdata, _tsrc)
+        try:
+            import PIL  # noqa: F401
+            _has_pil = True
+        except ImportError:
+            _has_pil = False
+        if _has_pil:
+            check("有 Pillow 时会产出 JPEG 缩略图并落盘缓存",
+                  _tthumbed and _tmime == "image/jpeg"
+                  and (_tdata / "thumbs" / f"shot_{THUMB_MAX_SIDE}.jpg").is_file(),
+                  (_tmime, _tthumbed))
+        else:
+            check("没有 Pillow 时原样返回（功能不受影响，只是不省流量）",
+                  (not _tthumbed) and _traw == _tsrc.read_bytes() and _tmime == "image/png",
+                  (_tmime, len(_traw), _tthumbed))
+        check("缩略图上限是个合理值", 128 <= THUMB_MAX_SIDE <= 1024, THUMB_MAX_SIDE)
+
+        # 文件不存在时不该抛，交给调用方判断
+        _tmissing_ok = False
+        try:
+            make_thumbnail(_tdata, _tdata / "nope.png")
+        except OSError:
+            _tmissing_ok = True
+        check("原图不存在时抛 OSError（由路由转成 404/500）", _tmissing_ok, None)
+    finally:
+        _sh2.rmtree(_tdata, ignore_errors=True)
+
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）
     field_re = _re.compile(

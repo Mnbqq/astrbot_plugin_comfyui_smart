@@ -21,6 +21,56 @@ from astrbot.api.web import error_response, file_response, json_response, reques
 PLUGIN_NAME = "astrbot_plugin_comfyui_smart"
 
 
+THUMB_MAX_SIDE = 512
+THUMB_QUALITY = 82
+
+
+def make_thumbnail(data_dir: Path, source: Path) -> tuple[bytes, str, bool]:
+    """把图片压成缩略图（有 Pillow 时），否则原样返回。
+
+    为什么按需生成 + 落盘缓存：一张 1024×1216 的 PNG 动辄 2~3 MB，
+    经 base64 走 postMessage 到页面会变成 3~4 MB 字符串，画廊一屏七八张就很卡。
+    缩到 512 长边的 JPEG 通常只有几十 KB。
+
+    为什么做成可选：本插件只依赖 aiohttp，不强制装 Pillow。
+    Pillow 不在时**原样返回**，功能仍然可用，只是不省流量。
+
+    Args:
+        data_dir: 插件数据目录（缩略图缓存在 `<data_dir>/thumbs/`）。
+        source: 原图路径。
+
+    Returns:
+        `(字节内容, MIME, 是否是缩略图)`。
+    """
+    mime = mimetypes.guess_type(source.name)[0] or "image/png"
+    try:
+        from PIL import Image  # noqa: PLC0415 - 运行时可选依赖
+    except ImportError:
+        return source.read_bytes(), mime, False
+
+    cache_dir = data_dir / "thumbs"
+    cache = cache_dir / f"{source.stem}_{THUMB_MAX_SIDE}.jpg"
+    try:
+        if cache.is_file() and cache.stat().st_mtime >= source.stat().st_mtime:
+            return cache.read_bytes(), "image/jpeg", True
+    except OSError:
+        pass
+
+    try:
+        with Image.open(source) as img:
+            img.thumbnail((THUMB_MAX_SIDE, THUMB_MAX_SIDE))
+            if img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            tmp = cache.with_suffix(".jpg.tmp")
+            img.save(tmp, "JPEG", quality=THUMB_QUALITY, optimize=True)
+            tmp.replace(cache)
+        return cache.read_bytes(), "image/jpeg", True
+    except (OSError, ValueError):
+        # 图片坏了、格式不认、磁盘写不了 —— 都退回原图，别让画廊因此空掉
+        return source.read_bytes(), mime, False
+
+
 def image_roots(data_dir: Path) -> list[Path]:
     """图片可能所在的目录，按优先级排序。
 
@@ -179,6 +229,27 @@ def register_pages_routes(plugin) -> bool:
             })
         return error_response("图片不存在", status_code=404)
 
+    async def get_thumb_data(filename: str = ""):
+        """缩略图的 data URL（画廊用；点开详情再走 `images-data` 取原图）。"""
+        safe_name = Path(filename or "").name
+        if not safe_name:
+            return error_response("缺少文件名", status_code=400)
+        for root in image_roots(plugin.data_dir):
+            target = root / safe_name
+            if not target.is_file():
+                continue
+            try:
+                raw, mime, thumbed = make_thumbnail(plugin.data_dir, target)
+            except OSError as e:
+                return error_response(f"读取失败：{e}", status_code=500)
+            return json_response({
+                "name": safe_name,
+                "size": len(raw),
+                "thumbnail": thumbed,
+                "data_url": f"data:{mime};base64,{base64.b64encode(raw).decode()}",
+            })
+        return error_response("图片不存在", status_code=404)
+
     routes = (
         (f"/{PLUGIN_NAME}/config", get_config, ["GET"], "读取插件配置"),
         (f"/{PLUGIN_NAME}/config", save_config, ["POST"], "保存插件配置"),
@@ -195,6 +266,8 @@ def register_pages_routes(plugin) -> bool:
         (f"/{PLUGIN_NAME}/images/<filename>", get_image, ["GET"], "读取生成的图片"),
         (f"/{PLUGIN_NAME}/images-data/<filename>", get_image_data, ["GET"],
          "读取生成的图片（data URL，供沙箱内的页面用）"),
+        (f"/{PLUGIN_NAME}/thumb-data/<filename>", get_thumb_data, ["GET"],
+         "读取图片缩略图（data URL，画廊用）"),
     )
     for route, handler, methods, desc in routes:
         context.register_web_api(route, handler, methods, desc)

@@ -308,9 +308,11 @@ function imageFileName(ref) {
   return String(ref || '').split('/').pop() || '';
 }
 
-async function fetchImageDataUrl(ref) {
+async function fetchImageDataUrl(ref, options) {
+  const thumb = Boolean(options && options.thumb);
   const name = encodeURIComponent(imageFileName(ref));
-  const payload = await bridge.apiGet('images-data/' + name);
+  const endpoint = (thumb ? 'thumb-data/' : 'images-data/') + name;
+  const payload = await bridge.apiGet(endpoint);
   const data = payload && payload.data !== undefined ? payload.data : payload;
   if (data && data.data_url) return data.data_url;
   throw new Error('no data_url');
@@ -330,8 +332,10 @@ function hydrateImages(container) {
     if (!node || node.getAttribute('data-loaded')) return;
     node.setAttribute('data-loaded', '1');
     const ref = node.getAttribute('data-ref');
+    // 画廊格子用小图（thumb），详情弹窗要原图（full）
+    const wantThumb = node.getAttribute('data-thumb') !== '0';
     try {
-      const url = await fetchImageDataUrl(ref);
+      const url = await fetchImageDataUrl(ref, { thumb: wantThumb });
       node.src = url;
       node.setAttribute('data-data-url', url);
     } catch (error) {
@@ -892,6 +896,7 @@ function openDetail(index) {
       // 图片走桥取 data URL（沙箱 iframe 里直连的 src 到不了宿主）；
       // 视频仍用直连地址，交给平台自己的播放器处理。
       fresh.setAttribute('data-ref', item.ref);
+      fresh.setAttribute('data-thumb', '0');   // 详情看原图，不要缩略图
       hydrateImages(fresh);
     }
   }
