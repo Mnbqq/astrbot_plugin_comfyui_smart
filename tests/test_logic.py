@@ -6510,9 +6510,10 @@ def main() -> int:
     _tdata = _pl2.Path(_tf2.mkdtemp(prefix="thumb_"))
     try:
         _tsrc = _tdata / "shot.png"
-        _tsrc.write_bytes(bytes.fromhex(
-            "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
-            "890000000d4944415478da63f8ffff3f0005fe02fea735d1e80000000049454e44ae426082"))
+        import base64 as _b64
+        # 结构合法的 1×1 PNG（手写 hex 容易把 CRC 写坏，Pillow 会直接拒绝）
+        _tsrc.write_bytes(_b64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="))
         _traw, _tmime, _tthumbed = make_thumbnail(_tdata, _tsrc)
         try:
             import PIL  # noqa: F401

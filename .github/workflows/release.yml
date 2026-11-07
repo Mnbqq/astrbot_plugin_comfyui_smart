@@ -37,6 +37,26 @@ jobs:
           fetch-depth: 0        # 需要完整 tag 列表来拼 Full Changelog 链接
           fetch-tags: true      # 检出 main 时默认不带 tag，必须显式打开
 
+      # tag 推送会**同时**触发 CI 与 Release，两条流水线并行 ——
+      # 这次就出现了「CI 判红、Release 已经把包发出去了」。
+      # 发布比 CI 更有破坏力（市场会拉这个包），所以它必须自己把关。
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 发布前跑测试（CI 并行，不能指望它）
+        run: |
+          set -euo pipefail
+          pip install -q -r requirements.txt
+          python3 tests/test_logic.py
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: 发布前跑前端测试
+        run: node tests/test_pages_js.js
+
       - name: 构建源码包（与仓库快照同名）
         run: |
           set -euo pipefail

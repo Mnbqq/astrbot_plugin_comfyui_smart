@@ -66,8 +66,11 @@ def make_thumbnail(data_dir: Path, source: Path) -> tuple[bytes, str, bool]:
             img.save(tmp, "JPEG", quality=THUMB_QUALITY, optimize=True)
             tmp.replace(cache)
         return cache.read_bytes(), "image/jpeg", True
-    except (OSError, ValueError):
-        # 图片坏了、格式不认、磁盘写不了 —— 都退回原图，别让画廊因此空掉
+    except Exception:  # noqa: BLE001 - 图像解码器会抛各种异常（Pillow 对坏 PNG 抛 SyntaxError）
+        # 图片坏了、格式不认、磁盘写不了 —— 都退回原图，别让画廊因此空掉。
+        # 这里刻意不窄化：PIL 可能抛 SyntaxError / UnidentifiedImageError /
+        # DecompressionBombError / struct.error，逐个列举既漏又脆。
+        logger.warning("缩略图生成失败，退回原图：%s", source.name)
         return source.read_bytes(), mime, False
 
 

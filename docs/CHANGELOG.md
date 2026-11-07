@@ -3,6 +3,34 @@
 > 从 v0.1.0 到最新的逐版本记录（主 README 只保留最近几条）。
 
 ## 更新日志
+**v1.1.4** — 修 v1.1.3 的缩略图崩溃，并给发布流程加「发布前跑测试」闸
+
+**一、v1.1.3 是坏的，这条是它的修复**
+
+`make_thumbnail()` 只捕获了 `OSError` / `ValueError`，但 Pillow 解码**结构损坏的 PNG**
+抛的是 `SyntaxError` —— 于是坏图会让缩略图接口 500，前端的兜底再退回直连（沙箱里也失败），
+那张图就彻底裂了。
+
+CI 抓到了这个（Python 3.10/3.11/3.12 三档全红），但**包已经发出去了**：
+tag 推送会同时触发 CI 与 Release，两条流水线并行，Release 更快。
+
+- 异常范围放宽到 `Exception`（Pillow 还可能抛 `UnidentifiedImageError` /
+  `DecompressionBombError` / `struct.error`，逐个列举既漏又脆），并记一条 warning
+- 测试里的 1×1 PNG 换成了结构合法的版本（原来那串手写 hex 的 CRC 是坏的，
+  没有 Pillow 时看不出来，装上才炸 —— 这也是它逃过本地测试的原因）
+
+**二、发布流程自己把关**
+
+`release.yml` 新增两步：装依赖后跑 `tests/test_logic.py` 与 `tests/test_pages_js.js`，
+**测试不过就不打包**。CI 仍然并行跑，但发布不再指望它。
+
+**三、从这版起，本地也验两遍**
+
+「没装 Pillow」和「装了 Pillow」是两条代码路径，只测一条等于没测。这次用 venv 装了
+Pillow 单独跑了一遍，才发现问题。
+
+测试 894 / 54 全绿（两种情况各跑一遍）。
+
 **v1.1.3** — 画廊缩略图（画廊不再一张张拉原图）
 
 画廊一屏七八张大图，每张经 base64 走 postMessage 要 3~4 MB 字符串，手机上明显卡顿。
