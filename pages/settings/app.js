@@ -299,6 +299,57 @@ async function loadI18n() {
   }
 }
 
+/* 沙箱 iframe 里 `<img src="/api/...">` 到不了宿主（面板 iframe 没有 allow-same-origin，
+   页面处于不透明源），只有 AstrBotPluginPage 这条 postMessage 桥能通。
+   所以图片统一经桥取成 data URL 再塞给 <img>；桥失败时退回直连（老面板仍可用）。 */
+const TRANSPARENT_PX = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+
+function imageFileName(ref) {
+  return String(ref || '').split('/').pop() || '';
+}
+
+async function fetchImageDataUrl(ref) {
+  const name = encodeURIComponent(imageFileName(ref));
+  const payload = await bridge.apiGet('images-data/' + name);
+  const data = payload && payload.data !== undefined ? payload.data : payload;
+  if (data && data.data_url) return data.data_url;
+  throw new Error('no data_url');
+}
+
+/* 容器里所有带 data-ref 的节点按需加载（进视口才取，避免一次拉几十 MB） */
+function hydrateImages(container) {
+  // 传单个节点也行：弹窗里只有它自己需要加载，别把整页的图又扫一遍。
+  // 用 getAttribute 判断而不是 matches()，兼容更简单的 DOM 实现。
+  const isNode = Boolean(container && container.getAttribute
+    && container.getAttribute('data-ref'));
+  const nodes = isNode
+    ? [container]
+    : Array.from((container && container.querySelectorAll ? container : document)
+        .querySelectorAll('[data-ref]'));
+  const load = async (node) => {
+    if (!node || node.getAttribute('data-loaded')) return;
+    node.setAttribute('data-loaded', '1');
+    const ref = node.getAttribute('data-ref');
+    try {
+      const url = await fetchImageDataUrl(ref);
+      node.src = url;
+      node.setAttribute('data-data-url', url);
+    } catch (error) {
+      node.src = imageUrl(ref);
+    }
+  };
+  if ('IntersectionObserver' in window) {
+    const io = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (entry.isIntersecting) { io.unobserve(entry.target); load(entry.target); }
+      });
+    }, { rootMargin: '200px' });
+    nodes.forEach((n) => io.observe(n));
+  } else {
+    nodes.forEach(load);
+  }
+}
+
 function imageUrl(ref) {
   return '/api/v1/plugins/extensions/' + PLUGIN_NAME + '/' + String(ref || '');
 }
@@ -777,12 +828,13 @@ async function loadStats() {
           + '<div class="gallery-grid">' + galleryItems.map((item, index) =>
             '<figure class="gallery-item" data-index="' + index + '" title="点击查看提示词与参数">'
             + (item.video
-              ? '<video src="' + esc(item.url) + '" muted loop playsinline preload="metadata"></video>'
-              : '<img src="' + esc(item.url) + '" loading="lazy" alt="" '
+              ? '<video data-ref="' + esc(item.ref) + '" muted loop playsinline preload="metadata"></video>'
+              : '<img data-ref="' + esc(item.ref) + '" src="' + TRANSPARENT_PX + '" loading="lazy" alt="" '
                 + 'onerror="this.parentNode.classList.add(\'missing\')" />')
             + '<figcaption><span class="gal-prompt">' + esc(item.prompt || '')
             + '</span><span class="gal-meta">' + esc(item.meta) + '</span></figcaption></figure>').join('') + '</div>'
         : '<p class="muted">暂无作品，出图后这里会展示</p>') + '</div>';
+    hydrateImages(box);
   } catch (error) {
     box.innerHTML = '<p class="muted">统计读取失败：' + esc(error.message) + '</p>';
   }
@@ -825,13 +877,22 @@ function openDetail(index) {
   const modalImage = $('#modal-image');
   if (modalImage) {
     if (item.video) {
+      // 视频先给直连地址（老面板直接能放）；沙箱里这个请求会失败，
+      // 随后 hydrateImages 会用桥取回的 data URL 覆盖掉。
       modalImage.outerHTML = '<video id="modal-image" class="modal-image" src="'
         + esc(item.url) + '" controls autoplay loop></video>';
-      const fresh = $('#modal-image');
-      if (fresh) fresh.src = item.url;
+      const videoEl = $('#modal-image');
+      if (videoEl) videoEl.src = item.url;
     } else {
       modalImage.outerHTML = '<img id="modal-image" class="modal-image" src="'
-        + esc(item.url) + '" alt="" />';
+        + TRANSPARENT_PX + '" alt="" />';
+    }
+    const fresh = $('#modal-image');
+    if (fresh && !item.video) {
+      // 图片走桥取 data URL（沙箱 iframe 里直连的 src 到不了宿主）；
+      // 视频仍用直连地址，交给平台自己的播放器处理。
+      fresh.setAttribute('data-ref', item.ref);
+      hydrateImages(fresh);
     }
   }
   $('#modal-image').alt = item.prompt || '';

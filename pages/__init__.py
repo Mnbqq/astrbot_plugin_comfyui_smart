@@ -11,6 +11,8 @@
 """
 from __future__ import annotations
 
+import base64
+import mimetypes
 from pathlib import Path
 
 from astrbot.api import logger
@@ -149,6 +151,34 @@ def register_pages_routes(plugin) -> bool:
                     "、".join(str(r) for r in roots))
         return error_response("图片不存在", status_code=404)
 
+    async def get_image_data(filename: str = ""):
+        """把图片以 data URL 返回（JSON）。
+
+        为什么需要：AstrBot 面板把插件页放在
+        `<iframe sandbox="allow-scripts ...">` 里（**没有 allow-same-origin**），
+        页面处于不透明源 —— `<img src="/api/...">` 这类原生请求根本到不了宿主，
+        只有 `window.AstrBotPluginPage` 桥（postMessage）能通。所以画廊里的图
+        必须由桥取回成 data URL 再塞给 `<img>`。
+        """
+        safe_name = Path(filename or "").name
+        if not safe_name:
+            return error_response("缺少文件名", status_code=400)
+        for root in image_roots(plugin.data_dir):
+            target = root / safe_name
+            if not target.is_file():
+                continue
+            try:
+                raw = target.read_bytes()
+            except OSError as e:
+                return error_response(f"读取失败：{e}", status_code=500)
+            mime = mimetypes.guess_type(target.name)[0] or "image/png"
+            return json_response({
+                "name": safe_name,
+                "size": len(raw),
+                "data_url": f"data:{mime};base64,{base64.b64encode(raw).decode()}",
+            })
+        return error_response("图片不存在", status_code=404)
+
     routes = (
         (f"/{PLUGIN_NAME}/config", get_config, ["GET"], "读取插件配置"),
         (f"/{PLUGIN_NAME}/config", save_config, ["POST"], "保存插件配置"),
@@ -163,6 +193,8 @@ def register_pages_routes(plugin) -> bool:
         (f"/{PLUGIN_NAME}/inpaint", run_inpaint, ["POST"], "局部重绘（涂抹遮罩）"),
         (f"/{PLUGIN_NAME}/stats/clear", clear_stats, ["POST"], "清空统计"),
         (f"/{PLUGIN_NAME}/images/<filename>", get_image, ["GET"], "读取生成的图片"),
+        (f"/{PLUGIN_NAME}/images-data/<filename>", get_image_data, ["GET"],
+         "读取生成的图片（data URL，供沙箱内的页面用）"),
     )
     for route, handler, methods, desc in routes:
         context.register_web_api(route, handler, methods, desc)
