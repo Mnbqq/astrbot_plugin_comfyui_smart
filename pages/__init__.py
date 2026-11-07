@@ -19,6 +19,32 @@ from astrbot.api.web import error_response, file_response, json_response, reques
 PLUGIN_NAME = "astrbot_plugin_comfyui_smart"
 
 
+def image_roots(data_dir: Path) -> list[Path]:
+    """图片可能所在的目录，按优先级排序。
+
+    正常情况下只有 `data_dir/output` 一个。但如果插件目录名曾经变过
+    （例如从带版本号的发布包解压成 `astrbot_plugin_comfyui_smart_v1.1.1`），
+    AstrBot 会给出**另一个**数据目录，那段时间出的图就落在同级兄弟目录里 ——
+    改回目录名后，画廊能列出记录却加载不出图。这里把同级同前缀的旧目录也纳入查找，
+    让这类历史遗留图片还能显示，而不是一律 404。
+
+    Args:
+        data_dir: 当前插件数据目录。
+
+    Returns:
+        待查找的目录列表，当前目录在最前。
+    """
+    roots = [data_dir / "output"]
+    try:
+        own = data_dir.name
+        for alt in data_dir.parent.iterdir():
+            if alt.is_dir() and alt.name != own and alt.name.startswith(f"{own}_"):
+                roots.append(alt / "output")
+    except OSError:
+        pass
+    return roots
+
+
 def register_pages_routes(plugin) -> bool:
     """在插件实例上注册 Web API。
 
@@ -114,10 +140,14 @@ def register_pages_routes(plugin) -> bool:
         safe_name = Path(filename or "").name
         if not safe_name:
             return error_response("缺少文件名", status_code=400)
-        target = plugin.storage.output_dir / safe_name
-        if not target.is_file():
-            return error_response("图片不存在", status_code=404)
-        return file_response(target)
+        roots = image_roots(plugin.data_dir)
+        for root in roots:
+            target = root / safe_name
+            if target.is_file():
+                return file_response(target)
+        logger.info("画廊图片未找到：%s（查找过 %s）", safe_name,
+                    "、".join(str(r) for r in roots))
+        return error_response("图片不存在", status_code=404)
 
     routes = (
         (f"/{PLUGIN_NAME}/config", get_config, ["GET"], "读取插件配置"),

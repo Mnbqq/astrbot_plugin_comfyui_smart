@@ -6438,6 +6438,29 @@ def main() -> int:
           "针织→knit" in _calls2[0], _calls2[0][-80:])
     check("没命中时不塞（不无谓拉长提示词）", "服饰术语" not in _calls2[1], _calls2[1][-40:])
 
+    print("\n=== 画廊图片：改名后的旧数据目录回退 ===")
+    from astrbot_plugin_comfyui_smart.pages import image_roots
+
+    _base = plugin.data_dir
+    _legacy = _base.parent / f"{_base.name}_v1.1.0"
+    _legacy_out = _legacy / "output"
+    _legacy_out.mkdir(parents=True, exist_ok=True)
+    _f = _legacy_out / "legacy_shot.png"
+    _f.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 32)
+    try:
+        _roots = image_roots(_base)
+        check("当前目录排在最前", _roots[0] == _base / "output", _roots)
+        check("同级带版本号后缀的旧目录也会被找到",
+              _legacy_out in _roots, [str(r) for r in _roots])
+        check("旧目录里的图片确实能被定位",
+              any((r / "legacy_shot.png").is_file() for r in _roots), None)
+    finally:
+        _f.unlink(missing_ok=True)
+        try:
+            _legacy_out.rmdir(); _legacy.rmdir()
+        except OSError:
+            pass
+
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）
     field_re = _re.compile(

@@ -622,6 +622,24 @@ class ComfyUISmartPlugin(Star):
                 "插件 Pages 路由注册失败，配置页/状态页将无法使用：%s", e, exc_info=True
             )
 
+        # 数据目录护栏：插件目录名变过时（版本号后缀那次），旧图片会留在同级的
+        # astrbot_plugin_comfyui_smart_vX.Y.Z/output/ 里，表现为「画廊有新记录、旧图 404」。
+        try:
+            _sib = [
+                p for p in self.data_dir.parent.iterdir()
+                if p.is_dir() and p.name != self.data_dir.name
+                and p.name.startswith(f"{self.data_dir.name}_")
+            ]
+            if _sib:
+                logger.warning(
+                    "发现同名的旧数据目录：%s。它们多半是插件目录名带版本号时产生的，"
+                    "里面的图片现在仍能通过画廊访问；想彻底合并，把旧的 output/ 里的文件"
+                    "移动到 %s 即可。",
+                    "、".join(p.name for p in _sib), self.data_dir / "output",
+                )
+        except OSError:
+            pass
+
         # 护栏：AstrBot 按**插件目录名**找 data/config/<名>_config.json。
         # 如果目录名带了版本号（例如从带版本的发布包解压出来），AstrBot 会当成另一个插件，
         # 表现为「更新后配置全没了」——1.1.0 的发布包就这么坑过一次。
