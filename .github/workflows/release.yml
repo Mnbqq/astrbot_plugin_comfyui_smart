@@ -53,7 +53,10 @@ jobs:
           (cd dist && tar -czf "${NAME}.tar.gz" "${PKG}")
           ls -la dist
           # 自检：包内顶层目录必须正好是插件名，否则直接失败，别发出装不上的包
-          TOP=$(tar tzf "dist/${NAME}.tar.gz" | head -1 | cut -d/ -f1)
+          # 注意不能用 `| head -1`：set -o pipefail 下 head 提前关闭管道，
+          # tar 会收到 SIGPIPE 返回 141，整条流水线判失败（v1.1.1 第一版就这么挂的）。
+          # sed 会读完整个输入，不会有这个问题。
+          TOP=$(tar tzf "dist/${NAME}.tar.gz" | sed -n '1p' | cut -d/ -f1)
           if [ "${TOP}" != "${PKG}" ]; then
             echo "::error::包内顶层目录是 ${TOP}，应为 ${PKG}；这会让 AstrBot 找不到原配置"
             exit 1
