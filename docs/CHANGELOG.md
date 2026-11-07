@@ -3,6 +3,35 @@
 > 从 v0.1.0 到最新的逐版本记录（主 README 只保留最近几条）。
 
 ## 更新日志
+**v1.1.1** — 修发布包目录名（更新后配置页变空的元凶）
+
+**现象**：通过 AstrBot 内部更新到 1.1.0 后，插件配置页是空的，看起来像「配置文件没了」。
+
+**根因**：发布流程里 `NAME` 同时被用作**资产文件名**和**包内目录名**：
+
+```bash
+NAME="astrbot_plugin_comfyui_smart_${TAG}"
+git archive "${TAG}" | tar -x -C "dist/${NAME}"
+tar -czf "${NAME}.tar.gz" "${NAME}"
+```
+
+于是 tar.gz 的顶层目录变成了 `astrbot_plugin_comfyui_smart_v1.1.0/`。解压进 `data/plugins/`
+后插件目录名带上了版本号，而 **AstrBot 是按插件目录名去找 `data/config/<目录名>_config.json` 的** ——
+名字对不上，AstrBot 就把它当成另一个插件，配置页自然空白。
+
+**配置文件其实没丢**，还在 `data/config/astrbot_plugin_comfyui_smart_config.json`。
+把插件目录名改回 `astrbot_plugin_comfyui_smart` 并重启即可恢复。
+
+**修复三处**：
+
+1. 包内顶层目录固定为 `astrbot_plugin_comfyui_smart`，资产名仍带版本号
+2. **构建自检**：解包后校验顶层目录必须等于插件名，否则 `exit 1` —— 以后发不出装不上的包
+3. **运行时护栏**：启动时比对插件目录名与 `PLUGIN_NAME`，不一致就打 warning 并直接说明
+   「把目录改名回 xxx 后重启」——这次最该补的就是它：事故发生时**没有任何提示**，
+   配置页空着，谁也猜不到原因。
+
+测试 883 / 54 全绿。
+
 **v1.1.0** — 中文服饰术语表 + 画风预设补到 12 个 + 行内参数手册
 
 **一、中文服饰术语表（86 对）**
