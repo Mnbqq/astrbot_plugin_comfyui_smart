@@ -151,6 +151,39 @@ BUILTIN_QUALITY: dict[str, dict] = {
 }
 
 
+# 模板里用来占位「画面主体」的写法。中文文章里常见【画面主体】，
+# 也有人写 {subject} / 【主体】—— 都认。
+SUBJECT_PLACEHOLDERS = ("【画面主体】", "【主体】", "{subject}", "{{subject}}")
+
+
+def is_template_prompt(prompt: str) -> bool:
+    """这条预设是「带占位符的模板」还是「一串 tag」。
+
+    区别很重要：模板要**替换**掉用户描述的位置（它自己已经包含主体描述），
+    tag 只是**追加**在用户描述前面。搞反了就会变成「一只猫，【画面主体】，…」。
+    """
+    text = str(prompt or "")
+    return any(mark in text for mark in SUBJECT_PLACEHOLDERS)
+
+
+def fill_template(prompt: str, subject: str) -> str:
+    """把模板里的占位符替换成用户描述。
+
+    Args:
+        prompt: 含占位符的风格模板。
+        subject: 用户的原始描述。
+
+    Returns:
+        填好主体的完整描述；没有占位符时原样返回模板。
+    """
+    text = str(prompt or "")
+    body = str(subject or "").strip()
+    for mark in SUBJECT_PLACEHOLDERS:
+        if mark in text:
+            text = text.replace(mark, body)
+    return text.strip()
+
+
 def normalize_preset(raw) -> dict | None:
     """把用户写的预设整理成 `{"prompt": str, "negative": str}`。
 

@@ -6541,6 +6541,23 @@ def main() -> int:
     finally:
         _sh2.rmtree(_tdata, ignore_errors=True)
 
+    print("\n=== 风格模板（带【画面主体】占位符）===")
+    check("认出模板型预设",
+          _sp.is_template_prompt("【画面主体】，色彩以天青为主") is True
+          and _sp.is_template_prompt("{subject}, golden hour") is True
+          and _sp.is_template_prompt("masterpiece, best quality") is False, None)
+    _filled = _sp.fill_template("【画面主体】，色彩以天青、月白为主，极简构图", "一只猫坐在窗台")
+    check("模板把主体填进占位符",
+          _filled.startswith("一只猫坐在窗台") and "【画面主体】" not in _filled, _filled)
+    check("没有占位符时原样返回", _sp.fill_template("just tags", "x") == "just tags", None)
+    check("模板能被 normalize_preset 保留",
+          _sp.normalize_preset({"prompt": "【画面主体】，极简"})["prompt"] == "【画面主体】，极简", None)
+
+    # tag 型与模板型不能混：填完不该再叠一次
+    _tpl = _sp.fill_template("【画面主体】，暖色调", "一只猫")
+    check("填完不会残留占位符或重复主体",
+          _tpl.count("一只猫") == 1 and "【" not in _tpl, _tpl)
+
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）
     field_re = _re.compile(

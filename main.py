@@ -60,7 +60,7 @@ from .workflow_templates import (
 )
 from .style_presets import (
     BUILTIN_MEDIA, BUILTIN_PRESETS, BUILTIN_QUALITY, ensure_safe_suffix,
-    normalize_all, normalize_preset,
+    fill_template, is_template_prompt, normalize_all, normalize_preset,
 )
 from .error_hints import (
     build_probe_graph,
@@ -1740,6 +1740,16 @@ class ComfyUISmartPlugin(Star):
         llm_note = ""
         preset = preset or {}
         # 本次是否让 LLM 改写：行内 --llm / --no-llm 优先于配置
+        # 风格模板要**提前**展开：它自己带着主体位置（`【画面主体】，色彩以…`），
+        # 必须在 LLM 改写之前把用户描述填进去，否则模型看到的是一个空占位符。
+        # 纯 tag 型预设不在这里处理 —— 它们是「追加」，留到后面拼正向词时再加。
+        _original_desc = user_desc
+        _style_name = str(opts.get("style") or "").strip()
+        _style_preset = self.load_style_presets().get(_style_name) if _style_name else None
+        if _style_preset and is_template_prompt(_style_preset["prompt"]):
+            user_desc = fill_template(_style_preset["prompt"], _original_desc)
+            logger.info("套用风格模板：%s", _style_name)
+
         purpose_preview = force_purpose or ("i2i" if source_image else "t2i")
         # 内容过滤（内部保险：指令入口已拦过，这里挡住 LLM 工具/配置页等其它入口）
         hit = self.permission.nsfw_hit(user_desc)
@@ -2119,16 +2129,16 @@ class ComfyUISmartPlugin(Star):
             neg_chunks.append(str(opts.get("negative") or ""))
             negative = merge_tags(*neg_chunks)
 
-        # 风格预设：正向词放到**最前面**（越靠前权重越大），负向词并入
-        style_name = str(opts.get("style") or "").strip()
-        if style_name:
-            preset = self.load_style_presets().get(style_name)
-            if preset:
-                positive = merge_tags(preset["prompt"], positive)
-                negative = merge_tags(negative, preset["negative"])
-                logger.info("套用风格预设：%s", style_name)
+        # 风格预设（tag 型）：正向词放到**最前面**（越靠前权重越大），负向词并入。
+        # 模板型已经在上面展开成描述了，这里只处理负向词，别再往正向上叠一遍。
+        if _style_name:
+            if _style_preset:
+                if not is_template_prompt(_style_preset["prompt"]):
+                    positive = merge_tags(_style_preset["prompt"], positive)
+                    logger.info("套用风格预设：%s", _style_name)
+                negative = merge_tags(negative, _style_preset["negative"])
             else:
-                logger.warning("未知的风格预设：%s（本次忽略，不影响出图）", style_name)
+                logger.warning("未知的风格预设：%s（本次忽略，不影响出图）", _style_name)
 
         # 画质档位（默认不加；显式 --画质 才生效，避免改写用户原话）
         quality_name = str(opts.get("quality") or "").strip()
@@ -2421,7 +2431,8 @@ class ComfyUISmartPlugin(Star):
             seconds=time.time() - started, ok=True, prompt=positive, seed=seed, event=event,
         )
         # 成功出图后记下参数，/换一张 靠它复用（失败不记，免得换出来的是坏参数）
-        self._remember_draw(event, user_desc, opts, source_image)
+        # 存**原始**描述：模板型预设已经展开过一次，再展开会把模板叠两遍
+        self._remember_draw(event, _original_desc, opts, source_image)
         videos = [p for p in images if media_kind(p.name) == "video"]
         pictures = [p for p in images if media_kind(p.name) != "video"]
 
