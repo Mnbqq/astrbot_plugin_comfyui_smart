@@ -152,4 +152,9 @@ node   tests/test_pages_js.js    # 配置页前端
 python3 tests/check_api_surface.py <AstrBot 源码目录>   # 上架 API 面核对
 ```
 
+## 致谢
+
+- 内置的 370 条手绘风格与 36 个主题色来自 [yang0/handraw-style](https://github.com/yang0/handraw-style)
+  （MIT + 署名要求），我们把它整理成可直接调用的模板形式，详见 [presets/NOTICE.md](presets/NOTICE.md)。
+
 ## 许可

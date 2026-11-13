@@ -542,7 +542,12 @@
       "removed": "🗑 Style preset removed: {model}",
       "not_found": "🤔 No such style preset: {model}",
       "media": "📷 Media type (--media): {names}",
-      "quality": "✨ Quality tier (--quality): {names}"
+      "quality": "✨ Quality tier (--quality): {names}",
+      "cmd.style.title": "🎨 Style presets ({count} total · page {page}/{pages})",
+      "colors": "🎨 Theme colors: {count} (--color Klein Blue)",
+      "prompt": "Prompt: ",
+      "found": "🔍 {count} presets match \"{model}\":",
+      "no_match": "🤔 No preset matches \"{model}\""
     }
   },
   "common": {

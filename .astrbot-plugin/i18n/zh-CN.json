@@ -163,7 +163,12 @@
       "removed": "🗑 已删除风格预设：{model}",
       "not_found": "🤔 没有这个风格预设：{model}",
       "media": "📷 画面媒介（--媒介）：{names}",
-      "quality": "✨ 画质档位（--画质）：{names}"
+      "quality": "✨ 画质档位（--画质）：{names}",
+      "cmd.style.title": "🎨 风格预设（共 {count} 条 · 第 {page}/{pages} 页）",
+      "colors": "🎨 主题色：{count} 个（--色 克莱因蓝）",
+      "prompt": "提示词：",
+      "found": "🔍 匹配「{model}」的预设 {count} 条：",
+      "no_match": "🤔 没有匹配「{model}」的预设"
     }
   },
   "common": {

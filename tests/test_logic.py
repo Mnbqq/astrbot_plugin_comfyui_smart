@@ -6370,8 +6370,12 @@ def main() -> int:
     if _style_path.exists():
         _style_path.unlink()
     _presets = plugin.load_style_presets()
-    check("首次读取会用内置预设播种，并落盘",
-          set(_presets) == set(_sp.BUILTIN_PRESETS) and _style_path.is_file(), list(_presets))
+    check("首次读取会合并内置预设包（内置 12 + 手绘 370）",
+          set(_sp.BUILTIN_PRESETS) <= set(_presets) and len(_presets) >= 380,
+          len(_presets))
+    check("内置手绘风格包已随插件分发",
+          len(_sp.bundled_styles()) == 370 and len(_sp.bundled_colors()) == 36,
+          (len(_sp.bundled_styles()), len(_sp.bundled_colors())))
 
     asyncio.run(drive(plugin.cmd_style(AstrMessageEvent(
         sender_id="8951", message_str="/风格 添加 测试风 一条测试词, 另一条"))))
@@ -6379,8 +6383,8 @@ def main() -> int:
           plugin.load_style_presets().get("测试风", {}).get("prompt") == "一条测试词, 另一条",
           plugin.load_style_presets().get("测试风"))
     _list = asyncio.run(drive(plugin.cmd_style(AstrMessageEvent(
-        sender_id="8952", message_str="/风格"))))
-    check("列表里能看到新增的预设", any("测试风" in o["text"] for o in _list), _list)
+        sender_id="8952", message_str="/风格 搜 测试风"))))
+    check("搜索能找到新增的预设", any("测试风" in o["text"] for o in _list), _list)
     asyncio.run(drive(plugin.cmd_style(AstrMessageEvent(
         sender_id="8953", message_str="/风格 删除 测试风"))))
     check("指令能删除预设", "测试风" not in plugin.load_style_presets(), plugin.load_style_presets().keys())

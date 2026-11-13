@@ -1,0 +1,146 @@
+{
+ "克莱因蓝": {
+  "prompt": "主题色：克莱因蓝（Klein Blue）。",
+  "negative": ""
+ },
+ "马若雷勒蓝": {
+  "prompt": "主题色：马若雷勒蓝（Majorelle Blue）。",
+  "negative": ""
+ },
+ "普鲁士蓝": {
+  "prompt": "主题色：普鲁士蓝（Prussian Blue）。",
+  "negative": ""
+ },
+ "钴蓝": {
+  "prompt": "主题色：钴蓝（Cobalt Blue）。",
+  "negative": ""
+ },
+ "群青": {
+  "prompt": "主题色：群青（Ultramarine）。",
+  "negative": ""
+ },
+ "孔雀蓝": {
+  "prompt": "主题色：孔雀蓝（Peacock Blue）。",
+  "negative": ""
+ },
+ "蒂芙尼蓝": {
+  "prompt": "主题色：蒂芙尼蓝（Tiffany Blue）。",
+  "negative": ""
+ },
+ "湖蓝": {
+  "prompt": "主题色：湖蓝（Cerulean Blue）。",
+  "negative": ""
+ },
+ "薄荷绿": {
+  "prompt": "主题色：薄荷绿（Mint Green）。",
+  "negative": ""
+ },
+ "鼠尾草绿": {
+  "prompt": "主题色：鼠尾草绿（Sage Green）。",
+  "negative": ""
+ },
+ "祖母绿": {
+  "prompt": "主题色：祖母绿（Emerald Green）。",
+  "negative": ""
+ },
+ "橄榄绿": {
+  "prompt": "主题色：橄榄绿（Olive Green）。",
+  "negative": ""
+ },
+ "维罗纳绿": {
+  "prompt": "主题色：维罗纳绿（Veronese Green）。",
+  "negative": ""
+ },
+ "森林绿": {
+  "prompt": "主题色：森林绿（Forest Green）。",
+  "negative": ""
+ },
+ "朱砂红": {
+  "prompt": "主题色：朱砂红（Cinnabar Red）。",
+  "negative": ""
+ },
+ "中国红": {
+  "prompt": "主题色：中国红（Chinese Red）。",
+  "negative": ""
+ },
+ "勃艮第红": {
+  "prompt": "主题色：勃艮第红（Burgundy）。",
+  "negative": ""
+ },
+ "庞贝红": {
+  "prompt": "主题色：庞贝红（Pompeian Red）。",
+  "negative": ""
+ },
+ "玫瑰红": {
+  "prompt": "主题色：玫瑰红（Rose Red）。",
+  "negative": ""
+ },
+ "洋红": {
+  "prompt": "主题色：洋红（Magenta）。",
+  "negative": ""
+ },
+ "珊瑚粉": {
+  "prompt": "主题色：珊瑚粉（Coral Pink）。",
+  "negative": ""
+ },
+ "灰粉": {
+  "prompt": "主题色：灰粉（Dusty Rose）。",
+  "negative": ""
+ },
+ "薰衣草紫": {
+  "prompt": "主题色：薰衣草紫（Lavender）。",
+  "negative": ""
+ },
+ "帝王紫": {
+  "prompt": "主题色：帝王紫（Imperial Purple）。",
+  "negative": ""
+ },
+ "爱马仕橙": {
+  "prompt": "主题色：爱马仕橙（Hermès Orange）。",
+  "negative": ""
+ },
+ "柿子橙": {
+  "prompt": "主题色：柿子橙（Persimmon Orange）。",
+  "negative": ""
+ },
+ "那不勒斯黄": {
+  "prompt": "主题色：那不勒斯黄（Naples Yellow）。",
+  "negative": ""
+ },
+ "芥末黄": {
+  "prompt": "主题色：芥末黄（Mustard Yellow）。",
+  "negative": ""
+ },
+ "赭石": {
+  "prompt": "主题色：赭石（Ochre）。",
+  "negative": ""
+ },
+ "象牙白": {
+  "prompt": "主题色：象牙白（Ivory）。",
+  "negative": ""
+ },
+ "佩恩灰": {
+  "prompt": "主题色：佩恩灰（Payne's Grey）。",
+  "negative": ""
+ },
+ "炭黑": {
+  "prompt": "主题色：炭黑（Charcoal Black）。",
+  "negative": ""
+ },
+ "暖灰": {
+  "prompt": "主题色：暖灰（Warm Grey）。",
+  "negative": ""
+ },
+ "奶油白": {
+  "prompt": "主题色：奶油白（Cream White）。",
+  "negative": ""
+ },
+ "石板灰": {
+  "prompt": "主题色：石板灰（Slate Gray）。",
+  "negative": ""
+ },
+ "米驼色": {
+  "prompt": "主题色：米驼色（Taupe）。",
+  "negative": ""
+ }
+}

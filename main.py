@@ -60,7 +60,8 @@ from .workflow_templates import (
 )
 from .style_presets import (
     BUILTIN_MEDIA, BUILTIN_PRESETS, BUILTIN_QUALITY, ensure_safe_suffix,
-    fill_template, is_template_prompt, normalize_all, normalize_preset,
+    bundled_colors, bundled_styles, fill_template, is_template_prompt,
+    normalize_all, normalize_preset, resolve_name,
 )
 from .error_hints import (
     build_probe_graph,
@@ -225,6 +226,8 @@ PARAM_ALIASES = {
     "style": "style", "风格": "style", "画风": "style",
     # 画面媒介类型（照片/插画/3D/像素/水墨），与风格预设是两个维度
     "media": "media", "媒介": "media",
+    # 主题色（36 个内置色，与媒介/画质并列的又一个正交维度）
+    "color": "color", "色": "color", "主题色": "color",
     # 画质档位：标准 / 高清 / 极致（默认不加，显式才生效）
     "quality": "quality", "画质": "quality",
     # /审计 的参数（此前只能代码里传，聊天里写不出来）
@@ -1745,7 +1748,10 @@ class ComfyUISmartPlugin(Star):
         # 纯 tag 型预设不在这里处理 —— 它们是「追加」，留到后面拼正向词时再加。
         _original_desc = user_desc
         _style_name = str(opts.get("style") or "").strip()
-        _style_preset = self.load_style_presets().get(_style_name) if _style_name else None
+        _style_table = self.load_style_presets()
+        # 允许写编号前缀（FA-001）或名称片段，别逼用户背完整键名
+        _style_key = resolve_name(_style_name, _style_table) if _style_name else ""
+        _style_preset = _style_table.get(_style_key) if _style_key else None
         if _style_preset and is_template_prompt(_style_preset["prompt"]):
             user_desc = fill_template(_style_preset["prompt"], _original_desc)
             logger.info("套用风格模板：%s", _style_name)
@@ -2138,7 +2144,12 @@ class ComfyUISmartPlugin(Star):
                     logger.info("套用风格预设：%s", _style_name)
                 negative = merge_tags(negative, _style_preset["negative"])
             else:
-                logger.warning("未知的风格预设：%s（本次忽略，不影响出图）", _style_name)
+                # 名字不存在，或匹配到多个（如「水墨」）—— 给一条能自救的提示
+                logger.warning(
+                    "风格名不唯一或不存在：%s（本次忽略，不影响出图）；"
+                    "可用 /风格 搜 %s 查看候选，或直接用编号如 FA-001",
+                    _style_name, _style_name,
+                )
 
         # 画质档位（默认不加；显式 --画质 才生效，避免改写用户原话）
         quality_name = str(opts.get("quality") or "").strip()
@@ -2151,6 +2162,17 @@ class ComfyUISmartPlugin(Star):
             else:
                 logger.warning("未知的画质档位：%s（可选 %s）", quality_name,
                                "、".join(BUILTIN_QUALITY))
+
+        # 主题色：36 个内置色，一次只加一句「主题色：…」
+        _color_name = str(opts.get("color") or "").strip()
+        if _color_name:
+            _colors = bundled_colors()
+            _color_key = resolve_name(_color_name, _colors)
+            if _color_key:
+                positive = merge_tags(_colors[_color_key]["prompt"], positive)
+                logger.info("套用主题色：%s", _color_key)
+            else:
+                logger.warning("未知的主题色：%s", _color_name)
 
         # 画面媒介类型：与风格预设并列的第二个维度（照片/插画/3D/像素/水墨）
         media_name = str(opts.get("media") or "").strip()
@@ -2999,34 +3021,39 @@ class ComfyUISmartPlugin(Star):
         return self.data_dir / "style_presets.json"
 
     def load_style_presets(self) -> dict[str, dict]:
-        """读预设表；文件不存在就用内置预设**播种**一份，方便用户直接改。
+        """读预设表：**内置包 + 用户文件**合并，用户文件优先。
 
-        文件坏掉时退回内置预设并告警 —— 出图不该因为一个坏 JSON 就失败。
+        分层的原因：随插件附带的 370 条手绘风格 + 36 个主题色是「数据」，
+        不该被塞进每个用户的 data 目录（升级后还要重新播种）。所以：
+
+        - **内置层**：`presets/*.json`，随插件走，升级即更新
+        - **用户层**：`data/style_presets.json`，用户自己添加/覆盖的
+        - 用户想「删掉某个内置预设」时，往用户层写一个 `_hidden` 名单即可
+
+        用户文件的格式保持兼容：整份字典就是预设表；`_hidden` 是个字符串数组，
+        `normalize_all` 会忽略它（因为不是 `{prompt: ...}`）。
         """
+        merged: dict[str, dict] = dict(BUILTIN_PRESETS)
+        merged.update(bundled_styles())
+
         path = self.style_presets_path()
+        hidden: set[str] = set()
+        user: dict[str, dict] = {}
         try:
             if path.is_file():
                 raw = json.loads(path.read_text(encoding="utf-8"))
-                presets = normalize_all(raw)
-                if presets:
-                    return presets
-                logger.warning("风格预设表为空或格式不对，改用内置预设：%s", path)
+                if isinstance(raw, dict):
+                    marks = raw.get("_hidden")
+                    if isinstance(marks, list):
+                        hidden = {str(x).strip() for x in marks if str(x).strip()}
+                    user = normalize_all({k: v for k, v in raw.items() if k != "_hidden"})
         except (OSError, ValueError) as e:
-            logger.warning("风格预设表读取失败，改用内置预设：%s（%s）", path, e)
-        presets = normalize_all(BUILTIN_PRESETS)
-        try:
-            self.save_style_presets(presets)
-        except OSError as e:
-            logger.warning("内置风格预设落盘失败（不影响本次出图）：%s", e)
-        return presets
+            logger.warning("风格预设表读取失败，只用内置包：%s（%s）", path, e)
 
-    def save_style_presets(self, presets: dict[str, dict]) -> None:
-        """写回预设表（原子替换）。"""
-        path = self.style_presets_path()
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(presets, ensure_ascii=False, indent=2) + "\n",
-                       encoding="utf-8")
-        tmp.replace(path)
+        merged.update(user)
+        for name in hidden:
+            merged.pop(name, None)
+        return merged
 
     def _model_tags_path(self) -> Path:
         """手动覆盖的「模型适合标签」表（JSON，{关键词或文件名: [标签...]}）。"""
@@ -3564,40 +3591,110 @@ class ComfyUISmartPlugin(Star):
             logger.debug("读取对话模型信息失败：%s", e)
         yield event.plain_result("\n".join(lines))
 
+    # 风格列表一页显示多少条（内置 370 条风格，一次全发会刷屏）
+    STYLE_PAGE_SIZE = 20
+
+    def _user_layer(self) -> tuple[dict[str, dict], list[str]]:
+        """读用户层（自己加的预设 + 隐藏内置预设的名单）。"""
+        import json as _json
+
+        path = self.style_presets_path()
+        try:
+            if not path.is_file():
+                return {}, []
+            raw = _json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}, []
+        if not isinstance(raw, dict):
+            return {}, []
+        marks = raw.get("_hidden")
+        hidden = [str(x) for x in marks if str(x).strip()] if isinstance(marks, list) else []
+        return normalize_all({k: v for k, v in raw.items() if k != "_hidden"}), hidden
+
+    def _write_user_layer(self, user: dict[str, dict], hidden: list[str]) -> None:
+        """写用户层（保留隐藏名单）。"""
+        import json as _json
+
+        payload: dict = dict(user)
+        if hidden:
+            payload["_hidden"] = hidden
+        path = self.style_presets_path()
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(_json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+                       encoding="utf-8")
+        tmp.replace(path)
+
     @filter.command("风格", alias={"风格预设", "styles", "style"})
     async def cmd_style(self, event: AstrMessageEvent):
-        """查看/增删风格预设（`/画图 --风格 名称` 用）。"""
+        """查看/搜索/增删风格预设（`/画图 --风格 名称` 用）。"""
         raw = _extract_command_payload(event, "风格", "风格预设", "styles", "style").strip()
         presets = self.load_style_presets()
+        colors = bundled_colors()
 
-        if not raw:
-            lines = [self.t("cmd.style.title", count=len(presets))]
-            for name, preset in list(presets.items())[:30]:
-                lines.append(f"　· {name}：{preset['prompt'][:48]}…")
-            lines.append(self.t("cmd.style.media", names="、".join(BUILTIN_MEDIA)))
-            lines.append(self.t("cmd.style.quality", names="、".join(BUILTIN_QUALITY)))
+        if not raw or raw.isdigit():
+            page = max(1, int(raw)) if raw.isdigit() else 1
+            names = list(presets)
+            pages = max(1, (len(names) + self.STYLE_PAGE_SIZE - 1) // self.STYLE_PAGE_SIZE)
+            page = min(page, pages)
+            chunk = names[(page - 1) * self.STYLE_PAGE_SIZE: page * self.STYLE_PAGE_SIZE]
+            lines = [self.t("cmd.style.title", count=len(presets), page=page, pages=pages)]
+            for name in chunk:
+                lines.append(f"　· {name}")
+            if page == 1:
+                lines.append(self.t("cmd.style.colors", count=len(colors)))
             lines.append(self.t("cmd.style.usage"))
             yield event.plain_result("\n".join(lines))
             return
 
         head, _, rest = raw.partition(" ")
         head, rest = head.strip().lower(), rest.strip()
-        if head in ("删除", "del", "remove") and rest:
-            if rest in presets:
-                presets.pop(rest)
-                self.save_style_presets(presets)
-                yield event.plain_result(self.t("cmd.style.removed", model=rest))
-            else:
-                yield event.plain_result(self.t("cmd.style.not_found", model=rest))
+
+        if head in ("搜", "搜索", "search", "查") and rest:
+            low = rest.lower()
+            hits = [n for n in presets if low in n.lower()
+                    or low in presets[n]["prompt"].lower()][:15]
+            if not hits:
+                yield event.plain_result(self.t("cmd.style.no_match", model=rest))
+                return
+            lines = [self.t("cmd.style.found", count=len(hits), model=rest)]
+            lines.extend(f"　· {n}" for n in hits)
+            yield event.plain_result("\n".join(lines))
             return
+
+        if head in ("看", "显示", "show") and rest:
+            key = resolve_name(rest, presets)
+            if not key:
+                yield event.plain_result(self.t("cmd.style.not_found", model=rest))
+                return
+            yield event.plain_result(f"🎨 {key}\n{self.t('cmd.style.prompt')}{presets[key]['prompt']}")
+            return
+
+        if head in ("删除", "del", "remove") and rest:
+            key = resolve_name(rest, presets) or rest
+            user, hidden = self._user_layer()
+            if key not in presets:
+                yield event.plain_result(self.t("cmd.style.not_found", model=rest))
+                return
+            if key in user:
+                user.pop(key)
+            elif key not in hidden:
+                # 内置预设不能真删（跟着插件走），记进隐藏名单
+                hidden.append(key)
+            self._write_user_layer(user, hidden)
+            yield event.plain_result(self.t("cmd.style.removed", model=key))
+            return
+
         if head in ("添加", "add", "set") and rest:
             name, _, body = rest.partition(" ")
             preset = normalize_preset(body)
             if name and preset:
-                presets[name] = preset
-                self.save_style_presets(presets)
+                user, hidden = self._user_layer()
+                user[name] = preset
+                hidden = [x for x in hidden if x != name]
+                self._write_user_layer(user, hidden)
                 yield event.plain_result(self.t("cmd.style.saved", model=name))
                 return
+
         yield event.plain_result(self.t("cmd.style.usage"))
 
     @filter.command("模型标签", alias={"标签", "modeltags"})

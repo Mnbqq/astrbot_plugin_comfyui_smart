@@ -151,6 +151,88 @@ BUILTIN_QUALITY: dict[str, dict] = {
 }
 
 
+# ---------------------------------------------------------------------- #
+# 内置预设包（随插件分发）
+# ---------------------------------------------------------------------- #
+# 370 条手绘风格与 36 个主题色来自 yang0/handraw-style（MIT + 署名要求），
+# 详见 presets/NOTICE.md。数据放在 presets/ 下，改数据不用改代码。
+_BUNDLE_CACHE: dict[str, dict] = {}
+
+
+def _load_bundle(filename: str) -> dict[str, dict]:
+    """读取 presets/ 下的内置预设包（带缓存，失败返回空表）。
+
+    Args:
+        filename: 文件名，如 `styles_handraw.json`。
+
+    Returns:
+        `{名称: {"prompt":..., "negative":...}}`；文件缺失或损坏时返回空表，
+        出图不该因为预设包坏掉而失败。
+    """
+    if filename not in _BUNDLE_CACHE:
+        import json as _json
+        from pathlib import Path as _P
+
+        path = _P(__file__).resolve().parent / "presets" / filename
+        try:
+            raw = _json.loads(path.read_text(encoding="utf-8"))
+            _BUNDLE_CACHE[filename] = {
+                str(k): v for k, v in raw.items()
+                if isinstance(v, dict) and str(v.get("prompt") or "").strip()
+            }
+        except (OSError, ValueError):
+            _BUNDLE_CACHE[filename] = {}
+    return _BUNDLE_CACHE[filename]
+
+
+def bundled_styles() -> dict[str, dict]:
+    """内置手绘风格包（370 条）。"""
+    return _load_bundle("styles_handraw.json")
+
+
+def bundled_colors() -> dict[str, dict]:
+    """内置主题色包（36 条）。"""
+    return _load_bundle("colors_handraw.json")
+
+
+def resolve_name(name: str, table: dict) -> str:
+    """把用户写的名字解析成表里的键。
+
+    支持三种写法：完整键、风格编号前缀（`FA-001`）、名称片段（`手办`）。
+    模糊匹配只做「唯一命中」时才认，避免 `--风格 风` 这种瞎猜。
+
+    Args:
+        name: 用户输入。
+        table: 候选表。
+
+    Returns:
+        命中的键；没命中或命中多个时返回空字符串。
+    """
+    text = str(name or "").strip()
+    if not text:
+        return ""
+    if text in table:
+        return text
+    low = text.lower()
+    lowered = [k for k in table if k.lower() == low]
+    if len(lowered) == 1:
+        return lowered[0]
+    # 编号前缀：FA-001 → "FA-001 Playful Deadpan Doodle"
+    prefixed = [k for k in table if k.split(" ", 1)[0].lower() == low]
+    if len(prefixed) == 1:
+        return prefixed[0]
+    # 名称或**提示词正文**包含（用户更可能记住「水墨」「klein blue」这种特征词，
+    # 而不是 `FE-040 Digital Chinese Gongbi Fantasy` 这种全名）
+    contained = []
+    for key, value in table.items():
+        if low in str(key).lower():
+            contained.append(key)
+            continue
+        if isinstance(value, dict) and low in str(value.get("prompt") or "").lower():
+            contained.append(key)
+    return contained[0] if len(contained) == 1 else ""
+
+
 # 模板里用来占位「画面主体」的写法。中文文章里常见【画面主体】，
 # 也有人写 {subject} / 【主体】—— 都认。
 SUBJECT_PLACEHOLDERS = ("【画面主体】", "【主体】", "{subject}", "{{subject}}")
