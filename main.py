@@ -61,7 +61,7 @@ from .workflow_templates import (
 from .style_presets import (
     BUILTIN_MEDIA, BUILTIN_PRESETS, BUILTIN_QUALITY, ensure_safe_suffix,
     bundled_colors, bundled_styles, fill_template, is_template_prompt,
-    normalize_all, normalize_preset, resolve_name,
+    normalize_all, normalize_preset, parse_look, resolve_name,
 )
 from .error_hints import (
     build_probe_graph,
@@ -228,6 +228,8 @@ PARAM_ALIASES = {
     "media": "media", "媒介": "media",
     # 主题色（36 个内置色，与媒介/画质并列的又一个正交维度）
     "color": "color", "色": "color", "主题色": "color",
+    # 一个参数管全部外观：--外观 照片/高清/克莱因蓝/赛博朋克
+    "look": "look", "外观": "look", "样子": "look",
     # 画质档位：标准 / 高清 / 极致（默认不加，显式才生效）
     "quality": "quality", "画质": "quality",
     # /审计 的参数（此前只能代码里传，聊天里写不出来）
@@ -1747,6 +1749,19 @@ class ComfyUISmartPlugin(Star):
         # 必须在 LLM 改写之前把用户描述填进去，否则模型看到的是一个空占位符。
         # 纯 tag 型预设不在这里处理 —— 它们是「追加」，留到后面拼正向词时再加。
         _original_desc = user_desc
+        # `--外观 照片/高清/克莱因蓝/赛博朋克`：一个参数管四个维度。
+        # 显式写了的维度优先（`--画质 极致` 会盖掉 `--外观` 里的画质）。
+        _look_text = str(opts.get("look") or "").strip()
+        if _look_text:
+            _picked, _unknown = parse_look(
+                _look_text, media=BUILTIN_MEDIA, quality=BUILTIN_QUALITY,
+                colors=bundled_colors(), styles=self.load_style_presets(),
+            )
+            for _dim, _val in _picked.items():
+                opts.setdefault(_dim, _val)
+            if _unknown:
+                logger.warning("--外观 里这些词没认出来：%s", "、".join(_unknown))
+            logger.info("--外观 解析结果：%s", _picked)
         _style_name = str(opts.get("style") or "").strip()
         _style_table = self.load_style_presets()
         # 允许写编号前缀（FA-001）或名称片段，别逼用户背完整键名

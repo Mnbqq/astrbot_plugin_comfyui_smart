@@ -195,6 +195,55 @@ def bundled_colors() -> dict[str, dict]:
     return _load_bundle("colors_handraw.json")
 
 
+LOOK_DIMENSIONS = ("media", "quality", "color", "style")
+
+
+def parse_look(
+    text: str,
+    *,
+    media: dict,
+    quality: dict,
+    colors: dict,
+    styles: dict,
+) -> tuple[dict[str, str], list[str]]:
+    """把 `--外观 照片/高清/克莱因蓝/赛博朋克` 拆成各维度。
+
+    为什么加这个：出图外观相关的行内参数一度有四个（风格/媒介/画质/色），
+    每次都要记四个名字。合并成一个 `--外观`，用 `/` 分隔，按 token 自己分派；
+    原来四个写法仍然可用（显式写的优先级更高）。
+
+    分派顺序：媒介 → 画质 → 主题色 → 风格。先小集合后大集合，
+    避免「水墨」这种既在媒介里、又出现在风格特征里的词被分错。
+
+    Args:
+        text: 用户输入，如 `照片/高清/克莱因蓝`。
+        media/quality/colors/styles: 四张表。
+
+    Returns:
+        `({维度: 名称}, [未识别的 token])`。
+    """
+    import re as _re
+
+    picked: dict[str, str] = {}
+    unknown: list[str] = []
+    for raw in _re.split(r"[/、,，\s]+", str(text or "").strip()):
+        token = raw.strip()
+        if not token:
+            continue
+        lowered = token.lower()
+        if any(m.lower() == lowered for m in media):
+            picked["media"] = next(m for m in media if m.lower() == lowered)
+        elif any(q.lower() == lowered for q in quality):
+            picked["quality"] = next(q for q in quality if q.lower() == lowered)
+        elif (key := resolve_name(token, colors)):
+            picked["color"] = key
+        elif (key := resolve_name(token, styles)):
+            picked["style"] = key
+        else:
+            unknown.append(token)
+    return picked, unknown
+
+
 def resolve_name(name: str, table: dict) -> str:
     """把用户写的名字解析成表里的键。
 

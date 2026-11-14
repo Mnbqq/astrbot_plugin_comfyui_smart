@@ -6562,6 +6562,27 @@ def main() -> int:
     check("填完不会残留占位符或重复主体",
           _tpl.count("一只猫") == 1 and "【" not in _tpl, _tpl)
 
+    print("\n=== --外观：一个参数管四个维度 ===")
+    _picked, _unknown = _sp.parse_look(
+        "照片/高清/克莱因蓝/赛博朋克",
+        media=_sp.BUILTIN_MEDIA, quality=_sp.BUILTIN_QUALITY,
+        colors=_sp.bundled_colors(), styles=_sp.bundled_styles())
+    check("四个维度都能从一行里分派出来",
+          _picked.get("media") == "照片" and _picked.get("quality") == "高清"
+          and _picked.get("color") == "克莱因蓝" and "style" in _picked, _picked)
+    check("没认出的词单独返回，不静默吞掉",
+          _sp.parse_look("照片/乱写词", media=_sp.BUILTIN_MEDIA,
+                         quality=_sp.BUILTIN_QUALITY, colors=_sp.bundled_colors(),
+                         styles=_sp.bundled_styles())[1] == ["乱写词"], None)
+    check("媒介优先于同名风格（「水墨」不该被当成风格）",
+          _sp.parse_look("水墨", media=_sp.BUILTIN_MEDIA, quality=_sp.BUILTIN_QUALITY,
+                         colors=_sp.bundled_colors(), styles=_sp.bundled_styles())[0].get("media") == "水墨",
+          None)
+    check("中文顿号也能分隔",
+          len(_sp.parse_look("照片、高清", media=_sp.BUILTIN_MEDIA,
+                             quality=_sp.BUILTIN_QUALITY, colors=_sp.bundled_colors(),
+                             styles=_sp.bundled_styles())[0]) == 2, None)
+
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）
     field_re = _re.compile(
