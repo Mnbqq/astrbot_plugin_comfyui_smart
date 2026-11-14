@@ -49,6 +49,10 @@
       "language": {
         "description": "Language",
         "hint": "auto=follow the AstrBot UI language (fall back to Chinese if unavailable). Chat text, LLM prompts and config-page navigation switch along with it. The text files live under .astrbot-plugin/i18n/ and can be extended yourself."
+      },
+      "help_verbose": {
+        "description": "Show full help by default in chat",
+        "hint": "When off (default), /comfyhelp shows only three commands and two examples; the full list is /comfyhelp all. When on, /comfyhelp shows the full list and /comfyhelp brief gives the short one."
       }
     },
     "server": {
@@ -418,7 +422,7 @@
     "help": {
       "body": "🎨 ComfyUI Smart Drawing\n━━━━━━━━━━━━━━\n/draw <description>  draw from one sentence\n  inline options: 16:9 / --size 1024x1536 / --seed 42\n                  --steps 30 / --cfg 6 / --lora name:0.8\n                  --model keyword / --batch 2 / --negative \"...\"\n            --llm force AI prompt rewrite / --no-llm skip it this time\n/i2i      repaint from a photo (--denoise controls strength)\n/outpaint extend the canvas (--left/--right/--top/--bottom px)\n/video    text-to-video (--seconds / --fps / --length)\n/i2v      animate a photo (send two photos = first → last frame)\n/prompt   reverse-engineer a prompt from an image (--draw to draw at once, --detail for analysis)\n/models   list available models\n/templates list workflow templates (custom ones supported)\n/status   ComfyUI connection and queue\n/cancel   cancel your queued/running job (admin: /cancel all)\n/audit     view audit log (admin, optional --user ID)\n/inspect   model inspection: duplicates / misplaced / unused (admin)\n/health    environment health check: flags / memory / template deps (admin)\n/stats    usage statistics\n/refresh-models  re-read the model list (admin)\n/help     show this help",
       "features": "  Enabled features: {list}",
-      "brief": "🎨 ComfyUI Smart Drawing\n━━━━━━━━━━━━━━\nThree commands cover most cases:\n/draw a girl in a white dress under cherry blossoms　← just works\n/again　← same description, new seed\n/cancel　← stop a queued or running job\n\nWant a different look? (--look takes several, separated by /)\n/draw a cat --look photo/high\n/draw a cat --look illustration/klein blue\n\nFull command list and every parameter: /help all"
+      "brief": "🎨 ComfyUI Smart Drawing\n━━━━━━━━━━━━━━\nThree commands cover most cases:\n/draw a girl in a white dress under cherry blossoms　← just works\n/again　← same description, new seed\n/cancel　← stop a queued or running job\n\nWant a different look? (--look takes several, separated by /)\n/draw a cat --look photo/high\n/draw a cat --look illustration/klein blue\n\nFull command list and every parameter: /comfyhelp all"
     },
     "i2v": {
       "default_prompt": "make the scene move naturally, keep the subject and style consistent",
@@ -719,7 +723,8 @@
       "058": "Negative prompt",
       "059": "Nickname on the forwarded card",
       "060": "Who writes the quality words",
-      "061": "Detail level"
+      "061": "Detail level",
+      "902": "Show full help by default"
     },
     "nav": {
       "agent": "Advanced",
@@ -839,7 +844,8 @@
       "058": "With <code>llm</code> the plugin's generic words are still merged in and duplicates are dropped; to hand quality words to the AI entirely, turn off \"auto quality tags per checkpoint\" above.",
       "059": "Commission mode relaxes \"do not invent\", but only for <b>presentation-layer</b> details (light and texture, material, composition and depth of field, mood) and never changes subject count / appearance / outfit style / action / setting type; whatever it added is listed in the result. Override once with <code>/draw … --commission</code> or <code>--strict</code>.",
       "060": "Off by default. When on, commission mode makes a gentle adjustment — only if you did not specify the parameter yourself: SD family CFG ×0.85 (never below 1.5), Flux family guidance −1.0 (never below 1.0). Inline <code>--cfg</code> and configured defaults always win.",
-      "901": "When on, text-to-image spends one extra short LLM call first: it decides which image types the description belongs to (people / selfie / indoor / outdoor / city / architecture / anime / manga / illustration…), then picks a checkpoint by type. Under the same SDXL architecture, realistic and anime models suit very different scenes, so architecture alone is a poor signal. Each checkpoint in the catalog is tagged with \"适合\"; correct them with <code>/modeltags</code>. Turn this off to save the call."
+      "901": "When on, text-to-image spends one extra short LLM call first: it decides which image types the description belongs to (people / selfie / indoor / outdoor / city / architecture / anime / manga / illustration…), then picks a checkpoint by type. Under the same SDXL architecture, realistic and anime models suit very different scenes, so architecture alone is a poor signal. Each checkpoint in the catalog is tagged with \"适合\"; correct them with <code>/modeltags</code>. Turn this off to save the call.",
+      "902": "When off, <code>/comfyhelp</code> shows just three commands and two examples; the full list is <code>/comfyhelp all</code>. When on, the full list is the default and <code>/comfyhelp brief</code> gives the short version."
     },
     "title": {
       "001": "ComfyUI connection",

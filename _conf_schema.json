@@ -74,6 +74,12 @@
         ],
         "hint": "auto=跟随 AstrBot 界面语言（拿不到就用中文）。聊天文案、LLM 提示词与配置页导航会跟着切换。文案文件在 .astrbot-plugin/i18n/ 下，可自行增补。",
         "default": "auto"
+      },
+      "help_verbose": {
+        "description": "聊天里的帮助默认显示完整版",
+        "type": "bool",
+        "default": false,
+        "hint": "关闭（默认）时 /comfy帮助 只给「入门三条 + 两个例子」，完整的指令清单与全部行内参数要看 /comfy帮助 全部。打开后 /comfy帮助 直接显示完整版，适合已经上手的人；想看简版仍然可以发 /comfy帮助 简版。"
       }
     }
   },

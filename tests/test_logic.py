@@ -4347,7 +4347,7 @@ def main() -> int:
     out_en = asyncio.run(drive(plugin.cmd_draw(AstrMessageEvent(message_str="/画图"))))
     check("英文模式下 /画图 的用法提示是英文",
           "Usage:" in out_en[0]["text"] and "🎨" in out_en[0]["text"], out_en[0]["text"][:60])
-    out_en_help = asyncio.run(drive(plugin.cmd_help(AstrMessageEvent(message_str="/帮助"))))
+    out_en_help = asyncio.run(drive(plugin.cmd_help(AstrMessageEvent(message_str="/comfy帮助"))))
     check("英文模式下 /帮助 整体是英文",
           "Smart Drawing" in out_en_help[0]["text"] and "用法" not in out_en_help[0]["text"],
           out_en_help[0]["text"][:60])
@@ -5410,12 +5410,12 @@ def main() -> int:
           None)
 
     # /帮助 与 /状态 都要告诉用户开了哪些
-    out_brief = asyncio.run(drive(plugin.cmd_help(AstrMessageEvent(message_str="/帮助"))))
-    check("默认 /帮助 只给入门三条（不摊开所有参数）",
-          "/画图" in out_brief[0]["text"] and "/帮助 全部" in out_brief[0]["text"]
+    out_brief = asyncio.run(drive(plugin.cmd_help(AstrMessageEvent(message_str="/comfy帮助"))))
+    check("默认 /comfy帮助 只给入门三条（不摊开所有参数）",
+          "/画图" in out_brief[0]["text"] and "/comfy帮助 全部" in out_brief[0]["text"]
           and "--control" not in out_brief[0]["text"], out_brief[0]["text"][-40:])
-    out_help = asyncio.run(drive(plugin.cmd_help(AstrMessageEvent(message_str="/帮助 全部"))))
-    check("/帮助 列出已开启的功能",
+    out_help = asyncio.run(drive(plugin.cmd_help(AstrMessageEvent(message_str="/comfy帮助 全部"))))
+    check("/comfy帮助 列出已开启的功能",
           "已开启的功能" in out_help[0]["text"] and "文生图" in out_help[0]["text"],
           out_help[0]["text"].splitlines()[-1][:40])
     plugin.config["features"] = dict(ALL_FEATURES)
@@ -5460,10 +5460,10 @@ def main() -> int:
     check("范围规则里没开视频的用户发 /视频：静默无响应",
           out_rule == [] and not any(p_ == "/prompt" for _m, p_, _k in sess_rule.calls),
           out_rule)
-    check("/帮助 全部 会按当前用户列出可用功能",
+    check("/comfy帮助 全部 会按当前用户列出可用功能",
           "文生图" in asyncio.run(drive(plugin.cmd_help(
               AstrMessageEvent(sender_id=ev_user.get_sender_id(),
-                               message_str="/帮助 全部"))))[0]["text"], None)
+                               message_str="/comfy帮助 全部"))))[0]["text"], None)
 
     # ---- 2) 内容过滤 ----
     plugin.config["permission"] = {"nsfw_filter": True, "nsfw_words": "露骨测试词",
@@ -6599,6 +6599,18 @@ def main() -> int:
     check("超时提示检查卡死与防火墙", "超时" in _h_timeout, _h_timeout)
     _h_other = plugin.connect_hint("something weird")
     check("未知错误也给通用下一步", "检查" in _h_other, _h_other)
+
+    print("\n=== 帮助的默认详略（general.help_verbose）===")
+    plugin.config["general"] = {"language": "zh-CN", "help_verbose": False}
+    _short = asyncio.run(drive(plugin.cmd_help(AstrMessageEvent(message_str="/comfy帮助"))))
+    check("开关关：默认给简版", "/comfy帮助 全部" in _short[0]["text"], None)
+    plugin.config["general"]["help_verbose"] = True
+    _full = asyncio.run(drive(plugin.cmd_help(AstrMessageEvent(message_str="/comfy帮助"))))
+    check("开关开：默认给完整版（含参数清单）",
+          "行内参数" in _full[0]["text"] or "--control" in _full[0]["text"], None)
+    _back = asyncio.run(drive(plugin.cmd_help(AstrMessageEvent(message_str="/comfy帮助 简版"))))
+    check("开关开时写「简版」仍可要简版", "/comfy帮助 全部" in _back[0]["text"], None)
+    plugin.config["general"] = {"language": "zh-CN"}
 
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）

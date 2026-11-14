@@ -24,6 +24,7 @@ const FIELDS = [
   { id: 'features_upscale', path: ['features', 'upscale'], kind: 'bool' },
   { id: 'general_language', path: ['general', 'language'], kind: 'select',
     options: ['auto', 'zh-CN', 'en-US'] },
+  { id: 'general_help_verbose', path: ['general', 'help_verbose'], kind: 'bool' },
   { id: 'server_free_before_switch', path: ['server', 'free_before_switch'], kind: 'bool' },
   { id: 'llm_optimize_for_video', path: ['llm_settings', 'optimize_for_video'], kind: 'bool' },
   { id: 'llm_classify_scene', path: ['llm_settings', 'classify_scene'], kind: 'bool' },

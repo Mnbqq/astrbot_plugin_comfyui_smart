@@ -4280,13 +4280,22 @@ class ComfyUISmartPlugin(Star):
             lines.append(self.t("cmd.stats.empty"))
         yield event.plain_result("\n".join(lines))
 
-    @filter.command("帮助", alias={"comfy帮助"})
+    # 命令名用插件专属前缀：`/帮助` 是通用名，AstrBot 生态里很多插件都叫这个，
+    # 同时安装时会出现「发一条命令、两个插件都回」的尴尬局面。
+    @filter.command("comfy帮助", alias={"绘图帮助", "画图帮助", "comfyhelp"})
     async def cmd_help(self, event: AstrMessageEvent):
-        """查看帮助：默认只给入门三条，`/帮助 全部` 才展开完整清单。"""
-        raw = _extract_command_payload(event, "帮助", "comfy帮助").strip().lower()
+        """查看帮助：默认只给入门三条，`/comfy帮助 全部` 才展开完整清单。"""
+        raw = _extract_command_payload(
+            event, "comfy帮助", "绘图帮助", "画图帮助", "comfyhelp").strip().lower()
         # 新用户第一眼看到的应该是「三条指令 + 两个例子」，
         # 而不是四十五个行内参数 —— 参数多到一定程度就是劝退。
-        if raw not in ("全部", "all", "-a", "完整", "参数"):
+        # `general.help_verbose` 可以把默认翻成完整版（给已经上手的人），
+        # 显式写「简版 / 全部」始终优先于配置。
+        verbose_default = bool((self.config.get("general") or {}).get("help_verbose", False))
+        asked_short = raw in ("简版", "简短", "brief", "-b", "简单")
+        asked_full = raw in ("全部", "all", "-a", "完整", "参数")
+        show_full = asked_full or (verbose_default and not asked_short)
+        if not show_full:
             yield event.plain_result(self.t("cmd.help.brief"))
             return
         text = self.t("cmd.help.body")
