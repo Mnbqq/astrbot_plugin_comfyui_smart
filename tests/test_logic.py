@@ -6612,6 +6612,17 @@ def main() -> int:
     check("开关开时写「简版」仍可要简版", "/comfy帮助 全部" in _back[0]["text"], None)
     plugin.config["general"] = {"language": "zh-CN"}
 
+    print("\n=== 行内参数手册与代码同步 ===")
+    _doc_path = ROOT / "docs" / "参数.md"
+    _doc = _doc_path.read_text(encoding="utf-8")
+    _canon = sorted(set(m.PARAM_ALIASES.values()))
+    _undocumented = [c for c in _canon
+                     if f"--{c}" not in _doc and f"--{c.replace('_', '-')}" not in _doc]
+    check("参数手册覆盖代码里的每一个行内参数",
+          not _undocumented, _undocumented[:5])
+    check("手册里写明了帮助命令的新名字",
+          "/comfy帮助" in _doc, None)
+
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）
     field_re = _re.compile(
