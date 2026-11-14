@@ -5410,7 +5410,11 @@ def main() -> int:
           None)
 
     # /帮助 与 /状态 都要告诉用户开了哪些
-    out_help = asyncio.run(drive(plugin.cmd_help(AstrMessageEvent(message_str="/帮助"))))
+    out_brief = asyncio.run(drive(plugin.cmd_help(AstrMessageEvent(message_str="/帮助"))))
+    check("默认 /帮助 只给入门三条（不摊开所有参数）",
+          "/画图" in out_brief[0]["text"] and "/帮助 全部" in out_brief[0]["text"]
+          and "--control" not in out_brief[0]["text"], out_brief[0]["text"][-40:])
+    out_help = asyncio.run(drive(plugin.cmd_help(AstrMessageEvent(message_str="/帮助 全部"))))
     check("/帮助 列出已开启的功能",
           "已开启的功能" in out_help[0]["text"] and "文生图" in out_help[0]["text"],
           out_help[0]["text"].splitlines()[-1][:40])
@@ -5456,8 +5460,10 @@ def main() -> int:
     check("范围规则里没开视频的用户发 /视频：静默无响应",
           out_rule == [] and not any(p_ == "/prompt" for _m, p_, _k in sess_rule.calls),
           out_rule)
-    check("/帮助 会按当前用户列出可用功能",
-          "文生图" in asyncio.run(drive(plugin.cmd_help(ev_user)))[0]["text"], None)
+    check("/帮助 全部 会按当前用户列出可用功能",
+          "文生图" in asyncio.run(drive(plugin.cmd_help(
+              AstrMessageEvent(sender_id=ev_user.get_sender_id(),
+                               message_str="/帮助 全部"))))[0]["text"], None)
 
     # ---- 2) 内容过滤 ----
     plugin.config["permission"] = {"nsfw_filter": True, "nsfw_words": "露骨测试词",

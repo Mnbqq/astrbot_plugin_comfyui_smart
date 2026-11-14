@@ -370,7 +370,13 @@ class ComfyUI:
                 except Exception:
                     raise ComfyUIError(f"ComfyUI 返回了非 JSON 内容：{_shorten(text)}")
         except aiohttp.ClientError as e:
-            raise ComfyUIError(f"无法连接 ComfyUI（{self.base_url}）：{e}") from e
+            raise ComfyUIError(
+                f"无法连接 ComfyUI（{self.base_url}）：{e}"
+                "\n　· ComfyUI 起来了吗？（浏览器打开这个地址，能看到界面吗）"
+                "\n　· 地址填对了吗？AstrBot → 插件 → ComfyUI 智能绘图 → 服务器"
+                "\n　· AstrBot 和 ComfyUI 在同一台机器吗？若 AstrBot 跑在 Docker 里，"
+                "127.0.0.1 指的是容器自己，要填宿主机 IP"
+            ) from e
         except asyncio.TimeoutError as e:
             raise ComfyUIError(f"连接 ComfyUI 超时（{self.base_url}）") from e
 
@@ -805,7 +811,11 @@ class ComfyUI:
                     raise exc
                 return str(data["prompt_id"])
         except aiohttp.ClientError as e:
-            raise ComfyUIError(f"无法连接 ComfyUI：{e}") from e
+            raise ComfyUIError(
+                f"无法连接 ComfyUI（{self.base_url}）：{e}"
+                "\n　· 检查 ComfyUI 是否在运行、地址是否填对（插件 → 服务器）"
+                "\n　· AstrBot 在 Docker 里时，127.0.0.1 是容器自己，要填宿主机 IP"
+            ) from e
 
     async def free_memory(self, *, unload_models: bool = True) -> bool:
         """请 ComfyUI 卸载已加载的模型并释放缓存显存。

@@ -4215,7 +4215,13 @@ class ComfyUISmartPlugin(Star):
 
     @filter.command("帮助", alias={"comfy帮助"})
     async def cmd_help(self, event: AstrMessageEvent):
-        """查看帮助。"""
+        """查看帮助：默认只给入门三条，`/帮助 全部` 才展开完整清单。"""
+        raw = _extract_command_payload(event, "帮助", "comfy帮助").strip().lower()
+        # 新用户第一眼看到的应该是「三条指令 + 两个例子」，
+        # 而不是四十五个行内参数 —— 参数多到一定程度就是劝退。
+        if raw not in ("全部", "all", "-a", "完整", "参数"):
+            yield event.plain_result(self.t("cmd.help.brief"))
+            return
         text = self.t("cmd.help.body")
         opened = self.enabled_features(event)
         text += "\n" + self.t("cmd.help.features",

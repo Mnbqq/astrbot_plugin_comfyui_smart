@@ -417,7 +417,8 @@
     },
     "help": {
       "body": "🎨 ComfyUI Smart Drawing\n━━━━━━━━━━━━━━\n/draw <description>  draw from one sentence\n  inline options: 16:9 / --size 1024x1536 / --seed 42\n                  --steps 30 / --cfg 6 / --lora name:0.8\n                  --model keyword / --batch 2 / --negative \"...\"\n            --llm force AI prompt rewrite / --no-llm skip it this time\n/i2i      repaint from a photo (--denoise controls strength)\n/outpaint extend the canvas (--left/--right/--top/--bottom px)\n/video    text-to-video (--seconds / --fps / --length)\n/i2v      animate a photo (send two photos = first → last frame)\n/prompt   reverse-engineer a prompt from an image (--draw to draw at once, --detail for analysis)\n/models   list available models\n/templates list workflow templates (custom ones supported)\n/status   ComfyUI connection and queue\n/cancel   cancel your queued/running job (admin: /cancel all)\n/audit     view audit log (admin, optional --user ID)\n/inspect   model inspection: duplicates / misplaced / unused (admin)\n/health    environment health check: flags / memory / template deps (admin)\n/stats    usage statistics\n/refresh-models  re-read the model list (admin)\n/help     show this help",
-      "features": "  Enabled features: {list}"
+      "features": "  Enabled features: {list}",
+      "brief": "🎨 ComfyUI Smart Drawing\n━━━━━━━━━━━━━━\nThree commands cover most cases:\n/draw a girl in a white dress under cherry blossoms　← just works\n/again　← same description, new seed\n/cancel　← stop a queued or running job\n\nWant a different look? (--look takes several, separated by /)\n/draw a cat --look photo/high\n/draw a cat --look illustration/klein blue\n\nFull command list and every parameter: /help all"
     },
     "i2v": {
       "default_prompt": "make the scene move naturally, keep the subject and style consistent",
