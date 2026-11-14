@@ -636,7 +636,8 @@
       "reload": "Reload",
       "reload_models": "Reload",
       "reload_stats": "Refresh stats",
-      "save": "Save config"
+      "save": "Save config",
+      "test_connection": "Test connection"
     },
     "btn": {
       "copy_negative": "Copy negative",

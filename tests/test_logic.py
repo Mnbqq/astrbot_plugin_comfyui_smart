@@ -6589,6 +6589,17 @@ def main() -> int:
                              quality=_sp.BUILTIN_QUALITY, colors=_sp.bundled_colors(),
                              styles=_sp.bundled_styles())[0]) == 2, None)
 
+    print("\n=== 连接失败提示（新手最容易卡住的地方）===")
+    _h_refused = plugin.connect_hint("Cannot connect to host 127.0.0.1:8188")
+    check("连不上时提到 Docker/宿主机 IP 这个最常踩的坑",
+          "Docker" in _h_refused and "127.0.0.1" in _h_refused, _h_refused)
+    _h_404 = plugin.connect_hint("HTTP 404 Not Found")
+    check("404 提示端口可能填错", "端口" in _h_404, _h_404)
+    _h_timeout = plugin.connect_hint("asyncio.TimeoutError: timed out")
+    check("超时提示检查卡死与防火墙", "超时" in _h_timeout, _h_timeout)
+    _h_other = plugin.connect_hint("something weird")
+    check("未知错误也给通用下一步", "检查" in _h_other, _h_other)
+
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）
     field_re = _re.compile(

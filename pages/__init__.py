@@ -143,6 +143,12 @@ def register_pages_routes(plugin) -> bool:
             }
         )
 
+    async def test_connection():
+        """配置页「测试连接」：用表单里的地址先探一次，失败也返回结构化结果。"""
+        payload = await request.json(default={})
+        url = str((payload or {}).get("url") or "") if isinstance(payload, dict) else ""
+        return json_response(await plugin.test_connection(url))
+
     async def get_status():
         return json_response(await plugin.get_server_status())
 
@@ -260,6 +266,7 @@ def register_pages_routes(plugin) -> bool:
         (f"/{PLUGIN_NAME}/models/refresh", refresh_models, ["POST"], "重新发现模型"),
         (f"/{PLUGIN_NAME}/templates", get_templates, ["GET"], "读取工作流模板"),
         (f"/{PLUGIN_NAME}/status", get_status, ["GET"], "读取 ComfyUI 状态"),
+        (f"/{PLUGIN_NAME}/test-connection", test_connection, ["POST"], "测试 ComfyUI 连接"),
         (f"/{PLUGIN_NAME}/i18n", get_i18n, ["GET"], "读取插件页文案（多语言）"),
         (f"/{PLUGIN_NAME}/stats", get_stats, ["GET"], "读取统计"),
         (f"/{PLUGIN_NAME}/audit", get_audit, ["GET"], "读取审计日志"),

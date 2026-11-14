@@ -257,7 +257,8 @@
       "reload": "重新读取",
       "reload_models": "重新读取",
       "reload_stats": "刷新统计",
-      "save": "保存配置"
+      "save": "保存配置",
+      "test_connection": "测试连接"
     },
     "btn": {
       "copy_negative": "复制负面",

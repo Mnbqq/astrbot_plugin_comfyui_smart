@@ -983,3 +983,14 @@ textarea.input-modern {
 }
 .inpaint-hidden { display: none; }
 .row-actions { display: flex; gap: 10px; flex-wrap: wrap; margin: 8px 0 4px; }
+
+/* 输入框下方的一行：小按钮 + 结果文字（如「测试连接」） */
+.inline-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.inline-row .ok { color: #2e7d32; }
+.inline-row .fail { color: #c62828; }

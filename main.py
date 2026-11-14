@@ -943,6 +943,73 @@ class ComfyUISmartPlugin(Star):
             pass
         return self.storage.load_catalog()
 
+    @staticmethod
+    def connect_hint(error: str) -> str:
+        """把连接失败翻译成人话 + 下一步怎么做。
+
+        新用户卡住的地方几乎都在这一步：地址填了、但 ComfyUI 没起 / 端口不对 /
+        AstrBot 在容器里而 ComfyUI 在宿主机。原始异常对他们是天书。
+        """
+        low = str(error or "").lower()
+        if "timeout" in low or "timed out" in low:
+            return ("请求超时：地址能解析但连不通。检查 ComfyUI 是否卡死、"
+                    "防火墙是否放行该端口")
+        if "404" in low or "not found" in low:
+            return ("这个地址返回 404：多半不是 ComfyUI，或者端口填错了"
+                    "（ComfyUI 默认 8188；WebUI 是 7860）")
+        if "cannot connect" in low or "connect call failed" in low or "refused" in low:
+            return ("连不上：ComfyUI 没启动、端口不对，或 AstrBot 与它不在同一网络。"
+                    "若 AstrBot 跑在 Docker 里，127.0.0.1 指的是容器自己，"
+                    "要填宿主机 IP")
+        if "ssl" in low or "certificate" in low:
+            return "证书问题：自签证书需要把地址改成 http://，或用受信任的证书"
+        return "检查 ComfyUI 是否启动、地址与端口是否正确、网络是否互通"
+
+    async def test_connection(self, url: str = "") -> dict:
+        """探测一个 ComfyUI 地址（保存配置前就能先试）。
+
+        Args:
+            url: 要测试的地址；留空测当前配置里的地址。
+
+        Returns:
+            `{ok, base_url, ms, version, checkpoints, vram, error, hint}`。
+            失败不抛异常 —— 这是「测试」接口，失败本身就是结果。
+        """
+        target = (url or "").strip() or self.comfy.base_url
+        probe = ComfyUI(
+            target,
+            timeout=min(20, self.comfy.timeout),
+            poll_interval=self.comfy.poll_interval,
+            max_tasks_ahead=self.comfy.max_tasks_ahead,
+            logger=logger,
+        )
+        started = time.time()
+        try:
+            stats = await probe.ping()
+            result = {
+                "ok": True,
+                "base_url": probe.base_url,
+                "ms": int((time.time() - started) * 1000),
+                "version": str((stats.get("system") or {}).get("comfyui_version") or ""),
+            }
+            try:
+                catalog = await probe.discover_models()
+                result["checkpoints"] = len(catalog.get("checkpoints") or [])
+            except ComfyUIError:
+                result["checkpoints"] = 0
+            device = (stats.get("devices") or [{}])[0] or {}
+            if device.get("vram_total"):
+                result["vram"] = int(device["vram_total"] // (1024 ** 2))
+            return result
+        except ComfyUIError as e:
+            return {"ok": False, "base_url": probe.base_url,
+                    "error": str(e), "hint": self.connect_hint(str(e))}
+        except Exception as e:  # noqa: BLE001 - 测试接口不该因任何异常而 500
+            return {"ok": False, "base_url": probe.base_url,
+                    "error": str(e), "hint": self.connect_hint(str(e))}
+        finally:
+            await probe.close()
+
     async def get_server_status(self) -> dict:
         """返回服务器状态，供 Pages 与 /状态 使用。"""
         info = {

@@ -55,6 +55,10 @@
             <div class="form-group full-width">
               <label data-i18n="ui.label.001" for="server_base_url">服务地址</label>
               <input type="text" id="server_base_url" class="input-modern" placeholder="http://127.0.0.1:8188" />
+              <div class="inline-row">
+                <button class="btn-secondary" type="button" id="test-connection" data-i18n="ui.action.test_connection">测试连接</button>
+                <span class="muted" id="test-connection-result"></span>
+              </div>
             </div>
             <div class="form-group">
               <label data-i18n="ui.label.002" for="server_timeout">出图等待上限（秒）</label>

@@ -1000,6 +1000,39 @@ function bindEvents() {
   if (reloadModels) reloadModels.addEventListener('click', loadModels);
   const reloadStats = $('[data-action="reload-stats"]');
   if (reloadStats) reloadStats.addEventListener('click', loadStats);
+  /* 测试连接：把表单里的地址先探一次，失败也给出可操作的提示 */
+  const testConn = $('#test-connection');
+  const testConnOut = $('#test-connection-result');
+  if (testConn && testConnOut) {
+    testConn.addEventListener('click', async () => {
+      const input = $('#server_base_url');
+      const url = input ? String(input.value || '').trim() : '';
+      testConn.disabled = true;
+      testConnOut.className = 'muted';
+      testConnOut.textContent = '测试中…';
+      try {
+        const result = await bridge.apiPost('test-connection', { url: url });
+        if (result && result.ok) {
+          const parts = [];
+          if (result.version) parts.push('ComfyUI ' + result.version);
+          if (typeof result.checkpoints === 'number') parts.push('底模 ' + result.checkpoints + ' 个');
+          if (result.vram) parts.push('显存 ' + result.vram + ' MB');
+          parts.push(result.ms + ' ms');
+          testConnOut.className = 'ok';
+          testConnOut.textContent = '✅ 连接正常：' + parts.join(' · ');
+        } else {
+          testConnOut.className = 'fail';
+          testConnOut.textContent = '❌ ' + ((result && (result.hint || result.error)) || '连接失败');
+        }
+      } catch (error) {
+        testConnOut.className = 'fail';
+        testConnOut.textContent = '❌ ' + (error && error.message ? error.message : '请求失败');
+      } finally {
+        testConn.disabled = false;
+      }
+    });
+  }
+
   const reloadStatus = $('[data-action="reload-status"]');
   if (reloadStatus) reloadStatus.addEventListener('click', () => { loadStatus(); loadTemplates(); });
 
