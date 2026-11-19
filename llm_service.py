@@ -62,7 +62,7 @@ PROMPT_SYSTEM = """你是 ComfyUI 绘图提示词工程师：把用户的中文�
 9. negative 只写**与这次描述相关**的缺陷词；通用的手部与肢体内脏词插件会自动补齐，不要重复列举。
 10. 没有针对性的就留空字符串。
 【选型】
-11. checkpoint 必须从清单里**原样复制**文件名，不要编造、改大小写或写路径。按风格倾向选：照片感/写实 → 写实系底模；动漫/插画 → 动漫系底模。模型名通常自带线索（realvis / realistic / photo / juggernaut 偏写实，animagine / anything / anime / pony / illustrious 偏动漫）；不确定就选清单里第一个。
+11. checkpoint 必须从清单里**原样复制**文件名，不要编造、改大小写或写路径。**示例里的 `<...>` 是占位符，绝不要原样输出**——必须先看清单，挑一个真实存在的文件名。按风格倾向选：照片感/写实 → 写实系底模；动漫/插画 → 动漫系底模。模型名通常自带线索（realvis / realistic / photo / juggernaut 偏写实，animagine / anything / anime / pony / illustrious 偏动漫）；不确定就选清单里第一个。
 12. lora 只在名字与用户描述的主题或画风**明确相关**时才填，否则留空字符串；lora_strength 一般 0.6~0.9，不确定填 0.8。
 13. vae 默认留空字符串。
 【输出风格】
@@ -71,13 +71,13 @@ PROMPT_SYSTEM = """你是 ComfyUI 绘图提示词工程师：把用户的中文�
 　· 其余底模（SD1.5 / SDXL / Pony / Flux 等）→ prompt_style 填 "tags"，positive 按上面第 2~4 条写英文 tag。
 【示例】（只示范风格与选型，不要照抄内容）
 · 输入「一个红发女孩在雨里回头」＋【质量词】没让你写
-→ {"positive": "1girl, solo, red hair, long hair, looking back, rain, wet clothes, standing, upper body, city street, night, cinematic lighting, depth of field", "negative": "", "checkpoint": "animagine-xl-4.0.safetensors", "lora": "", "lora_strength": 0.8, "vae": "", "width": 0, "height": 0, "prompt_style": "tags", "added": []}
+→ {"positive": "1girl, solo, red hair, long hair, looking back, rain, wet clothes, standing, upper body, city street, night, cinematic lighting, depth of field", "negative": "", "checkpoint": "<从清单原样复制：动漫底模>", "lora": "", "lora_strength": 0.8, "vae": "", "width": 0, "height": 0, "prompt_style": "tags", "added": []}
 · 输入「办公室里的中年男人，纪实感」
-→ {"positive": "1boy, mature male, suit, sitting, office, window light, realistic, photograph, 35mm photograph, shallow depth of field", "negative": "", "checkpoint": "realvisxl_v5.0.safetensors", "lora": "", "lora_strength": 0.8, "vae": "", "width": 0, "height": 0, "prompt_style": "tags", "added": []}
+→ {"positive": "1boy, mature male, suit, sitting, office, window light, realistic, photograph, 35mm photograph, shallow depth of field", "negative": "", "checkpoint": "<从清单原样复制：写实底模>", "lora": "", "lora_strength": 0.8, "vae": "", "width": 0, "height": 0, "prompt_style": "tags", "added": []}
 · 输入「赛博朋克街景，没有人物」
-→ {"positive": "no humans, cyberpunk city, neon lights, rain, wet asphalt, reflections, night, wide shot, scenery", "negative": "", "checkpoint": "animagine-xl-4.0.safetensors", "lora": "", "lora_strength": 0.8, "vae": "", "width": 0, "height": 0, "prompt_style": "tags", "added": []}
+→ {"positive": "no humans, cyberpunk city, neon lights, rain, wet asphalt, reflections, night, wide shot, scenery", "negative": "", "checkpoint": "<从清单原样复制：动漫底模>", "lora": "", "lora_strength": 0.8, "vae": "", "width": 0, "height": 0, "prompt_style": "tags", "added": []}
 · 输入「一只猫坐在窗台上，别太写实」
-→ {"positive": "cat, sitting, windowsill, indoors, sunlight, warm tones, illustration, soft shading", "negative": "", "checkpoint": "animagine-xl-4.0.safetensors", "lora": "", "lora_strength": 0.8, "vae": "", "width": 0, "height": 0, "prompt_style": "tags", "added": []}
+→ {"positive": "cat, sitting, windowsill, indoors, sunlight, warm tones, illustration, soft shading", "negative": "", "checkpoint": "<从清单原样复制：动漫底模>", "lora": "", "lora_strength": 0.8, "vae": "", "width": 0, "height": 0, "prompt_style": "tags", "added": []}
 【输出】
 15. 只输出一个 JSON 对象：不要 markdown 代码块、不要前后说明、不要注释、不要多余字段。
 {"positive": "...", "negative": "...", "checkpoint": "...", "lora": "", "lora_strength": 0.8, "vae": "", "width": 0, "height": 0, "prompt_style": "tags", "added": []}
@@ -87,7 +87,8 @@ added 是你**额外补的**、用户没提的呈现层细节（委托模式才�
 SCENE_SYSTEM = (
     "你是生图需求分类器。读用户的一句描述，判断它属于哪些**画面类型**。\n"
     "从这些里挑 1~3 个最贴切的：人物、自拍、人像特写、室内、室外、城市、郊区、建筑、"
-    "风景、动物、静物、二次元、动漫、插画、写实、摄影、3D、手办、Q版。\n"
+    "风景、动物、静物、3D、手办、Q版。\n"
+    "**只判「画什么」，不要判画风**（写实/照片/动漫/插画属于风格，不在这份清单里）。\n"
     "规则：只输出 JSON，不要解释；只选上面列出的词，不要自创。\n"
     '{"scenes": ["人物", "室内"]}'
 )

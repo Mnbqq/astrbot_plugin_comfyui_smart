@@ -388,17 +388,14 @@
       "description": "Configure servers, models, prompts and permissions for ComfyUI Smart Drawing"
     }
   },
-  "audit": {
-    "blocked_nsfw": "blocked by content filter"
-  },
+  "audit": {},
   "cmd": {
     "audit": {
       "empty": "📋 No audit records yet (enable \"audit log\" in permission settings).",
       "fail": "failed",
       "line": "{time} | {name}({uid}) | {purpose} | {model} | {seconds}s | {ok}",
       "ok": "ok",
-      "title": "📋 Last {count} audit records ({total} total):",
-      "usage": "📋 Usage: /audit [count] [--user USER_ID]"
+      "title": "📋 Last {count} audit records ({total} total):"
     },
     "cancel": {
       "done": "🛑 Cancelled",
@@ -510,7 +507,29 @@
       "queue": "  Queue: running {running} · pending {pending}",
       "templates": "  Templates: {count}",
       "title": "🖥 ComfyUI: {url}",
-      "version": "  ComfyUI version: {version}"
+      "version": "  ComfyUI version: {version}",
+      "features": "　Features: {list}",
+      "machine": "　Machine tier: {label} (max {pixels}0k px · {frames} frames · {steps} steps)",
+      "vision_custom": "　Vision model (custom endpoint): {url}｜model {model}",
+      "vision_set": "　Vision model (pinned): {name}｜vision {mark}",
+      "vision_dialog": "　Chat model: {name}｜vision {mark}",
+      "vision_none": "　Chat model: ❌ not configured",
+      "none_list": "(none)",
+      "yes": "on",
+      "no": "off",
+      "allowed": "allowed",
+      "denied": "disabled",
+      "registered": "registered",
+      "register_failed": "❌ registration failed, check logs",
+      "unsupported": "❌ unsupported",
+      "unknown": "❔ unknown",
+      "unknown_modalities": "❔ unknown (modalities not set)",
+      "support_yes": "✅ supported",
+      "not_filled": "not set",
+      "unavailable": "unavailable",
+      "wait_unlimited": "unlimited",
+      "seconds": "{value:.0f}s",
+      "vision_hint": "　Hint: /img2prompt needs a vision-capable model; if unsupported, set the vision provider in config or pass --provider"
     },
     "templates": {
       "arch": "\nArchitectures: {arches}",
@@ -546,8 +565,6 @@
       "saved": "✅ Style preset saved: {model}",
       "removed": "🗑 Style preset removed: {model}",
       "not_found": "🤔 No such style preset: {model}",
-      "media": "📷 Media type (--media): {names}",
-      "quality": "✨ Quality tier (--quality): {names}",
       "cmd.style.title": "🎨 Style presets ({count} total · page {page}/{pages})",
       "colors": "🎨 Theme colors: {count} (--color Klein Blue)",
       "prompt": "Prompt: ",
@@ -555,16 +572,7 @@
       "no_match": "🤔 No preset matches \"{model}\""
     }
   },
-  "common": {
-    "disabled": "disabled",
-    "enabled": "allowed",
-    "image": "Image",
-    "no": "off",
-    "register_failed": "❌ registration failed, check the logs",
-    "registered": "registered",
-    "video": "Video",
-    "yes": "on"
-  },
+  "common": {},
   "error": {
     "failed": "💥 Generation failed: {error}",
     "feature_disabled": "🚫 The \"{feature}\" feature is currently disabled.\n  Enable it in AstrBot → Plugins → ComfyUI Smart Draw → **Feature switches** (command: {how}).",
@@ -591,7 +599,7 @@
     "video_user": "User description: {desc}\nTask type: {kind}\nRequirements: {hint}\nPlanned duration ~{seconds}s at {fps} fps.\nDefault negative prompt (for reference, do not copy): {negative}",
     "scene_system": "You classify image requests. Read the user's one-line description and decide which **image types** it belongs to.\nPick 1-3 of: people, selfie, portrait close-up, indoor, outdoor, city, suburb, architecture, landscape, animal, still life, anime, manga, illustration, realistic, photography, 3D, figurine, chibi.\nRules: JSON only, no explanation; only use the words listed above.\n{\"scenes\": [\"people\", \"indoor\"]}",
     "scene_user": "User description: {desc}",
-    "scene_line": "Image types (from the classifier; prefer checkpoints whose \"适合\" tags include these, and treat architecture as secondary): {scenes}",
+    "scene_line": "Image types (from the classifier, advisory only): {scenes}\n**Any style the user explicitly asked for (realistic / photo / anime / illustration) wins over this**; use these types to pick a checkpoint only when the user did not say.",
     "glossary_line": "[Clothing glossary] (Chinese→English; use these exact English terms): {pairs}"
   },
   "perm": {
@@ -629,7 +637,8 @@
     "video_meta": "({length} frames / {fps:.0f} fps)\n",
     "video_saved": "🎬 Video {seconds}s (saved to {path})",
     "warning": "\n⚠️ {text}",
-    "again_hint": "\n💡 Want another take? Send /again (same description and settings, new seed)"
+    "again_hint": "\n💡 Want another take? Send /again (same description and settings, new seed)",
+    "llm_failed_fallback": "(⚠️ prompt rewriting failed; using your original text. Try a smaller model for rewriting, or --no-llm with English tags)"
   },
   "ui": {
     "action": {

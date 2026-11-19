@@ -1939,7 +1939,18 @@ class ComfyUISmartPlugin(Star):
             # LLM 的负面词**不再整体替换**默认词：具体合并见下方（需要先知道架构）
             llm_negative = str(opt.get("negative") or "")
         else:
-            llm_note = "（提示词优化已关闭，直接使用你的原话）"
+            # 这里有两种情况，以前混成一句「优化已关闭」，把失败藏了起来：
+            #   · 用户/配置本来就没开优化  → 正常
+            #   · 开了优化但 LLM 没返回可解析的 JSON（raw_ok=False）→ **失败**
+            # 失败时必须说清楚，否则用户会以为「模型画得差」，实际是改写那一步挂了。
+            if want_llm:
+                llm_note = self.t("result.llm_failed_fallback")
+                logger.warning(
+                    "LLM 改写未返回可用提示词（raw_ok=%s），已退回原描述出图：%s",
+                    opt.get("raw_ok"), (user_desc or "")[:80],
+                )
+            else:
+                llm_note = "（提示词优化已关闭，直接使用你的原话）"
 
         # 多后端：按负载挑一个后端，本次任务的提交/等待/下载都走它。
         # 单后端时 pick() 直接返回主后端、不做任何探测，行为与以前一致。
@@ -3588,87 +3599,105 @@ class ComfyUISmartPlugin(Star):
 
     @filter.command("状态")
     async def cmd_status(self, event: AstrMessageEvent):
-        """查看 ComfyUI 连接与队列状态。"""
+        """查看 ComfyUI 连接与队列状态（文案走 i18n，英文界面不要露中文）。"""
         info = await self.get_server_status()
-        lines = [f"🖥 ComfyUI：{info['base_url']}"]
-        lines.append("　连接：✅ 正常" if info["online"] else f"　连接：❌ {info.get('error', '不可用')}")
+        t = self.t
+        lines = [t("cmd.status.title", url=info["base_url"])]
+        lines.append(
+            t("cmd.status.online") if info["online"]
+            else t("cmd.status.offline",
+                   error=info.get("error") or t("cmd.status.unavailable"))
+        )
         if info.get("device"):
-            lines.append(f"　设备：{info['device']}")
-        lines.append("　功能：" + ("、".join(self.enabled_features()) or "（无）"))
+            lines.append(t("cmd.status.device", device=info["device"]))
+        lines.append(t("cmd.status.features",
+                       list="、".join(self.enabled_features()) or t("cmd.status.none_list")))
         if info.get("machine"):
             mach = info["machine"]
-            lines.append(
-                f"　机器档位：{mach['label']}（上限 {round(mach['max_pixels'] / 10000)} 万像素"
-                f" · {mach['max_length']} 帧 · {mach['steps_cap']} 步）"
-            )
+            lines.append(t(
+                "cmd.status.machine",
+                label=mach["label"],
+                pixels=round(mach["max_pixels"] / 10000),
+                frames=mach["max_length"],
+                steps=mach["steps_cap"],
+            ))
         if info.get("queue"):
-            lines.append(
-                f"　队列：执行中 {info['queue']['running']} · 等待中 {info['queue']['pending']}"
-            )
+            lines.append(t("cmd.status.queue",
+                           running=info["queue"]["running"],
+                           pending=info["queue"]["pending"]))
         version = await self.comfy.comfyui_version()
         if version:
-            lines.append(f"　ComfyUI 版本：{version}")
+            lines.append(t("cmd.status.version", version=version))
         # 插件侧并发闸门：出图慢/排队久时，先看这一行
         gate = self.gate.snapshot()
-        per_user = (
-            f"｜单人上限 {gate['per_user_limit']}"
-            if gate["per_user_limit"] > 0
-            else "｜单人不限"
-        )
-        wait_limit = f"{gate['wait_timeout']:.0f} 秒" if gate["wait_timeout"] else "不限"
-        lines.append(
-            f"　并发：上限 {gate['max_concurrent']}｜进行中 {gate['running']}"
-            f"｜排队 {gate['waiting']}{per_user}｜排队等待上限 {wait_limit}"
-        )
+        per_user = (t("cmd.status.per_user", limit=gate["per_user_limit"])
+                    if gate["per_user_limit"] > 0 else t("cmd.status.per_user_none"))
+        wait_limit = (t("cmd.status.seconds", value=gate["wait_timeout"])
+                      if gate["wait_timeout"] else t("cmd.status.wait_unlimited"))
+        lines.append(t("cmd.status.gate",
+                       max=gate["max_concurrent"], running=gate["running"],
+                       waiting=gate["waiting"], per_user=per_user,
+                       wait_limit=wait_limit))
         if self.pool.multi:
             rows = self.pool.snapshot()
-            lines.append(f"　后端（{len(rows)} 个，按负载分配）：")
+            lines.append(t("cmd.status.backends", count=len(rows)))
             for row in rows:
                 if row["benched"]:
-                    mark = f"⛔ 熔断中（还有 {row['benched_for']:.0f} 秒）"
+                    state = t("cmd.status.backend_benched", seconds=row["benched_for"])
                 elif row["online"] is False:
-                    mark = "❌ 上次失败"
+                    state = t("cmd.status.backend_failed")
                 elif row["online"]:
-                    mark = f"✅ 队列 {row['busy']}"
+                    state = t("cmd.status.backend_ready", busy=row["busy"])
                 else:
-                    mark = "❔ 未探测"
-                tag = "（主）" if row["primary"] else ""
-                lines.append(f"　　- {row['name']}{tag} {row['url']}｜{mark}")
-        lines.append(f"　模板：{len(self.templates)} 个")
+                    state = t("cmd.status.backend_unknown")
+                tag = t("cmd.status.backend_primary") if row["primary"] else ""
+                lines.append(t("cmd.status.backend_item",
+                               name=row["name"], tag=tag, url=row["url"], state=state))
+        lines.append(t("cmd.status.templates", count=len(self.templates)))
         hires_conf = self.config.get("hires", {}) or {}
-        lines.append(
-            "　Hires Fix：文生图 {}｜图生图 {}｜单次 --hires {}".format(
-                "开" if hires_conf.get("enable") else "关",
-                "开" if (hires_conf.get("enable") and hires_conf.get("enable_for_i2i", True)) else "关",
-                "允许" if hires_conf.get("allow_inline", True) else "已禁用",
-            )
-        )
-        lines.append(f"　配置页 API：{'已注册' if self.pages_ready else '❌ 注册失败，请查看日志'}")
+        lines.append(t(
+            "cmd.status.hires",
+            txt2img=t("cmd.status.yes") if hires_conf.get("enable") else t("cmd.status.no"),
+            img2img=t("cmd.status.yes") if (hires_conf.get("enable")
+                                            and hires_conf.get("enable_for_i2i", True))
+            else t("cmd.status.no"),
+            inline=t("cmd.status.allowed") if hires_conf.get("allow_inline", True)
+            else t("cmd.status.denied"),
+        ))
+        lines.append(t("cmd.status.pages",
+                       state=t("cmd.status.registered") if self.pages_ready
+                       else t("cmd.status.register_failed")))
 
         # 对话模型与看图能力：/反推 依赖这个，直接在这里暴露，省得靠猜
         try:
             vision_settings = self.config.get("vision_settings", {}) or {}
             if str(vision_settings.get("base_url") or "").strip():
-                lines.append(
-                    f"　看图模型（自定义接口）：{vision_settings.get('base_url')}"
-                    f"｜模型 {vision_settings.get('model') or '未填'}"
-                )
+                lines.append(t("cmd.status.vision_custom",
+                               url=vision_settings.get("base_url"),
+                               model=vision_settings.get("model")
+                               or t("cmd.status.not_filled")))
                 vision_conf = ""
             else:
                 vision_conf = str(vision_settings.get("provider") or "").strip()
             if vision_conf:
                 support = self.llm.provider_vision_support(vision_conf)
-                mark = "✅ 支持" if support else ("❌ 不支持" if support is False else "❔ 未知")
-                lines.append(f"　看图模型（已指定）：{self.llm.provider_label(vision_conf)}｜看图 {mark}")
+                mark = (t("cmd.status.support_yes") if support
+                        else t("cmd.status.unsupported") if support is False
+                        else t("cmd.status.unknown"))
+                lines.append(t("cmd.status.vision_set",
+                               name=self.llm.provider_label(vision_conf), mark=mark))
             else:
                 pid = await self.llm.resolve_provider_id(event)
                 if pid:
                     support = self.llm.provider_vision_support(pid)
-                    mark = "✅ 支持" if support else ("❌ 不支持" if support is False else "❔ 未知（没配 modalities）")
-                    lines.append(f"　对话模型：{self.llm.provider_label(pid)}｜看图 {mark}")
+                    mark = (t("cmd.status.support_yes") if support
+                            else t("cmd.status.unsupported") if support is False
+                            else t("cmd.status.unknown_modalities"))
+                    lines.append(t("cmd.status.vision_dialog",
+                                   name=self.llm.provider_label(pid), mark=mark))
                 else:
-                    lines.append("　对话模型：❌ 未配置")
-            lines.append("　提示：/反推 必须用支持看图的模型；不支持时请用配置里的「看图反推专用提供商」或 --provider 指定")
+                    lines.append(t("cmd.status.vision_none"))
+            lines.append(t("cmd.status.vision_hint"))
         except Exception as e:
             logger.debug("读取对话模型信息失败：%s", e)
         yield event.plain_result("\n".join(lines))

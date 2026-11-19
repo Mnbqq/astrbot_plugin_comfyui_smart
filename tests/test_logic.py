@@ -6623,6 +6623,30 @@ def main() -> int:
     check("手册里写明了帮助命令的新名字",
           "/comfy帮助" in _doc, None)
 
+    print("\n=== 提示词链路的三个坑（来自外部评价）===")
+    _sys = cat("zh-CN", "llm.optimize_system") or ""
+    check("few-shot 示例不再写死真实模型名（模型会照抄）",
+          "animagine-xl-4.0.safetensors" not in _sys
+          and "realvisxl_v5.0.safetensors" not in _sys
+          and "从清单原样复制" in _sys, None)
+    check("明确禁止把占位符原样输出", "绝不要原样输出" in _sys, None)
+
+    _scene_sys = cat("zh-CN", "llm.scene_system") or ""
+    # 只看「枚举清单」那一行：提示里另有「写实/动漫属于风格」的说明句，那是刻意的
+    _enum_line = next((ln for ln in _scene_sys.splitlines() if ln.startswith("从这些里挑")), "")
+    check("分类器的枚举清单里不再有画风词（写实/动漫是风格，不是画面类型）",
+          _enum_line and "二次元" not in _enum_line and "动漫" not in _enum_line
+          and "写实" not in _enum_line and "摄影" not in _enum_line, _enum_line[:60])
+    _scene_line = cat("zh-CN", "llm.scene_line") or ""
+    check("注入句改成「用户明确要求的画风优先」",
+          "优先" in _scene_line and "用户" in _scene_line, _scene_line[:40])
+
+    _fail_note = cat("zh-CN", "result.llm_failed_fallback") or ""
+    check("改写失败有独立文案，不再伪装成「优化已关闭」",
+          "失败" in _fail_note and "已关闭" not in _fail_note, _fail_note[:30])
+    check("英文侧也有这条失败文案",
+          bool(cat("en-US", "result.llm_failed_fallback")), None)
+
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）
     field_re = _re.compile(
