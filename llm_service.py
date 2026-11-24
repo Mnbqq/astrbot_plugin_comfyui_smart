@@ -680,6 +680,18 @@ class LLMService:
         system = self._t("llm.optimize_system") or PROMPT_SYSTEM
         text = await self.generate(system, user, event=event)
         parsed = parse_optimize_result(text)
+        if not parsed.get("raw_ok"):
+            # 第一次没解析出来（推理型模型把预算烧在思考上、JSON 被截断，是最常见的形态）：
+            # 再问一次，并把「只输出 JSON」提到最显眼的位置。
+            # **只重试一次** —— 再失败就由调用方回退到原描述，并明确告诉用户改写失败了。
+            retry_user = (
+                user
+                + "\n\n【重要】你上一次的输出无法解析。这次**只**输出一个 JSON 对象，"
+                "不要解释、不要 markdown 代码块、不要在前后加任何文字。"
+            )
+            text = await self.generate(system, retry_user, event=event)
+            parsed = parse_optimize_result(text)
+            parsed["retried"] = True
         parsed["_raw"] = text
         return parsed
 

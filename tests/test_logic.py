@@ -6647,6 +6647,42 @@ def main() -> int:
     check("英文侧也有这条失败文案",
           bool(cat("en-US", "result.llm_failed_fallback")), None)
 
+    print("\n=== 改写失败重试一次 ===")
+    _svc3 = llm.LLMService(ctx, plugin.config)
+    _seq = ["抱歉，我无法完成这个请求。", '{"positive": "1girl, smiling", "negative": ""}']
+    _seen_calls: list = []
+
+    async def _seq_gen(system, user, **kw):
+        _seen_calls.append(user)
+        return _seq.pop(0)
+
+    _real3 = _svc3.generate
+    _svc3.generate = _seq_gen
+    try:
+        _out3 = asyncio.run(_svc3.optimize_prompt("一个女孩", {"checkpoints": []}))
+    finally:
+        _svc3.generate = _real3
+    check("第一次解析失败会再问一次", len(_seen_calls) == 2, len(_seen_calls))
+    check("重试时强调「只输出 JSON」", "只**输出一个 JSON" in _seen_calls[-1]
+          or "只输出一个 JSON" in _seen_calls[-1], _seen_calls[-1][-60:])
+    check("重试成功后拿到可用提示词",
+          _out3.get("positive") == "1girl, smiling" and _out3.get("retried") is True,
+          _out3.get("positive"))
+
+    # 两次都失败：应返回 raw_ok=False，由调用方回退并告知用户
+    _seq2 = ["还是不行", "依然不行"]
+
+    async def _seq_gen2(system, user, **kw):
+        return _seq2.pop(0)
+
+    _svc3.generate = _seq_gen2
+    try:
+        _out4 = asyncio.run(_svc3.optimize_prompt("一个女孩", {"checkpoints": []}))
+    finally:
+        _svc3.generate = _real3
+    check("两次都失败时 raw_ok=False（交给调用方明说）",
+          _out4.get("raw_ok") is False, _out4.get("raw_ok"))
+
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）
     field_re = _re.compile(
