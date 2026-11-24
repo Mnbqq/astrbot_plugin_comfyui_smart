@@ -6694,6 +6694,38 @@ def main() -> int:
     check("源码里回退到第一个底模时不再静默（有 warning）",
           "在清单里不存在，已回退到" in _src("main.py"), None)
 
+    print("\n=== 改写失败必须送达（即使关掉了参数展示）===")
+    _res_fail = {
+        "images": [], "videos": [], "video": {}, "template": "t", "model": "m",
+        "width": 1, "height": 1, "seed": 1, "seconds": 0.1, "arch": "sdxl",
+        "lora": "", "vae": "", "denoise": 1.0, "i2i": False, "positive": "",
+        "negative": "", "purpose": "t2i", "backend": "", "queued_seconds": 0,
+        "llm_note": "（⚠️ AI 改写失败，已按你的原话出图）", "llm_failed": True,
+    }
+
+    def _chain_text(res):
+        chain = plugin._compose_result_chain(
+            AstrMessageEvent(sender_id="9901", message_str="x"), "9901", dict(res))
+        return "".join(getattr(c, "text", "") or "" for c in chain)
+
+    _saved_output = dict(plugin.config.get("output") or {})
+    try:
+        plugin.config["output"] = {"show_params": False}
+        _t_off = _chain_text(_res_fail)
+        check("关了参数展示，失败提示仍然出现",
+              "改写失败" in _t_off, _t_off[:60])
+        plugin.config["output"] = {"show_params": True}
+        _t_on = _chain_text(_res_fail)
+        check("开着参数展示时只出现一次（不重复）",
+              _t_on.count("改写失败") == 1, _t_on.count("改写失败"))
+        # 普通 note（非失败）在关参数时仍然不额外发送，保持安静
+        _res_ok = dict(_res_fail, llm_failed=False, llm_note="（提示词优化已关闭）")
+        plugin.config["output"] = {"show_params": False}
+        check("非失败的 note 关参数时不打扰",
+              "提示词优化已关闭" not in _chain_text(_res_ok), None)
+    finally:
+        plugin.config["output"] = _saved_output
+
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）
     field_re = _re.compile(

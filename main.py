@@ -1822,6 +1822,7 @@ class ComfyUISmartPlugin(Star):
         positive = user_desc
         llm_negative = ""
         llm_note = ""
+        llm_failed = False
         preset = preset or {}
         # 本次是否让 LLM 改写：行内 --llm / --no-llm 优先于配置
         # 风格模板要**提前**展开：它自己带着主体位置（`【画面主体】，色彩以…`），
@@ -1957,6 +1958,9 @@ class ComfyUISmartPlugin(Star):
             # 失败时必须说清楚，否则用户会以为「模型画得差」，实际是改写那一步挂了。
             if want_llm:
                 llm_note = self.t("result.llm_failed_fallback")
+                # 这条**必须**送达：用户关掉「是否附带参数」时详情整段不渲染，
+                # 失败提示也会跟着消失 —— 那就又变回静默失败了。
+                llm_failed = True
                 logger.warning(
                     "LLM 改写未返回可用提示词（raw_ok=%s），已退回原描述出图：%s",
                     opt.get("raw_ok"), (user_desc or "")[:80],
@@ -2606,6 +2610,7 @@ class ComfyUISmartPlugin(Star):
             "arch": selection["arch"],
             "seed": seed,
             "llm_note": llm_note,
+            "llm_failed": llm_failed,
             "prompt_note": prompt_note,
             "hires": hires_info,
             "hires_note": hires_note,
@@ -3313,7 +3318,7 @@ class ComfyUISmartPlugin(Star):
         )
         if result.get("lora"):
             detail += self.t("result.lora", lora=result["lora"])
-        if result.get("llm_note"):
+        if result.get("llm_note") and not result.get("llm_failed"):
             detail += self.t("result.note", note=result["llm_note"])
         if result.get("denoise_levels"):
             detail += self.t(
@@ -3450,6 +3455,10 @@ class ComfyUISmartPlugin(Star):
         """
         output_conf = self.config.get("output", {}) or {}
         detail = self._result_detail_text(result) if output_conf.get("show_params", True) else ""
+        # 改写失败是「用户必须知道」的信息：不管 show_params 开没开，都要追加
+        if result.get("llm_failed"):
+            _fail_note = self.t("result.note", note=result.get("llm_note") or "")
+            detail = f"{detail}\n{_fail_note}" if detail else _fail_note
         # 合并转发优先：适用时整段结果（文字 + 图片）打包成一条转发消息
         merged = self._merge_forward_chain(event, uid, result, detail)
         if merged is not None:
