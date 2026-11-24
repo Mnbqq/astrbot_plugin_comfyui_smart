@@ -115,7 +115,7 @@
       },
       "provider": {
         "description": "LLM provider ID",
-        "hint": "Leave empty to use the current session's model (that is, AstrBot's default chat model). IDs can be viewed on AstrBot's “Service Providers” page."
+        "hint": "Leave empty to use the current session model (AstrBot's default chat model). Provider IDs are listed on AstrBot's Providers page.\n⚠️ Prefer a **small, non-reasoning model** dedicated to prompt rewriting: R1 / o1-style models think at length first, which eats the output budget and truncates the JSON (the plugin retries once, then falls back to your original wording and says so in the result)."
       },
       "base_url": {
         "description": "Custom OpenAI-compatible endpoint",

@@ -6683,6 +6683,17 @@ def main() -> int:
     check("两次都失败时 raw_ok=False（交给调用方明说）",
           _out4.get("raw_ok") is False, _out4.get("raw_ok"))
 
+    print("\n=== 底模名不在清单里时的回退 ===")
+    _pool = ["animagine-xl-4.0.safetensors", "RealVisXL_V5.0_fp16.safetensors"]
+    check("大小写/扩展名不同能宽松匹配到",
+          m._match_model("Animagine-XL-4.0", _pool) == "animagine-xl-4.0.safetensors",
+          m._match_model("Animagine-XL-4.0", _pool))
+    check("完全对不上时返回空（由调用方回退并告警）",
+          m._match_model("不存在的模型.ckpt", _pool) == "",
+          m._match_model("不存在的模型.ckpt", _pool))
+    check("源码里回退到第一个底模时不再静默（有 warning）",
+          "在清单里不存在，已回退到" in _src("main.py"), None)
+
     print("\n=== 配置与表单双向一致（防止配置项没暴露 / 表单指向不存在的键）===")
     # 用固定正则从 app.js 抽出表单字段（注意：组名可能含数字，如 i2i）
     field_re = _re.compile(

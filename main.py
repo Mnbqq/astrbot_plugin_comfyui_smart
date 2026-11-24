@@ -1294,7 +1294,19 @@ class ComfyUISmartPlugin(Star):
                 model, folder = wanted, _pool_of(wanted)
                 pool = pools.get(folder, [])
             elif checkpoints:
-                model = checkpoints[0]
+                # AI 给的名字不在清单里时，别静默换成第一个 ——
+                # 先按「忽略大小写/扩展名/结尾」宽松匹配一次，仍不行才回退，并且**说出来**。
+                rescued = _match_model(wanted, checkpoints) if wanted else ""
+                if rescued:
+                    model = rescued
+                    logger.info("AI 返回的底模 %r 按相似度匹配到 %r", wanted, rescued)
+                else:
+                    if wanted:
+                        logger.warning(
+                            "AI 返回的底模 %r 在清单里不存在，已回退到 %r（清单示例：%s）",
+                            wanted, checkpoints[0], "、".join(checkpoints[:3]),
+                        )
+                    model = checkpoints[0]
             elif unets:
                 model, folder = unets[0], _pool_of(unets[0])
                 pool = pools.get(folder, [])
